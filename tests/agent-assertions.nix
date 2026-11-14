@@ -126,6 +126,19 @@ let
         && lib.hasInfix "pub const KEY_MISSING_DIR: &str = \"/run/torq/agent-key-missing\";" client
       then "a missing key's word: root's directory, the one place written"
       else throw "agent-assertions: root's word of a missing key is not as it should be: ${builtins.toJSON { inherit dir pre; inherit (sc) ReadWritePaths; }}")
+    # A start that fails does not cost the person their socket (KNOWN-GAPS 6zzo): what waits on the socket is
+    # turned away when the service ends, so a failed start is not tried again for the same question, and the
+    # unit has no limit of starts that would stop its socket for good. Nothing restarts it by itself. (What
+    # this does on a running machine is tests/agent-service.nix's to show.) With a key named and without.
+    (let
+      ok = c: (c.systemd.sockets."torq-agent@dev".socketConfig.FlushPending or null) == true
+        && c.systemd.sockets."torq-agent@dev".socketConfig.Accept == false
+        && (c.systemd.services."torq-agent@dev".unitConfig.StartLimitIntervalSec or null) == 0
+        && !(c.systemd.services."torq-agent@dev".serviceConfig ? Restart);
+    in
+      if ok (configOf { torq.agent.doctor = doctorOn; }) && ok (configOf { torq.agent.doctor = doctorOn // { apiKeyFile = "/var/lib/torq/secrets/model.key"; }; })
+      then "a failed start leaves the socket"
+      else throw "agent-assertions: the agent's socket or unit would let failed starts stop the socket for good")
     (let c = configOf { torq.agent.doctor = doctorOn; }; in
       if !((c.systemd.tmpfiles.settings."10-torq-agent" or { }) ? "/run/torq/agent-key-missing")
         && c.systemd.services."torq-agent@dev".serviceConfig.ExecStartPre == [ ]

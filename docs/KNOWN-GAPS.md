@@ -1494,9 +1494,22 @@ Its §5 lists claims without a test.
      the start is, with one capability (`CAP_DAC_READ_SEARCH`), a read-only system and no credential; it never
      opens the key. Left: systemd's own lines ("Failed to set up credentials") come first, and each failed
      start says the line again. A key file that is there and cannot be loaded for another reason (larger than systemd
-     takes) gets only systemd's words. After several failed starts the socket itself may have stopped
-     (systemd's start limit); whether asking again starts the agent once the key is back, without restarting
-     `torq-agent@<person>.socket`, has not been tried.
+     takes) gets only systemd's words.
+   - **The socket outlives failed starts (2026-11-14, later; the VM subtest is written and has not run).**
+     Reasoned from the units and systemd 260.5's source (`src/core/socket.c`), not seen on a machine: with the
+     key missing, the question that asked for the start stayed waiting on the socket when the service failed;
+     systemd, listening again, started the service for it again at once, and at the sixth start in 10 s
+     (systemd's limit on a unit's starts) stopped the socket for good ("service-start-limit-hit", the socket's
+     file removed). One `torq ask` was enough. With the key back, the agent still did not answer until an
+     administrator restarted `torq-agent@<person>.socket`. Now the socket has `FlushPending=yes` (what waits is
+     turned away each time the service ends, so one question is one start) and the unit has
+     `StartLimitIntervalSec=0` (no limit of starts that would stop the socket; nothing restarts the unit by
+     itself, only a connection of its own person's starts it). The key put back, the next `torq ask` is
+     answered and nothing is restarted by hand. Left: a question that arrives in the instant the service ends
+     (stopped, or crashed) is turned away and must be asked again; a person who connects more than 15 times in
+     2 s is slowed by systemd (the socket's poll limit), and its trigger limit (20 in 2 s) stays behind that
+     and would still stop the socket; one failed start is now one line in the journal for each question, with
+     no limit over time but those two.
    - **A person who is no administrator is told the key is missing, by root's word (2026-11-14; torqcli's units
      ran, the VM subtests are written and have not run).** `torq ask` and the applet said only that the agent
      did not answer, and named a journal that person cannot read. Now `torq-agent-key@<person>.service`, after

@@ -314,7 +314,8 @@ pkgs.testers.runNixOSTest {
         key, says, word = "/var/lib/torq/secrets/model.key", "torq-agent-key@alice.service", "/run/torq/agent-key-missing"
         for gone in [f"mv {key} /var/lib/torq/secrets/kept.key", f"mv {key} /var/lib/torq/secrets/kept.key && ln -s nothing-here {key}"]:
             machine.succeed(gone)
-            # (Each start counted afresh: the starts before this, here and above, would reach systemd's limit.)
+            # (Left from when the unit's starts were limited, 5 in 10 s; it has no such limit now. It also clears the
+            # failed state the start before left.)
             machine.succeed(f"systemctl reset-failed {unit}; true")
             c = cursor()
             machine.fail(f"systemctl restart {unit}")
@@ -387,13 +388,21 @@ pkgs.testers.runNixOSTest {
         machine.fail(f"su - bob -c 'rm -f {word}/bob'")
         machine.succeed(f"test -e {word}/bob")
         machine.fail(f"su - bob -c 'ln -s /etc/passwd {word}/carol'")
-        # Asked again: the same reason, still (the socket may have stopped by now, after its failed starts).
-        out = machine.execute("su - bob -c 'torq ask hello' 2>&1")[1]
-        assert "the model's key is missing" in out, out
-        # The key back (an administrator's doing, the socket started again in case it had stopped): his agent
-        # answers, and the word is gone with the start that loaded the key.
+        # Asked again and again, more often than systemd lets a unit be started by default (5 times in 10 s):
+        # the same reason each time, and his socket is still there, listening. (Before, the question that
+        # failed stayed waiting on the socket, the service was started for it over and over, and the socket
+        # stopped for good at the limit: modules/agent.nix, FlushPending and StartLimitIntervalSec.)
+        for _ in range(8):
+            out = machine.execute("su - bob -c 'torq ask hello' 2>&1")[1]
+            assert "the model's key is missing" in out, out
+        machine.succeed("systemctl is-active torq-agent@bob.socket && test -S /run/torq-agent/bob.sock")
+        machine.fail("systemctl is-failed torq-agent@bob.socket")
+        # (The units' text: `systemctl show` prints some unset properties as [unprintable].)
+        assert "FlushPending=true" in machine.succeed("systemctl cat torq-agent@bob.socket")
+        assert "StartLimitIntervalSec=0" in machine.succeed(f"systemctl cat {bobs}")
+        # The key back, and nothing else done: no administrator restarts the socket or resets anything. His
+        # agent answers the next question, and the word is gone with the start that loaded the key.
         machine.succeed(f"mv /var/lib/torq/secrets/kept.key {key}")
-        machine.succeed(f"systemctl reset-failed {bobs} torq-agent@bob.socket; systemctl restart torq-agent@bob.socket")
         assert as_user("bob", "torq ask hello").strip() == "Hello alice."
         machine.fail(f"test -e {word}/bob")
         # A word left behind while the agent runs (root's, by hand here) is not believed against an agent

@@ -167,8 +167,7 @@ alice@torq> sudo journalctl -u torq-agent@alice.service
 … torq-agent: the model's key, /var/lib/torq/secrets/model.key, is missing …
 ```
 
-If asking again still fails after the key is back, the agent's socket may have stopped after its failed
-starts; an administrator starts it again with `sudo systemctl restart torq-agent@bob.socket`.
+Nothing needs restarting once the key is back: the next `torq ask` starts your agent.
 
 If the key file is there but is not root's alone, your agent does not start either, and `torq ask` says only
 that it did not answer: that reason is in the journal alone.

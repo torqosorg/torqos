@@ -79,6 +79,16 @@ let
       DirectoryMode = "0755";
       Accept = false;
       RemoveOnStop = true;
+      # A start that fails (the model's key missing, most of all) must not cost the person their socket. The
+      # connection that asked for the start stays waiting on the socket when the service fails, and systemd,
+      # listening again, would start the service for it again at once, over and over, until a limit stopped
+      # the socket for good (failed, and its file removed): then nothing answers until an administrator
+      # restarts the socket, the key long back or not. With this, systemd turns away what is waiting each time
+      # the service ends, so one question is one start, and the socket stays. (systemd 260.5,
+      # src/core/socket.c: socket_trigger_notify, socket_enter_listening. Together with the service's
+      # StartLimitIntervalSec=0, below.) The cost: a question that arrives in the instant the service ends is
+      # turned away, and is asked again.
+      FlushPending = true;
     };
   }) agents;
   ownServices = lib.mapAttrs' (agent: person: lib.nameValuePair "torq-agent@${person}" {
@@ -87,6 +97,15 @@ let
     after = [ "torq-agent@${person}.socket" "torq-broker.socket" ];
     # A start that failed: if the model's key is missing, TorqOS says so in this unit's journal (keyMissing).
     onFailure = lib.optional (modelKey != null) "torq-agent-key@${person}.service";
+    # No limit on how often it may be started. systemd's own (5 starts in 10 s) would otherwise be reached by a
+    # person asking a few times while the key is missing, and a socket whose service has reached it is stopped
+    # for good ("service-start-limit-hit"): the key put back, the agent would still not answer until an
+    # administrator restarted the socket. Nothing restarts this unit by itself (no Restart=); only a connection
+    # starts it, one start for each (the socket's FlushPending), and only its own person can connect. How often
+    # that may be is the socket's to limit, by systemd's defaults, left as they are: more than 15 in 2 s are
+    # slowed (PollLimitBurst), and behind that 20 in 2 s would still stop the socket (TriggerLimitBurst), which
+    # asking by hand does not reach.
+    unitConfig.StartLimitIntervalSec = 0;
     serviceConfig = {
       ExecStart = "${config.torq.agent.doctor.package}/bin/torq-agent-service ${person}";
       # The listening socket as standard input (Accept=no): the program takes it from there.
@@ -153,7 +172,8 @@ let
   # write), a read-only system and no new privilege. It is given no credential and never opens the key.
   // lib.optionalAttrs (modelKey != null) (lib.mapAttrs' (agent: person: lib.nameValuePair "torq-agent-key@${person}" {
     description = "${person}'s TorqOS agent: says a missing model key";
-    # Never held back for starting often: it runs once for each failed start, which systemd already limits.
+    # Never held back for starting often: it runs once for each failed start, and a failed start is one
+    # question of the person's (the socket's FlushPending, above), as often as the socket lets them ask.
     unitConfig.StartLimitIntervalSec = 0;
     serviceConfig = {
       Type = "oneshot";
