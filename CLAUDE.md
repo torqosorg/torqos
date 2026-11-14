@@ -189,8 +189,8 @@ released (doctor mode, proposals, session trust); the resident agent and its des
   VM tests are `checks` in `flake.nix`, one file each in `tests/`. CI's `test` workflow runs on pull
   requests, by hand and inside each release, **not on pushes to `main`**, and GitHub does not run the
   full `nix flake check` for development: it runs on the check host. The last full `nix flake check`
-  passed on 2026-11-14 (`docs/HANDOFF-agents.md` has the commits); the Secrets page, the agent's UIs
-  and the approval dialog are type-checked only. Say what was actually run; do not write that
+  passed on 2026-11-14 (`docs/HANDOFF-agents.md` has the commits); the Secrets page and the agent's UIs
+  are type-checked only, and no test presses a button in the approval dialog (a VM test has the applet see a waiting use and send its yes). Say what was actually run; do not write that
   something is tested when it only exists.
 - **The dev host** is the owner's laptop (hostname `torqlaptop`, user `cwdavis`, repo `~/torq`), a
   TorqOS machine that is also the machine the desktop runs on. It is shared and throttled: heavy
