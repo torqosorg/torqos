@@ -292,14 +292,14 @@ acceptance tests, each a VM test.
       panel, a key, the launcher, Settings, the applets, crash notifications and the terminal; the
       screen by the person's portal grant, marked and ended by them; `torq-mcp`. Hermes and OpenClaw not bundled.
       Phase 1 of TorqOS as the harness (ADR-051 9): with its memory, shared folders, the screen and the whole `show` tree.
-      **Step 1 built** (2026-11-10, `work/agents`, `tests/agents-per-person.nix`): one agent account per person,
+      **Step 1 built** (2026-11-10, on `work/agents`, merged to `main` 2026-11-13, `tests/agents-per-person.nix`): one agent account per person,
       `torq-agent-<person>` (`torq.agent.people`), the broker's map of whom each serves, each agent's packages
       its own person's only, trust and sessions per agent, `torq agent run` as the caller's own agent.
-      **Step 2 built** (2026-11-10, `work/agents`, `tests/agent-service.nix`): each person's agent resident,
+      **Step 2 built** (2026-11-10, on `work/agents`, merged to `main` 2026-11-13, `tests/agent-service.nix`): each person's agent resident,
       `torq-agent@<person>.service` on its own socket (SO_PEERCRED checked), its conversation remembered, one task at a
       time as `torq-doctor --propose --task`; `torq ask "<question>"` (Ctrl-C stops it); `torq agent run --share`
       beside it, the service frozen through the walk (KNOWN-GAPS 6zg).
-      **Step 3 built** (2026-11-10, `work/agents`, `tests/desktop-agent.nix`): one client for every UI
+      **Step 3 built** (2026-11-10, on `work/agents`, merged to `main` 2026-11-13, `tests/desktop-agent.nix`): one client for every UI
       (`torq::agent::client`, `torq ask` on it); the agent's applet `org.torqos.Agent` in the default panel beside
       TorqOS's, its window `torq-agent-ui` ("TorqOS Agent", one a person), and TorqOS Settings' Agent page (the model
       a tree line into the draft; the key's entry left to ADR-052). **Step 4 built** (2026-11-10): Decline beside Review

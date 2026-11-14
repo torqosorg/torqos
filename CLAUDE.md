@@ -53,7 +53,7 @@ modules/               the distribution, as NixOS modules (torq.* options)
   dev.nix              development mode (ADR-009) — and the assertion that guards a path: source
   ai.nix               doctor mode and the model it asks: torq.agent.doctor, torq.agent.model (ADR-042)
   secrets.nix          torq-secrets: a program uses a secret and never reads it (ADR-052)
-  agent.nix            the agent's account torq-agent, what it may propose, `torq agent run` (ADR-041)
+  agent.nix            each person's agent account torq-agent-<person>, what it may propose, `torq agent run`, torq-agent@<person> as torq-resident-<person> (ADR-041, ADR-051 3)
 hosts/
   image/               the release image's own system (`.#image`, `.#image-vmdk`)
   installer/           the ISO installer's system and the image it carries (`.#iso`)
@@ -62,15 +62,19 @@ templates/config/      the per-machine config repo the broker manages
                        (`nix flake new -t .#config /var/lib/torq/config`)
 broker/                Rust crate: torq-broker (ledger, policy, git, rebuild, rollback)
 cli/                   Rust crate: torqcli — the grammar, the candidate, the tree (ADR-025)
-agent/                 Rust crate: torq-doctor — the agent: doctor mode, propose mode, its session at the broker (ADR-042)
+agent/                 Rust crate: torq-doctor — the agent: doctor mode, propose mode, its session at the broker (ADR-042);
+                       torq-agent-service — each person's agent, resident, on its socket (ADR-051 3);
+                       torq-mcp — TorqOS's tools for a coding tool, an MCP server (ADR-051 7)
 wire/                  Rust crate: torq-wire — the socket's types and the ledger's words, shared by the three (ADR-044)
 tests/                 NixOS VM tests
 release/               allowed_signers: the keys a machine trusts a release from
-.github/workflows/     test (pull requests, by hand, each release), weekly nixpkgs bump, release on a v* tag
+.github/workflows/     test (pull requests, by hand, each release), image (by hand, each release), weekly nixpkgs bump, release on a v* tag
 branding/              the TorqOS logo, icons, terminal logos and palette (modules/branding.nix)
 secrets/               Rust crate: torq-secrets, the secrets daemon (ADR-052; modules/secrets.nix)
 scripts/               bump-version (the release) and bump-cosmic
-settings/              Rust crate: torq-settings (TorqOS Settings, ADR-045 2), torq-applet (the panel, ADR-049) and torq-tunnel(s) (SSH tunnels, ADR-050), on torqcli's library
+settings/              Rust crate: torq-settings (TorqOS Settings, ADR-045 2; its Agent and Secrets pages), torq-applet (the panel, ADR-049), torq-tunnel(s) (SSH tunnels, ADR-050),
+                       torq-agent-applet, torq-agent-ui and torq-crash-watch (the person's agent: panel, window, crashes offered, ADR-051 4),
+                       on torqcli's library (torq::agent); cli/ also builds torq-agent-launcher (the launcher's `ask`)
 docs/                  design docs and decision log
 ```
 
@@ -90,6 +94,8 @@ nix develop --command bash -c 'cd broker && cargo test'   # incl. ledger tamper 
 nix develop --command bash -c 'cd cli    && cargo test'   # the grammar, candidate, tree
 nix develop --command bash -c 'cd agent  && cargo test'   # doctor mode, against a scripted model
 nix develop --command bash -c 'cd wire   && cargo test'   # torq-wire: the socket's bytes (ledger fixtures: the broker's)
+nix develop --command bash -c 'cd secrets && cargo test'  # torq-secrets
+# settings/ has no tests of its own; it is type-checked in its own shell: nix develop .#torq-settings
 
 # Nix — x86_64 only: aarch64 is neither built nor tested during development (ADR-030, amended)
 nix flake check                                   # eval + tree checks + VM tests
@@ -111,21 +117,25 @@ sudo torq-broker log && sudo torq-broker verify && sudo torq-broker status
 The VM tests need `/dev/kvm` to be quick; the check host has it (ESXi exposes nested
 virtualisation). Without it QEMU falls back to TCG and they take minutes.
 
-## Current milestone: 0.4.0-rc1 (in preparation, 2026-11-11)
+## Current milestone: after 0.4.0-rc1 (2026-11-14)
 
-Released so far: `v0.1.0` to `v0.3.2` (v0.3.2 on 2026-11-09). `0.4.0-rc1` is not released and no
-version number has been bumped for it. Its goal is that the **desktop** (the COSMIC line, already on
-`main`) and **secrets** (ADR-052 steps 1 to 3: a program uses a token or key and never reads it; on
-`main` since `acc59e5`) both work. **Feature freeze until the tag**: only fixes, tests and documents.
-The agent's further work (ADR-051, the resident agent, torq-mcp) is parked, by the owner's decision,
-on `work/agents` (`20db80e`, tag `park/agents-known-good` at `eef8e57`), local to the owner's laptop
-only and not on GitHub, until after rc1; do not build on it before then.
+Released so far: `v0.1.0` to `v0.3.2` (v0.3.2 on 2026-11-09), and `v0.4.0-rc1` as a pre-release
+(2026-11-11): the **desktop** (the COSMIC line) and **secrets** (ADR-052 steps 1 to 3, command line
+only). No `rc2` tag exists. Releases, version bumps and upgrade-path hardening are parked by the
+owner since 2026-11-12 (there is no install base): polish and the pending features come first.
+
+On `main` and not released: the agents work (ADR-051: each person's resident agent, `torq-mcp`, one
+agent per person as two accounts, `torq-agent-<person>` and `torq-resident-<person>`), secrets steps
+1 to 5 including the approval flow (ADR-052 step 4: waiting uses, grants, `secret-grant --replace`, the
+panel applet's dialog, and the Secrets page in TorqOS Settings), and several polish rounds
+(2026-11-12 to 2026-11-14). The old branch `work/agents` and its tag `park/agents-known-good` are
+only history now. Nothing may be said to be released that is only on `main`.
 
 Milestones as built (`docs/ROADMAP.md`'s checkboxes are the most current record): M1, M1.5, M2 and M3
 are done. M3.5 (the install on real hardware) is partly done: the offline first build, network-first
 setup and the laptop install are built; the console UI, the answers file, recipes and the
-installer's other ways are not. M4 (the desktop) is largely built. M5 (the agent) has its non-GUI half:
-doctor mode, proposals and session trust.
+installer's other ways are not. M4 (the desktop) is largely built. M5 (the agent) has its non-GUI half
+released (doctor mode, proposals, session trust); the resident agent and its desktop are on `main`.
 
 ## Engineering principles
 
@@ -150,44 +160,51 @@ doctor mode, proposals and session trust.
   touch Secure Boot keys, or run arbitrary root commands. Those are user-only, done by a person at a terminal.
 - Record significant design choices in `docs/DECISIONS.md` (short ADR entries).
 - Keep `docs/` in sync when behaviour changes.
-- Things in this scaffold marked `TODO(M1)` / `TODO(M2)` are the intended next steps.
 
-## Current status (read this first), 2026-11-11
+## Current status (read this first), 2026-11-14
 
-- **What is released:** `v0.1.0` to `v0.3.2`, x86_64 only (images: qcow2, VMDK; the ISO installer
-  since v0.2.0). No aarch64 downloads exist for 0.3.x, and nothing builds or tests aarch64.
-- **What `main` holds beyond v0.3.2:** the desktop line, secrets and the docs pass, none of it through
-  CI yet. The desktop: COSMIC through
-  NixOS's modules, TorqOS Settings, a panel applet, an SSH-tunnels applet, approval through a polkit
-  dialog (`modules/desktop.nix`, `settings/`, off by default). Setup now has a network/Wi-Fi step and
-  a "new machine or from a repository" question. The desktop has run on exactly one physical
-  machine, the owner's ASUS Zenbook S 16.
-- **Secrets** (on `main` since `acc59e5`): `torq-secrets` (`secrets/`, `modules/secrets.nix`, ADR-052
-  steps 1 to 3).
-- **The agent is experimental.** The `torq-agent` account, `torq agent run`, doctor mode, proposals
-  and session trust exist on `main`. Doctor is off by default, no model ships, and no real model has
-  ever been tried (the tests use a scripted endpoint). The default allow-list is the owner's own
-  packages. Anything beyond that is on `work/agents`, parked (above).
-- **Tests.** Unit tests are `#[test]` functions: broker 250, torqcli 340, agent 28, secrets 12, wire
-  11 (broker, torqcli and wire as `cargo test` in `nix develop` ran them on 2026-11-11). VM tests are `checks` in
-  `flake.nix`, one file each in `tests/`. `tests/doctor.nix`, `tests/agent-proposals.nix` and
-  `tests/commit-at.nix` ran green in CI in the v0.3.2 release run. CI's `test` workflow runs on pull
-  requests, by hand and inside each release, **not on pushes to `main`**: the commits on `main` after
-  v0.3.2 have not been through it, and the `desktop`, `tunnels` and `secrets` checks have not run
-  in CI. Say what was actually run; do not write that something is tested when it only exists.
+- **What is released:** `v0.1.0` to `v0.3.2`, and `v0.4.0-rc1` as a pre-release (2026-11-11), x86_64
+  only (images: qcow2, VMDK; the ISO installer since v0.2.0). No aarch64 downloads exist for 0.3.x,
+  and nothing builds or tests aarch64. Releases and version bumps are parked (above).
+- **What `main` holds beyond rc1:** the agents work, secrets steps 4 and 5 and several polish rounds
+  (above), none of it released. The desktop (in rc1): COSMIC through NixOS's modules, TorqOS Settings,
+  a panel applet, an SSH-tunnels applet, approval through a polkit dialog (`modules/desktop.nix`,
+  `settings/`, off by default). Setup has a network/Wi-Fi step and a "new machine or from a
+  repository" question. The desktop has run on exactly one physical machine, the owner's ASUS
+  Zenbook S 16; the agent's applet, window and Agent page, the approval dialog and the Secrets page
+  have not been seen on any real desktop (`docs/HANDOFF-agents.md`).
+- **Secrets:** `torq-secrets` (`secrets/`, `modules/secrets.nix`). ADR-052 steps 1 to 3 are in rc1.
+  Step 4 (an agent's use that asks waits for its person, who approves or denies it at a terminal or in
+  the panel applet's dialog; grants such as `allow <name> session`; `secret-grant --replace`) and
+  step 5 (the Secrets page in TorqOS Settings) are on `main`.
+- **The agent is experimental.** The `torq-agent-<person>` accounts, `torq agent run`, doctor mode,
+  proposals, session trust, the resident agent (`torq-agent@<person>`, as `torq-resident-<person>`) and
+  `torq-mcp` exist on `main`. Doctor is off by default, no model ships, and no real model, and no real
+  Claude Code, has ever been tried (the tests use a scripted endpoint and a stand-in MCP client). The
+  default allow-list is the owner's own packages.
+- **Tests.** Unit tests are `#[test]` functions: torqcli 457, broker 336 (+1 ignored, across its test
+  binaries), wire 23, secrets 15, agent 71 (+1 ignored) (run on `main` at 9645329, 2026-11-14). The
+  `settings/` crate has no tests of its own; it is type-checked with `nix develop .#torq-settings`.
+  VM tests are `checks` in `flake.nix`, one file each in `tests/`. CI's `test` workflow runs on pull
+  requests, by hand and inside each release, **not on pushes to `main`**, and GitHub does not run the
+  full `nix flake check` for development: it runs on the check host. The last full `nix flake check`
+  passed on 2026-11-14 (`docs/HANDOFF-agents.md` has the commits); the Secrets page and the agent's UIs
+  are type-checked only, and no test presses a button in the approval dialog (a VM test has the applet see a waiting use and send its yes). Say what was actually run; do not write that
+  something is tested when it only exists.
 - **The dev host** is the owner's laptop (hostname `torqlaptop`, user `cwdavis`, repo `~/torq`), a
   TorqOS machine that is also the machine the desktop runs on. It is shared and throttled: heavy
   builds (`nix flake check`, VM tests, the images) go to the second machine, "the check host", an
   x86_64 ESXi VM with KVM. On the laptop use one job at a time. Session worktrees live beside
   `~/torq`; do not edit in another session's.
-- **Known limits** are in `docs/KNOWN-GAPS.md`; the review of 2026-11-11 added three desktop and
-  launcher items: 6zx and 6zy (the desktop save) fixed for 0.4.0-rc1 (follow-ups: 6zza to 6zzc), and 6zz (`torq agent run`'s
-  set-id sweep) fixed too.
+- **Known limits** are in `docs/KNOWN-GAPS.md` (the desktop and launcher items 6zx and 6zy, and 6zz,
+  `torq agent run`'s set-id sweep, are fixed; the agents' own are 6zzk to 6zzo, the approval flow's 6zzs).
 
 ## Working here
 
 - `commit check` evaluates the candidate; it does not build (`cli/src/grammar.rs`).
-- **Way of working:** small steps; an independent reviewer behind every meaningful change;
+- **Way of working:** small steps; every diff is read by the controlling session before it merges, with
+  independent readers for bulk or for a security boundary; one full `nix flake check` on the check host
+  for each merged chunk;
   mutation-check new guards (break them, see a test fail); prove claims in the Nix sandbox and a VM test.
 - **NixOS's own tools for changing a machine are gone** (ADR-032): the broker builds and switches with
   `nix` itself. Never build `/etc/nixos` or any configuration other than the broker's.
