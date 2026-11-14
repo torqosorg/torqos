@@ -2439,6 +2439,118 @@ impl<'a> Panel<'a> {
     }
 }
 
+/// The colour of the badge on the panel's mark (the view maps each to the theme's colour).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Badge {
+    Warning,
+    Destructive,
+    Accent,
+}
+
+impl Panel<'_> {
+    /// The badge for this state: none when all is well or not known. A use of a secret that waits (`use_waits`) comes
+    /// first, as a warning: it is answered within two minutes or not at all.
+    pub fn badge(&self, use_waits: bool) -> Option<Badge> {
+        if use_waits {
+            return Some(Badge::Warning);
+        }
+        match self {
+            Panel::Confirm(_) | Panel::Needs(Needs::Restart(_)) => Some(Badge::Warning),
+            Panel::Alarm(_) => Some(Badge::Destructive),
+            Panel::Needs(_) | Panel::Waiting(..) | Panel::Draft => Some(Badge::Accent),
+            Panel::Well | Panel::Unknown => None,
+        }
+    }
+}
+
+/// The one button the panel's popup offers for what it says (beside "Open TorqOS Settings", which is always there).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PanelButton {
+    /// Confirm the commit (`restart_too`: and a restart is needed as well).
+    Confirm { restart_too: bool },
+    Restart,
+    LogOut,
+    /// Ask the agent about this alarm.
+    AskAgent(String),
+}
+
+impl PanelButton {
+    pub fn label(&self) -> &'static str {
+        match self {
+            PanelButton::Confirm { restart_too: true } => "Confirm, then restart",
+            PanelButton::Confirm { restart_too: false } => "Confirm",
+            PanelButton::Restart => "Restart…",
+            PanelButton::LogOut => "Log out…",
+            PanelButton::AskAgent(_) => "Ask the agent",
+        }
+    }
+}
+
+/// What the panel's popup says (after the heading, `panel_title`) and offers.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PanelPopup {
+    pub text: String,
+    pub button: Option<PanelButton>,
+    /// "Last change: …", only when all is well and there is one.
+    pub last: Option<String>,
+    /// The page "Open TorqOS Settings" opens.
+    pub open: &'static str,
+}
+
+/// The popup's heading.
+pub fn panel_title(glance: &Option<Result<Glance, String>>) -> String {
+    match glance {
+        Some(Ok(g)) => format!("TorqOS {}", g.version),
+        _ => "TorqOS".into(),
+    }
+}
+
+/// The popup for a look at the machine, `now` seconds since the epoch (for the countdown).
+pub fn panel_popup(glance: &Option<Result<Glance, String>>, now: i64) -> PanelPopup {
+    let mut p = PanelPopup { text: String::new(), button: None, last: None, open: "overview" };
+    match Panel::of(glance) {
+        Panel::Confirm(c) => {
+            let left = c.at.map(|at| (at - now).max(0)).map(|s| format!("{}:{:02} left. ", s / 60, s % 60)).unwrap_or_default();
+            p.text = format!("{left}Change #{} rolls back at {} unless you confirm it.", c.seq, c.deadline);
+            let restart_too = matches!(glance, Some(Ok(g)) if matches!(g.needs, Needs::Restart(_)));
+            p.button = Some(PanelButton::Confirm { restart_too });
+        }
+        Panel::Needs(n) => {
+            p.text = n.line().unwrap_or_default();
+            p.button = Some(if matches!(n, Needs::Restart(_)) { PanelButton::Restart } else { PanelButton::LogOut });
+        }
+        Panel::Alarm(a) => {
+            p.text = a.to_string();
+            p.button = Some(PanelButton::AskAgent(a.to_string()));
+        }
+        Panel::Waiting(n, tainted) => {
+            p.open = "proposals";
+            let what = if n == 1 { "A proposal is".to_string() } else { format!("{n} proposals are") };
+            p.text = format!("{what} waiting for you to approve or refuse.");
+            if tainted > 0 {
+                p.text.push_str(&format!(" {tainted} came from a session that read untrusted text."));
+            }
+        }
+        Panel::Draft => {
+            p.open = "changes";
+            p.text = "You have changes not yet committed.".into();
+        }
+        Panel::Well => {
+            p.text = "This machine is exactly as its history says.".into();
+            if let Some(Ok(Glance { last: Some(last), .. })) = glance {
+                p.last = Some(format!("Last change: {last}"));
+            }
+        }
+        Panel::Unknown => {
+            p.text = match glance {
+                Some(Err(e)) => format!("The broker did not answer: {e}"),
+                _ => "Asking the broker…".into(),
+            };
+        }
+    }
+    p
+}
+
 /// The question to put to the agent from what a person typed (None: nothing is asked: it is empty, or the agent
 /// is working and takes one question at a time).
 pub fn question_to_ask(typed: &str, working: bool) -> Option<String> {
@@ -3970,6 +4082,72 @@ mod moved_decisions {
         assert_eq!(question_to_ask("  what is up \n", false).as_deref(), Some("what is up"));
         assert_eq!(question_to_ask("  \n", false), None);
         assert_eq!(question_to_ask("hello", true), None);
+    }
+
+
+    /// The panel's popup and badge for each state: the text, the one button it offers, the page it opens.
+    #[test]
+    fn the_panels_popup_and_badge_for_each_state() {
+        let glance = || Glance { version: "0.4.0".into(), last: Some("Added vim".into()), ..glance() };
+        let pop = |g: Glance| panel_popup(&Some(Ok(g)), 1000);
+        let badge = |g: Glance| Panel::of(&Some(Ok(g))).badge(false);
+        // Well: said so, with the last change; no badge, no button.
+        let p = pop(glance());
+        assert_eq!((p.text.as_str(), p.last.as_deref(), p.open, p.button.clone()), ("This machine is exactly as its history says.", Some("Last change: Added vim"), "overview", None));
+        assert_eq!(badge(glance()), None);
+        assert_eq!(panel_title(&Some(Ok(glance()))), "TorqOS 0.4.0");
+        assert_eq!(panel_title(&None), "TorqOS");
+        // Unknown.
+        assert_eq!(panel_popup(&None, 0).text, "Asking the broker…");
+        assert_eq!(panel_popup(&Some(Err("down".into())), 0).text, "The broker did not answer: down");
+        assert_eq!(Panel::of(&None).badge(false), None);
+        // A commit to confirm: the countdown (never negative), "then restart" when a restart is needed too.
+        let confirm = Confirm { seq: 7, deadline: "12:30".into(), at: Some(1000 + 125) };
+        let mut g = glance();
+        g.confirm = Some(confirm.clone());
+        let p = pop(g.clone());
+        assert_eq!(p.text, "2:05 left. Change #7 rolls back at 12:30 unless you confirm it.");
+        assert_eq!(p.button, Some(PanelButton::Confirm { restart_too: false }));
+        assert_eq!(badge(g.clone()), Some(Badge::Warning));
+        g.needs = Needs::Restart(vec!["kernel"]);
+        assert_eq!(pop(g.clone()).button.unwrap().label(), "Confirm, then restart");
+        g.confirm = Some(Confirm { at: Some(5), ..confirm.clone() });
+        assert!(pop(g.clone()).text.starts_with("0:00 left. "));
+        g.confirm = Some(Confirm { at: None, ..confirm });
+        assert!(pop(g).text.starts_with("Change #7 rolls back"), "no deadline in seconds: no countdown");
+        // Needs: restart is a warning, a log out is not; the button follows.
+        let mut g = glance();
+        g.needs = Needs::Restart(vec!["kernel"]);
+        assert_eq!((pop(g.clone()).button, badge(g)), (Some(PanelButton::Restart), Some(Badge::Warning)));
+        let mut g = glance();
+        g.needs = Needs::LogOut(vec!["desktop"]);
+        let p = pop(g.clone());
+        assert_eq!((p.button.clone().unwrap().label(), badge(g)), ("Log out…", Some(Badge::Accent)));
+        assert_eq!(p.text, "Log out and back in to use the new desktop.");
+        // Only for the next start: said elsewhere, not asked here.
+        let mut g = glance();
+        g.needs = Needs::NextStart(vec!["kernel"]);
+        assert_eq!((pop(g.clone()).button, badge(g)), (None, None));
+        // An alarm: the agent can look at it.
+        let mut g = glance();
+        g.alarm = Some("disk is full".into());
+        let p = pop(g.clone());
+        assert_eq!((p.text.as_str(), p.button.clone().unwrap().label(), badge(g)), ("disk is full", "Ask the agent", Some(Badge::Destructive)));
+        assert_eq!(p.button, Some(PanelButton::AskAgent("disk is full".into())));
+        // Proposals waiting, and the untrusted ones said.
+        let mut g = glance();
+        g.waiting = (1, 0);
+        let p = pop(g.clone());
+        assert_eq!((p.text.as_str(), p.open, badge(g.clone())), ("A proposal is waiting for you to approve or refuse.", "proposals", Some(Badge::Accent)));
+        g.waiting = (3, 2);
+        assert_eq!(pop(g).text, "3 proposals are waiting for you to approve or refuse. 2 came from a session that read untrusted text.");
+        // A draft.
+        let mut g = glance();
+        g.draft = true;
+        let p = pop(g.clone());
+        assert_eq!((p.text.as_str(), p.open, badge(g)), ("You have changes not yet committed.", "changes", Some(Badge::Accent)));
+        // A use of a secret that waits comes first.
+        assert_eq!(Panel::Well.badge(true), Some(Badge::Warning));
     }
 
     #[test]
