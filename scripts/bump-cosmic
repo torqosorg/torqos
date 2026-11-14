@@ -22,7 +22,7 @@ for p in "${pkgs[@]}"; do
 done
 if [ -z "$share" ]; then
   echo "bump-cosmic: WARNING: no COSMIC package could be fetched from the cache; KNOWN_COMPONENTS NOT CHECKED." >&2
-  echo "  Run by hand: TORQ_COSMIC_SHARE=<dir>:<dir> cargo test -p torqcli known_components_cover" >&2
+  echo "  Run by hand: TORQ_COSMIC_SHARE=<dir>:<dir> cargo test --manifest-path cli/Cargo.toml known_components_cover" >&2
   exit 0
 fi
 TORQ_COSMIC_SHARE="${share#:}" nix develop --command cargo test --manifest-path cli/Cargo.toml known_components_cover \
