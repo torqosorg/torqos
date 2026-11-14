@@ -2812,6 +2812,18 @@ vouches for, that only proposes, every change ledgered and undone in one command
   (`modules/agent-units-check.nix`). The evaluation's assertions stay: they answer at `commit check`, with
   the option's name. `checks.agent-units`, `checks.agent-assertions`; the VM subtest for the key is written
   and has not run. Open: KNOWN-GAPS 6zzo.
+- **Amended: whose the agent's unit files are (2026-11-14, later the same day).** The check above refused one
+  key, `Delegate`, and a package's drop-in could still set the agent's user, its command, its credential or
+  its sandbox. Decided: no list of keys (it has no end) but whose the files are. The module tells the check
+  each of its units and the one store file NixOS makes of it; in the built directory each must be a link to
+  exactly that file, nothing else may be named as the agent's units are (a mask to `/dev/null` aside), and no
+  drop-in directory that systemd applies to them may be there: their own, the templates', `service.d`,
+  `socket.d` and the dash-cut ones. Sound because NixOS links a configuration's unit to its own derivation
+  and a package's to the package, and puts every drop-in in a directory: the link's text and the directory's
+  being there are the whole of it. Not chosen: comparing each unit's merged text with what the module expects
+  (systemd's merging would have to be done again here). Not judged: the configuration's own text, which is a
+  ledgered commit, and what root writes on the running machine. `checks.agent-units` (run, the flake's hosts
+  included). Open: KNOWN-GAPS 6zzo.
 
 ## ADR-052 — Secrets the agent may use and never read: `torq-secrets`
 - **Status:** accepted, 2026-11-10; its four questions settled by the owner the same day (below). Proposed

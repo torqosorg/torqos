@@ -156,6 +156,10 @@ alice@torq> sudo journalctl -u torq-agent@alice.service
 … torq-agent: the model's key, /var/lib/torq/secrets/model.key, is missing …
 ```
 
+A package may not change your agent's service. A TorqOS machine with a resident agent does not build if a
+package brings a unit file or a drop-in for `torq-agent@<you>.service`, its socket or `torq-agent-key@<you>.service`
+(or one that applies to every service, `service.d`): the build's log names the file.
+
 ## Claude Code, as your agent
 
 Claude Code can run as your agent instead of as you: in your agent's account, seeing only the folder you

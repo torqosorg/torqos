@@ -28,6 +28,12 @@ let
   # inside a built package, which evaluation cannot read. Those are read in the units as built (unitsCheck).
   delegatedUnits = lib.attrNames (lib.filterAttrs (n: u: lib.hasPrefix "torq-agent@" n && lib.hasInfix "Delegate" (if u.text or null == null then "" else u.text)) config.systemd.units);
   unitsCheck = import ./agent-units-check.nix { inherit pkgs; };
+  # The agent's units as this module writes them (below), each with the one file NixOS makes of it: what the
+  # check on the units as built holds the finished directory to. Nothing else there may be named as they are,
+  # and none may have a drop-in.
+  ownUnits = lib.concatMap (person: [ "torq-agent@${person}.service" "torq-agent@${person}.socket" ]
+    ++ lib.optional (modelKey != null) "torq-agent-key@${person}.service") (lib.attrValues agents);
+  expectedUnits = lib.genAttrs ownUnits (name: "${config.systemd.units.${name}.unit}/${name}");
   residents = lib.optionalAttrs resident (lib.listToAttrs (map (p: lib.nameValuePair (residentOf p) p) (lib.filter fits cfg.people)));
   # Claude Code for the agents (ADR-051 5, `torq agent tools`): the version dev mode pins (modules/dev.nix), unfree,
   # so only where `torq unfree` allows it — else the assertion below says so, and nothing unfree is evaluated.
@@ -308,7 +314,10 @@ in
     # files and this configuration's are together; the system's build depends on it, so a system that fails it
     # is never built or switched to (modules/agent-units-check.nix). `commit check` only evaluates: it is the
     # build that refuses.
-    system.checks = [ (unitsCheck config.environment.etc."systemd/system".source) ];
+    # And, since 2026-11-14, whose the files are: the agent's units are there as exactly the files this module
+    # writes (expectedUnits), with no drop-in and no other unit of their names, so nothing a package brings can
+    # change who the agent runs as, what it runs, its credentials or its sandbox.
+    system.checks = [ (unitsCheck { units = config.environment.etc."systemd/system".source; expected = expectedUnits; }) ];
     # Only the person may connect (the socket theirs, 0600, in a directory root's) — and the service
     # answers only them, by the kernel's word (SO_PEERCRED), root included.
     # Each person's resident agent's own account (ADR-051 3, amended 2026-11-11): hidden — no password, no login,
