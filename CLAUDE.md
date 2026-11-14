@@ -160,7 +160,6 @@ released (doctor mode, proposals, session trust); the resident agent and its des
   touch Secure Boot keys, or run arbitrary root commands. Those are user-only, done by a person at a terminal.
 - Record significant design choices in `docs/DECISIONS.md` (short ADR entries).
 - Keep `docs/` in sync when behaviour changes.
-- Things in this scaffold marked `TODO(M1)` / `TODO(M2)` are the intended next steps.
 
 ## Current status (read this first), 2026-11-14
 
@@ -203,7 +202,9 @@ released (doctor mode, proposals, session trust); the resident agent and its des
 ## Working here
 
 - `commit check` evaluates the candidate; it does not build (`cli/src/grammar.rs`).
-- **Way of working:** small steps; an independent reviewer behind every meaningful change;
+- **Way of working:** small steps; every diff is read by the controlling session before it merges, with
+  independent readers for bulk or for a security boundary; one full `nix flake check` on the check host
+  for each merged chunk;
   mutation-check new guards (break them, see a test fail); prove claims in the Nix sandbox and a VM test.
 - **NixOS's own tools for changing a machine are gone** (ADR-032): the broker builds and switches with
   `nix` itself. Never build `/etc/nixos` or any configuration other than the broker's.
