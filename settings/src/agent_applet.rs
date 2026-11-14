@@ -59,6 +59,8 @@ struct Applet {
     question: String,
     /// What a Stop or the like said, until the next action.
     note: Option<String>,
+    /// Which conversation of the agent's the last look saw: another one now is a Forget from elsewhere.
+    remembered: Option<conversation::Seen>,
     /// The compositor's activation tokens, so the window opened is raised, not left behind.
     tokens: Option<TokenSender<TokenRequest>>,
     /// The Decline in flight and torqcli's question for it, waiting for the person's answer.
@@ -212,7 +214,7 @@ impl cosmic::Application for Applet {
 
     fn init(core: cosmic::Core, _flags: ()) -> (Self, Task<cosmic::Action<Message>>) {
         let client = Client::mine();
-        let app = Applet { core, popup: None, client: client.clone(), reach: Ok(None), brain: None, fates: vec![], looking: true, talk: Conversation::default(), question: String::new(), note: None, tokens: None, declining: Default::default() };
+        let app = Applet { core, popup: None, client: client.clone(), reach: Ok(None), brain: None, fates: vec![], looking: true, talk: Conversation::default(), question: String::new(), note: None, remembered: None, tokens: None, declining: Default::default() };
         (app, cosmic::task::future(async move { Message::Looked(agentkit::look(client, vec![], vec![]).await) }))
     }
 
@@ -239,6 +241,12 @@ impl cosmic::Application for Applet {
             }
             Message::Looked(l) => {
                 self.looking = false;
+                if let Ok(Some(st)) = &l.reach {
+                    if conversation::at_look(&mut self.remembered, st, self.talk.working()) {
+                        self.talk.clear();
+                        self.note = Some("Your agent forgot the conversation (Forget, from elsewhere): what was shown here is gone from its memory.".into());
+                    }
+                }
                 self.client = l.client;
                 self.reach = l.reach;
                 self.brain = l.brain;

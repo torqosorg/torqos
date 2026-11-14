@@ -269,11 +269,43 @@ impl Turn {
     }
 }
 
-/// Whether the agent's memory was erased since the last look (by Forget, from anywhere): it never shrinks
-/// otherwise — it keeps its last turns, and drops the oldest as it adds one. A window then stops showing
-/// the forgotten conversation as current.
-pub fn forgotten(before: Option<usize>, now: usize) -> bool {
-    before.is_some_and(|b| now < b)
+/// Which conversation of the agent's a window last saw, and how long it was.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Seen {
+    conversation: u64,
+    turns: usize,
+}
+
+impl Seen {
+    pub fn of(st: &Status) -> Seen {
+        Seen { conversation: st.conversation, turns: st.turns }
+    }
+
+    /// The window's own Forget: it knows the conversation is empty (the number it will see next is not known yet,
+    /// so the next look settles it without a reset: see `forgotten`).
+    pub fn empty() -> Seen {
+        Seen { conversation: 0, turns: 0 }
+    }
+}
+
+/// Whether the agent's conversation is another one than `before` saw (a Forget, from anywhere). By the
+/// conversation's number when both sides name one; else, for an older agent that does not, by the memory
+/// shrinking, which it never does otherwise (it keeps its last turns, and drops the oldest as it adds one).
+pub fn forgotten(before: Option<Seen>, now: Seen) -> bool {
+    before.is_some_and(|b| if b.conversation != 0 && now.conversation != 0 { b.conversation != now.conversation } else { now.turns < b.turns })
+}
+
+/// What a window does at a look at `st`: whether its view of the conversation is of an older one and must
+/// be reset. `seen` is updated, but not while the window's own task runs: a Forget from elsewhere then
+/// would be taken as the count and missed, and no reset is done mid-task (it would cut the answer being
+/// heard).
+pub fn at_look(seen: &mut Option<Seen>, st: &Status, working: bool) -> bool {
+    if working {
+        return false;
+    }
+    let reset = forgotten(*seen, Seen::of(st));
+    *seen = Some(Seen::of(st));
+    reset
 }
 
 #[cfg(test)]
@@ -348,11 +380,11 @@ mod tests {
     /// not set up is said, quietly.
     #[test]
     fn at_a_glance() {
-        let idle = |turns| Ok(Some(Status { running: false, turns }));
+        let idle = |turns| Ok(Some(Status { running: false, turns, conversation: 0 }));
         assert_eq!(glance(&idle(0), None), ("Idle · remembers nothing yet".into(), Mood::Quiet));
         assert_eq!(glance(&idle(3), None), ("Idle · remembers 3 turns".into(), Mood::Quiet));
         assert_eq!(glance(&Ok(None), None), ("Idle".into(), Mood::Quiet), "not running: not asked");
-        assert_eq!(glance(&Ok(Some(Status { running: true, turns: 1 })), None).1, Mood::Working, "a task from anywhere: working");
+        assert_eq!(glance(&Ok(Some(Status { running: true, turns: 1, conversation: 0 })), None).1, Mood::Working, "a task from anywhere: working");
         assert_eq!(glance(&Err(Unreachable::NoAgent("torq-agent-me".into())), None), ("The agent is not set up for you".into(), Mood::Quiet));
         assert_eq!(glance(&Err(Unreachable::Silent("x".into())), None).1, Mood::Trouble);
         let mut c = Conversation::default();
@@ -401,8 +433,33 @@ mod tests {
 
     #[test]
     fn forgotten_elsewhere() {
-        assert!(forgotten(Some(3), 0) && forgotten(Some(8), 1));
-        assert!(!forgotten(None, 0), "never seen: nothing to say");
-        assert!(!forgotten(Some(8), 8) && !forgotten(Some(2), 3));
+        let seen = |conversation, turns| Seen { conversation, turns };
+        // By the number: another conversation, whatever its length (a Forget and then as many turns again is caught).
+        assert!(forgotten(Some(seen(1, 3)), seen(2, 3)) && forgotten(Some(seen(1, 3)), seen(2, 0)));
+        assert!(!forgotten(Some(seen(2, 3)), seen(2, 4)) && !forgotten(Some(seen(2, 8)), seen(2, 8)));
+        assert!(!forgotten(None, seen(2, 0)), "never seen: nothing to say");
+        // An older agent names none (0): by the memory shrinking, as before.
+        assert!(forgotten(Some(seen(0, 3)), seen(0, 0)) && forgotten(Some(seen(0, 8)), seen(0, 1)));
+        assert!(!forgotten(Some(seen(0, 8)), seen(0, 8)) && !forgotten(Some(seen(0, 2)), seen(0, 3)));
+        // An agent updated under a window: its number is not a Forget.
+        assert!(!forgotten(Some(seen(0, 3)), seen(5, 3)) && !forgotten(Some(seen(5, 3)), seen(0, 3)));
+        assert!(!forgotten(Some(Seen::empty()), seen(5, 0)), "the window's own Forget settles at the next look");
+    }
+
+    #[test]
+    fn a_look_resets_a_view_of_an_older_conversation() {
+        let st = |conversation, turns| Status { running: false, turns, conversation };
+        let mut seen = None;
+        assert!(!at_look(&mut seen, &st(1, 2), false), "the first look: nothing to reset");
+        assert!(!at_look(&mut seen, &st(1, 3), false));
+        assert!(at_look(&mut seen, &st(2, 3), false), "forgotten elsewhere, and as long again");
+        assert!(!at_look(&mut seen, &st(2, 3), false), "said once");
+        // While the window's own task runs, nothing is reset and nothing noted: the Forget is seen after it.
+        assert!(!at_look(&mut seen, &st(3, 0), true) && seen == Some(Seen { conversation: 2, turns: 3 }));
+        assert!(at_look(&mut seen, &st(3, 0), false));
+        // An older agent: by the count.
+        let mut old = None;
+        at_look(&mut old, &st(0, 4), false);
+        assert!(at_look(&mut old, &st(0, 0), false));
     }
 }

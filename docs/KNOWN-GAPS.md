@@ -1377,6 +1377,17 @@ Its §5 lists claims without a test.
      client, the hand-over of a second window, and `request system agent forget`; its screenshots show no
      applet drawn in the panel of the test's software-rendered COSMIC). The Agent page is not opened in a VM.
    - **The memory is shown as a count**, not its turns: the service says how many; showing them is later.
+   - **A Forget is told by the conversation's number** (the status's `conversation`, a counter in a file beside the
+     agent's memory that changes at every Forget and says nothing of what was said): an open window or the applet
+     resets its view of an older conversation at its next look, but not while its own task runs (it is seen
+     after). An agent that names none (older) is told by its memory shrinking, which misses a Forget followed by
+     as many turns before the next look. `torq ask` holds no view, so there is nothing for it to reset.
+   - **While a proposal waits, the ledger is read whole at each look** (about every few seconds, only while the
+     conversation names a proposal not yet final). An incremental read needs a broker change: `log` takes only
+     `--brief`, so it would need a range (`--after <seq>`) that also answers the hash of the entry before it
+     and the chain's tip, so a reader can check what it adds on to what it already holds. torqcli takes the
+     broker's answer as it is today (`verify` is the broker's); no weaker read is offered instead. Applied and
+     declined proposals are already not looked up again (`fates_to_look_up`).
 
 6zzn. **The agent's entry points and Decline buttons (ADR-051 4, step 4, built 2026-11-10, `tests/desktop-agent.nix`).** Open:
    - **The key is Super+Shift+A** (the owner): Super+A stays COSMIC's App Library. Super+Shift+A is bound to

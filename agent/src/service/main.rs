@@ -148,9 +148,9 @@ impl Agent {
         *self.running.lock().unwrap_or_else(|p| p.into_inner())
     }
 
-    /// Whether a task runs, and how many turns the conversation keeps.
+    /// Whether a task runs, how many turns the conversation keeps, and which conversation it is (it changes at a forget).
     fn status(&self) -> Event {
-        Event::Status { running: self.running().is_some(), turns: self.memory.recent().len() }
+        Event::Status { running: self.running().is_some(), turns: self.memory.recent().len(), conversation: self.memory.generation() }
     }
 
     /// Serve one connection: the person's, or no one's. Every request's answer ends with a last frame
@@ -579,7 +579,7 @@ printf '%s\n' '{"type":"called","tool":"read_journal"}' '{"type":"done","exit":0
         talk(&sock, &[ask("and then?")], done);
         let tasks: Vec<Task> = std::fs::read_to_string(d.path().join("tasks")).unwrap().lines().map(|l| serde_json::from_str(l).unwrap()).collect();
         assert_eq!(tasks[1].memory, vec![Turn { question: "why?".into(), answer: Some("fine".into()) }], "the conversation's turns go with the next task");
-        assert_eq!(talk(&sock, &[Request::Status], |e| matches!(e, Event::Status { .. })), [Event::Status { running: false, turns: 2 }], "status says how much it remembers");
+        assert_eq!(talk(&sock, &[Request::Status], |e| matches!(e, Event::Status { .. })), [Event::Status { running: false, turns: 2, conversation: 1 }], "status says how much it remembers");
     }
 
     #[test]
@@ -603,9 +603,9 @@ printf '%s\n' '{"type":"called","tool":"read_journal"}' '{"type":"done","exit":0
         }
         assert!(a.running().is_some());
         let busy = talk(&sock, &[ask("another"), Request::Status], |e| matches!(e, Event::Status { .. }));
-        assert_eq!(busy, vec![Event::Error { text: "a task is running already (one at a time): stop it, or wait".into() }, Event::Done { exit: 1 }, Event::Status { running: true, turns: 0 }]);
+        assert_eq!(busy, vec![Event::Error { text: "a task is running already (one at a time): stop it, or wait".into() }, Event::Done { exit: 1 }, Event::Status { running: true, turns: 0, conversation: 1 }]);
         let stopped = talk(&sock, &[Request::Stop], |e| matches!(e, Event::Status { .. }));
-        assert_eq!(stopped, vec![Event::Status { running: false, turns: 0 }]);
+        assert_eq!(stopped, vec![Event::Status { running: false, turns: 0, conversation: 1 }]);
         let child = std::fs::read_to_string(d.path().join("child")).unwrap();
         assert!(!Path::new(&format!("/proc/{}", child.trim())).exists(), "the task's child is gone with it");
         let mut r = BufReader::new(c);
@@ -754,7 +754,7 @@ echo ready > "$HOME/ready"; wait"#,
             assert!(t.elapsed() < Duration::from_secs(10), "the helper never made itself undumpable");
             std::thread::sleep(Duration::from_millis(20));
         }
-        assert_eq!(talk(&sock, &[Request::Stop], |e| matches!(e, Event::Status { .. })), [Event::Status { running: false, turns: 0 }]);
+        assert_eq!(talk(&sock, &[Request::Stop], |e| matches!(e, Event::Status { .. })), [Event::Status { running: false, turns: 0, conversation: 1 }]);
         assert!(gone(own), "the process in a group of its own is gone");
         assert!(gone(undumpable), "the undumpable process is gone");
         let mut r = BufReader::new(c);
@@ -831,6 +831,7 @@ printf '%s\n' '{{"type":"say","text":"bye"}}'"#,
         let s = torq_agent::session::Session::start(&dir, "my whole question", "m", "0").unwrap();
         assert!(s.record.exists());
         assert_eq!(talk(&sock, &[Request::Forget], |e| matches!(e, Event::Forgotten)), [Event::Forgotten]);
+        assert_eq!(talk(&sock, &[Request::Status], |e| matches!(e, Event::Status { .. })), [Event::Status { running: false, turns: 0, conversation: 2 }], "status names another conversation after a forget");
         assert!(!s.record.exists(), "forgotten with the memory");
     }
 
@@ -872,7 +873,7 @@ printf '%s\n' '{{"type":"say","text":"bye"}}'"#,
         let seen = talk(&sock, &[ask("one"), ask("two")], |e| matches!(e, Event::Done { .. }));
         let dones = seen.iter().filter(|e| matches!(e, Event::Done { .. })).count();
         assert_eq!(dones, 1, "{seen:?}");
-        assert!(seen.contains(&Event::Status { running: true, turns: 0 }), "{seen:?}");
+        assert!(seen.contains(&Event::Status { running: true, turns: 0, conversation: 1 }), "{seen:?}");
         assert_eq!(seen.last(), Some(&Event::Done { exit: 0 }), "the first ask's own end: {seen:?}");
         assert!(seen.contains(&Event::Say { text: "first".into() }));
         assert!(a.running().is_none());

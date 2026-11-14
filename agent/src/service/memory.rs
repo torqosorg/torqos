@@ -67,8 +67,31 @@ impl Memory {
         self.write(&bounded(turns))
     }
 
+    /// Which conversation this is (never 0): it changes at every `forget`, so a window that saw another one
+    /// knows. A counter in its own file beside the memory, not derived from the turns, so it says nothing of
+    /// them; a missing or unreadable file is the first.
+    pub fn generation(&self) -> u64 {
+        std::fs::read_to_string(self.generation_file()).ok().and_then(|t| t.trim().parse::<u64>().ok()).filter(|&g| g > 0).unwrap_or(1)
+    }
+
+    fn generation_file(&self) -> PathBuf {
+        self.file.with_file_name("generation")
+    }
+
     /// Forget everything.
     pub fn forget(&self) -> Result<()> {
+        // The new number first: a failure leaves the memory in place, and a window told "another conversation"
+        // for a memory not erased is only reset, never misled.
+        let next = self.generation().saturating_add(1);
+        let (file, new) = (self.generation_file(), self.generation_file().with_extension("new"));
+        let _ = std::fs::remove_file(&new);
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            let mut f = std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600).custom_flags(rustix::fs::OFlags::NOFOLLOW.bits() as i32).open(&new).with_context(|| format!("writing {}", new.display()))?;
+            f.write_all(next.to_string().as_bytes())?;
+            f.sync_all()?;
+        }
+        std::fs::rename(&new, &file).with_context(|| format!("writing {}", file.display()))?;
         match std::fs::remove_file(&self.file) {
             Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e).with_context(|| format!("removing {}", self.file.display())),
             _ => Ok(()),
@@ -161,5 +184,22 @@ mod tests {
         m.forget().unwrap();
         assert_eq!(m.recent(), vec![]);
         m.forget().unwrap();
+    }
+
+    /// The conversation's number changes at every forget and at nothing else; it is a counter, not the turns.
+    #[test]
+    fn the_conversations_number_changes_at_a_forget() {
+        let d = tempfile::tempdir().unwrap();
+        let m = Memory::new(d.path());
+        assert_eq!(m.generation(), 1, "the first");
+        m.remember(turn("q", Some("a"))).unwrap();
+        assert_eq!(m.generation(), 1, "a turn does not change it");
+        m.forget().unwrap();
+        assert_eq!(m.generation(), 2);
+        assert_eq!(Memory::new(d.path()).generation(), 2, "it survives a restart");
+        m.forget().unwrap();
+        assert_eq!(m.generation(), 3, "a forget of nothing is one too: a window is only reset");
+        std::fs::write(d.path().join("generation"), "junk").unwrap();
+        assert_eq!(m.generation(), 1, "unreadable: the first, never 0");
     }
 }

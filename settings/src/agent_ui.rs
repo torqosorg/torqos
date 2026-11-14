@@ -98,8 +98,8 @@ struct Window {
     reach: Result<Option<Status>, Unreachable>,
     brain: Option<Brain>,
     fates: Vec<(u64, Fate)>,
-    /// How many turns the agent remembered at the last look: fewer now is a Forget from elsewhere.
-    remembered: Option<usize>,
+    /// Which conversation of the agent's, and how long, the last look saw: another one now is a Forget from elsewhere.
+    remembered: Option<conversation::Seen>,
     looking: bool,
     talk: Conversation,
     question: String,
@@ -288,14 +288,9 @@ impl cosmic::Application for Window {
                 self.looking = false;
                 if let Ok(Some(st)) = &l.reach {
                     // Forgotten elsewhere (the Agent page, torq ask --forget): not shown as current any more.
-                    if conversation::forgotten(self.remembered, st.turns) && !self.talk.working() {
+                    if conversation::at_look(&mut self.remembered, st, self.talk.working()) {
                         self.talk.clear();
                         self.note = Some(("Your agent forgot the conversation (Forget, from elsewhere): what was shown here is gone from its memory.".into(), false));
-                    }
-                    // Not while its own task runs: a Forget from elsewhere then would be taken as the count, and missed
-                    //. The count only grows by this window's turns otherwise.
-                    if !self.talk.working() {
-                        self.remembered = Some(st.turns);
                     }
                 }
                 self.client = l.client;
@@ -345,7 +340,7 @@ impl cosmic::Application for Window {
                 self.note = Some(match r {
                     Ok(()) => {
                         self.talk.clear();
-                        self.remembered = Some(0);
+                        self.remembered = Some(conversation::Seen::empty());
                         ("Your agent has forgotten the conversation.".into(), false)
                     }
                     Err(e) => (e, true),

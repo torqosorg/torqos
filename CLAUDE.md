@@ -182,8 +182,8 @@ released (doctor mode, proposals, session trust); the resident agent and its des
   `torq-mcp` exist on `main`. Doctor is off by default, no model ships, and no real model, and no real
   Claude Code, has ever been tried (the tests use a scripted endpoint and a stand-in MCP client). The
   default allow-list is the owner's own packages.
-- **Tests.** Unit tests are `#[test]` functions: torqcli 472, broker 337 (+1 ignored, across its test
-  binaries), wire 23, secrets 15, agent 71 (+1 ignored) (run 2026-11-14). The
+- **Tests.** Unit tests are `#[test]` functions: torqcli 473, broker 337 (+1 ignored, across its test
+  binaries), wire 23, secrets 15, agent 72 (+1 ignored) (run 2026-11-14). The
   `settings/` crate has no tests of its own; it is type-checked with `nix develop .#torq-settings`.
   VM tests are `checks` in `flake.nix`, one file each in `tests/`. CI's `test` workflow runs on pull
   requests, by hand and inside each release, **not on pushes to `main`**, and GitHub does not run the

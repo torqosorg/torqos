@@ -4378,8 +4378,8 @@ mod moved_decisions {
     #[test]
     fn the_agent_pages_service_model_and_memory() {
         use crate::agent::client::Status;
-        let idle = Ok(Status { running: false, turns: 0 });
-        let busy = Ok(Status { running: true, turns: 1 });
+        let idle = Ok(Status { running: false, turns: 0, conversation: 0 });
+        let busy = Ok(Status { running: true, turns: 1, conversation: 0 });
         assert!(agent_service_line(None, true, None).starts_with("Not set up for you"));
         assert!(agent_service_line(Some("a"), false, None).starts_with("Not on this machine"));
         assert_eq!(agent_service_line(Some("a"), true, Some(&busy)), "Working on a question");
@@ -4391,7 +4391,7 @@ mod moved_decisions {
         assert_eq!(agent_model(Some(&b)), (b.line(), "http://x".to_string(), "Yes"));
         assert_eq!(agent_memory(Some(&idle), false), Some(("It remembers nothing of your conversation".into(), true)));
         assert_eq!(agent_memory(Some(&busy), true), Some(("It remembers 1 turn of your conversation".into(), false)));
-        assert_eq!(agent_memory(Some(&Ok(Status { running: false, turns: 4 })), true).unwrap().0, "It remembers 4 turns of your conversation");
+        assert_eq!(agent_memory(Some(&Ok(Status { running: false, turns: 4, conversation: 0 })), true).unwrap().0, "It remembers 4 turns of your conversation");
         assert_eq!(agent_memory(None, true).map(|m| m.1), Some(true));
         assert_eq!(agent_memory(None, false), None);
         assert_eq!(agent_memory(Some(&Err("x".into())), true), None);

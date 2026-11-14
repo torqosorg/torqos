@@ -68,6 +68,11 @@ pub enum Event {
         /// How many turns of the conversation it remembers (ADR-051 9: shown on the Agent page).
         #[serde(default)]
         turns: usize,
+        /// Which conversation this is: a number that changes whenever the conversation is forgotten, so a window
+        /// that last saw another one knows its view is old. It says nothing of what was said; absent (0) from an
+        /// older agent, which cannot tell.
+        #[serde(default)]
+        conversation: u64,
     },
     /// The conversation is forgotten.
     Forgotten,
@@ -124,7 +129,7 @@ mod tests {
             (Event::Tainted { why: "context".into() }, r#"{"type":"tainted","why":"context"}"#),
             (Event::Error { text: "no".into() }, r#"{"type":"error","text":"no"}"#),
             (Event::Done { exit: 137 }, r#"{"type":"done","exit":137}"#),
-            (Event::Status { running: false, turns: 3 }, r#"{"type":"status","running":false,"turns":3}"#),
+            (Event::Status { running: false, turns: 3, conversation: 5 }, r#"{"type":"status","running":false,"turns":3,"conversation":5}"#),
             (Event::Forgotten, r#"{"type":"forgotten"}"#),
         ] {
             assert_eq!(serde_json::to_string(&e).unwrap(), line);
@@ -147,7 +152,7 @@ mod tests {
     #[test]
     fn what_a_task_may_say() {
         assert!(Event::Say { text: String::new() }.from_task() && Event::Proposed { seq: 1 }.from_task());
-        for e in [Event::Done { exit: 0 }, Event::Status { running: false, turns: 0 }, Event::Forgotten] {
+        for e in [Event::Done { exit: 0 }, Event::Status { running: false, turns: 0, conversation: 0 }, Event::Forgotten] {
             assert!(!e.from_task(), "{e:?}");
         }
     }
