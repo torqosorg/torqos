@@ -115,7 +115,10 @@ in
         What the broker runs after each commit: `{flake}` is the config repo at the commit just made
         (`git+file://…?rev=…`: that commit, never the working tree), `{repo}` its path.
         Part of the broker's fixed settings (/etc/torq/broker.json): a root broker refuses any other
-        command from its caller. Tests set it to `true`.
+        command from its caller. Tests set it to `true`. If it fails because Nix found its own cache
+        damaged, the broker removes the cache and runs it once more unless the running system or the
+        system profile moved meanwhile; a command of your own that does something else before it
+        builds must be safe to run twice.
       '';
     };
     # `commit confirmed` (ADR-016). Fixed settings too; overridden only by tests. See

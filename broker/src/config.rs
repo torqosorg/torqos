@@ -303,6 +303,17 @@ pub fn command(program: impl AsRef<std::ffi::OsStr>) -> std::process::Command {
 mod tests {
     use super::*;
 
+    /// The argument at `may_run_again` (lib.rs) rests on this order: nothing but the store is touched before the system
+    /// profile moves, and the switch comes last, each joined by `&&`. Break the order and that argument is void.
+    #[test]
+    fn the_default_rebuild_builds_then_sets_the_profile_then_switches() {
+        let at = |needle: &str| REBUILD.find(needle).unwrap_or_else(|| panic!("{needle} is not in REBUILD"));
+        let (build, set, switch) = (at("nix build"), at("nix-env -p /nix/var/nix/profiles/system --set"), at("switch-to-configuration"));
+        assert!(build < set && set < switch);
+        assert!(REBUILD[build..set].trim_end().ends_with("&&") && REBUILD[set..switch].contains("&& systemd-run"));
+        assert!(!BUILD.contains("nix-env") && !BUILD.contains("switch-to-configuration") && !BUILD.contains("&&"));
+    }
+
     fn fixed() -> Settings {
         Settings {
             repo: "/var/lib/torq/config".into(),

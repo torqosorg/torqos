@@ -273,6 +273,22 @@ const DAMAGE: &[&str] = &["database disk image is malformed", "file is not a dat
 
 /// Whether a command that failed on a damaged cache may be run again: only if it did not change the system
 /// (the links to the running system and the system profile, `before` and `after` it, are the same).
+///
+/// Why the two links are enough (KNOWN-GAPS 6t). Only two commands reach this path (`run_again_if_cache_damaged`'s
+/// callers): `rebuild` (the rebuild setting) and `build_system` (the build setting). On a real machine both are the
+/// module's fixed settings (/etc/torq/broker.json, config.rs `REBUILD` and `BUILD`), never a caller's.
+/// - `BUILD` is one `nix build`: it adds store paths and makes the out-link `state/confirm-system` (a GC root). Run
+///   twice it does the same, so it is safe whatever the links say, and neither link can move.
+/// - `REBUILD` is `nix build` (store paths and a temporary link only), then `nix-env --set` (moves the system profile),
+///   then `switch-to-configuration switch` (activates; moves /run/current-system), each only after the one before
+///   succeeded (`&&`; test `the_default_rebuild_builds_then_sets_the_profile_then_switches`). So it has an effect
+///   beyond the store only after the profile has moved, and the profile link shows that. Where it does not move
+///   (the profile already holds that very system: `nix-env --set` makes no new generation for the same path), what
+///   is left is a `switch` to the system already current or already the boot default, which does the same
+///   again when run again. Nix's own cache is not touched by `nix-env` or by the switch, so a damaged-cache failure
+///   in practice comes from the build step, before any effect.
+/// A command set by hand (`--rebuild-cmd`, in tests, or a changed module option) is the owner's own; one that
+/// acts before it builds is told apart only by what the links show, and the module option says it must be safe to run twice.
 fn may_run_again(before: &(Option<PathBuf>, Option<PathBuf>), after: &(Option<PathBuf>, Option<PathBuf>)) -> bool {
     before == after
 }

@@ -200,6 +200,8 @@
         backup = import ./tests/backup.nix { inherit pkgs self; };
         # How a machine starts: a real EFI partition and its boot menu (ADR-033).
         boot = import ./tests/boot.nix { inherit pkgs self; };
+        # Nix's own caches damaged by a power cut: the broker removes them and builds again, also across a cut (KNOWN-GAPS 6t).
+        nix-cache = import ./tests/nix-cache.nix { inherit pkgs self; };
         tree = import ./tests/tree.nix { inherit pkgs self; };
         accounts = import ./tests/accounts.nix { inherit pkgs self; };
         ssh = import ./tests/ssh.nix { inherit pkgs self; };
