@@ -5,6 +5,10 @@
 # (tests/agent-assertions.nix). No VM: each case is a small directory laid out as NixOS lays out
 # /etc/systemd/system (links into the store), given to the very check the module adds to the system's build.
 # A case that should be refused is built with testBuildFailure, and its log must name the file.
+# And each of the agent's units says, byte for byte, what TorqOS's module means: this configuration's own file
+# with another text (a setting forced in any module, the unit's text or file forced) is refused by the unit and
+# the setting; so are another name for one of the agent's units, and every drop-in directory systemd 260 finds
+# for them.
 #
 # Then the same check as a real configuration carries it (its `system.checks`), with a package that brings such
 # a unit file or drop-in, and without: that configuration's own unit directory, as NixOS builds it (TorqOS's
@@ -26,10 +30,14 @@ let
   # `files` are this configuration's; `brought`, a package's. The two are told apart as NixOS's are: by where
   # each link goes. What the check is told to expect: the agent's units among `files` (unless `expected` says).
   isAgents = n: !(lib.hasInfix "/" n) && (lib.hasPrefix "torq-agent@" n || lib.hasPrefix "torq-agent-key@" n);
-  laid = { name, files, brought ? { }, extra ? "", expected ? null }:
+  # What each expected unit is meant to say (`intended`): its own text among `files`, unless the case says
+  # (one where the configuration was made to write another text than TorqOS's module means).
+  laid = { name, files, brought ? { }, extra ? "", expected ? null, intended ? { } }:
     let
       own = package "${name}-own" files;
       theirs = package "${name}-package" brought;
+      expected' = if expected != null then expected
+        else lib.genAttrs (lib.filter isAgents (lib.attrNames files)) (n: "${own}/lib/systemd/system/${n}");
     in {
       units = pkgs.runCommand "${name}-units" { nativeBuildInputs = [ pkgs.lndir ]; } ''
         mkdir -p $out
@@ -44,8 +52,8 @@ let
         done
         ${extra}
       '';
-      expected = if expected != null then expected
-        else lib.genAttrs (lib.filter isAgents (lib.attrNames files)) (n: "${own}/lib/systemd/system/${n}");
+      expected = expected';
+      intended = lib.mapAttrs (n: _: files.${n} or "") expected' // intended;
     };
   ours = "[Service]\nExecStart=/bin/true\nProtectControlGroups=true\n";
   socket = "[Socket]\nListenStream=/run/x\n";
@@ -77,6 +85,26 @@ let
       grep -q -F ${lib.escapeShellArg ownHeading} "$failed/testBuildFailure.log"
       if grep -q -F ${lib.escapeShellArg delegateHeading} "$failed/testBuildFailure.log"; then
         echo "agent-units: ${args.name}: refused under the Delegate rule too, which this case is not about" >&2
+        cat "$failed/testBuildFailure.log" >&2
+        exit 1
+      fi
+      touch $out
+    '';
+  # Several cases as one, every one of them built. (Not linkFarmFromDrvs: it keeps one derivation of each name,
+  # and cases of one fixture share a name, so all but the last were left unbuilt.)
+  each = name: drvs: pkgs.runCommand name { } "echo ${lib.escapeShellArg (toString drvs)} > $out";
+  # Refused for what a unit says and for nothing else: this configuration's file, with another text than meant.
+  textHeading = "the agent's units say only what TorqOS's own module writes, word for word";
+  changedOnly = args: says:
+    pkgs.runCommand "refused-text-${args.name}" { failed = pkgs.testers.testBuildFailure (check (laid args)); } ''
+      if ! grep -q -F -- ${lib.escapeShellArg says} "$failed/testBuildFailure.log"; then
+        echo "agent-units: ${args.name}: refused, but not saying ${lib.escapeShellArg says}:" >&2
+        cat "$failed/testBuildFailure.log" >&2
+        exit 1
+      fi
+      grep -q -F ${lib.escapeShellArg textHeading} "$failed/testBuildFailure.log"
+      if grep -q -F -e ${lib.escapeShellArg ownHeading} -e ${lib.escapeShellArg delegateHeading} "$failed/testBuildFailure.log"; then
+        echo "agent-units: ${args.name}: refused under another rule too, which this case is not about" >&2
         cat "$failed/testBuildFailure.log" >&2
         exit 1
       fi
@@ -165,6 +193,55 @@ let
           };
         })
       (passesWith { name = "wants"; files = three; extra = "mkdir $out/torq-agent@alice.socket.wants $out/torq-agent-key@alice.service.upholds && ln -s ../x.service $out/torq-agent@alice.socket.wants/"; })
+      # The agent's unit named in another unit's directory of links (a target that wants it): a name, no more.
+      (passesWith { name = "wanted-by-another"; files = three; extra = "mkdir $out/multi-user.target.wants $out/other.service.requires && ln -s ../torq-agent@alice.service $out/multi-user.target.wants/ && ln -s ../torq-agent@alice.socket $out/other.service.requires/"; })
+      # Other units' aliases, and drop-ins cut at a dash that are not the agent's (torq-broker-…, a unit named torq-x@).
+      (passesWith { name = "others-aliases"; files = three; brought = { "other.service" = ours; "torq-broker-.service.d/x.conf" = settings.user; "torq-x@.service.d/x.conf" = settings.user; };
+        extra = "ln -s other.service $out/another.service"; })
+
+      # What the files say (rule 3): this configuration's own file, as expected, with another text than TorqOS's
+      # module means. Said by the unit and the setting, a line the unit has and a line it lacks.
+      (let meant = "[Service]\nExecStart=/bin/true\nUser=torq-resident-alice\nProtectHome=true\n"; in each "says-another-user" (map
+        (changedOnly { name = "says-another-user"; files = three // { "torq-agent@alice.service" = "[Service]\nExecStart=/bin/true\nUser=root\nProtectHome=true\n"; }; intended = { "torq-agent@alice.service" = meant; }; })
+        [ "torq-agent@alice.service: User: the unit as built says \"User=root\", which TorqOS's module does not write"
+          "torq-agent@alice.service: User: the unit as built lacks \"User=torq-resident-alice\", which TorqOS's module writes" ]))
+      (changedOnly { name = "a-line-more"; files = three // { "torq-agent@alice.service" = ours + "ExecStartPre=+/bin/sh -c true\n"; }; intended = { "torq-agent@alice.service" = ours; }; }
+        "torq-agent@alice.service: ExecStartPre: the unit as built says \"ExecStartPre=+/bin/sh -c true\"")
+      (changedOnly { name = "a-line-less"; files = three // { "torq-agent@alice.service" = "[Service]\nExecStart=/bin/true\n"; }; intended = { "torq-agent@alice.service" = ours; }; }
+        "torq-agent@alice.service: ProtectControlGroups: the unit as built lacks \"ProtectControlGroups=true\"")
+      (changedOnly { name = "the-sockets-text"; files = three // { "torq-agent@alice.socket" = "[Socket]\nListenStream=/run/x\nSocketMode=0666\n"; }; intended = { "torq-agent@alice.socket" = socket; }; }
+        "torq-agent@alice.socket: SocketMode: the unit as built says \"SocketMode=0666\"")
+      (changedOnly { name = "the-key-units-text"; files = three // { "torq-agent-key@alice.service" = "[Service]\nExecStart=/bin/sh -c true\nProtectControlGroups=true\n"; }; intended = { "torq-agent-key@alice.service" = ours; }; }
+        "torq-agent-key@alice.service: ExecStart: the unit as built says \"ExecStart=/bin/sh -c true\"")
+      # The same lines in another order (the order of ExecStartPre lines, or of a list emptied and set again, matters).
+      (changedOnly { name = "another-order"; files = three // { "torq-agent@alice.service" = "[Service]\nProtectControlGroups=true\nExecStart=/bin/true\n"; }; intended = { "torq-agent@alice.service" = ours; }; }
+        "torq-agent@alice.service: ")
+      # Only its last line's end differs: still not the text.
+      (changedOnly { name = "byte-for-byte"; files = three // { "torq-agent@alice.service" = ours + "\n"; }; intended = { "torq-agent@alice.service" = ours; }; }
+        "torq-agent@alice.service: the unit as built is not, byte for byte, what TorqOS's module writes")
+
+      # Another name for one of the agent's units (an alias): its drop-ins would be the agent's.
+      (foreignOnly { name = "another-name-for-ours"; files = three; extra = "ln -s torq-agent@alice.service $out/other.service"; }
+        "other.service: another name for the agent's unit torq-agent@alice.service")
+      (foreignOnly { name = "an-alias-of-the-socket"; files = three; extra = "ln -s /etc/systemd/system/torq-agent@alice.socket $out/other.socket"; }
+        "other.socket: another name for the agent's unit torq-agent@alice.socket")
+      (foreignOnly { name = "an-alias-of-the-key-unit"; files = three; extra = "ln -s ./torq-agent-key@alice.service $out/other.service"; }
+        "other.service: another name for the agent's unit torq-agent-key@alice.service")
+      # The directories systemd finds by cutting the name at a dash with the instance kept (systemd 260's
+      # unit_file_find_dirs): torq-@<person>.service.d and its template's, and the key unit's.
+      (foreignOnly { name = "the-dash-with-the-instance"; files = three; brought = { "torq-@alice.service.d/pkg.conf" = settings.user; }; } "torq-@alice.service.d: a drop-in directory systemd also applies")
+      (foreignOnly { name = "the-dash-as-a-template"; files = three; brought = { "torq-@.service.d/pkg.conf" = settings.user; }; } "torq-@.service.d: a drop-in directory systemd also applies")
+      (foreignOnly { name = "the-second-dash-with-the-instance"; files = three; brought = { "torq-agent-@alice.service.d/pkg.conf" = settings.exec-start; }; } "torq-agent-@alice.service.d: a drop-in directory systemd also applies")
+      (foreignOnly { name = "the-second-dash-as-a-template"; files = three; brought = { "torq-agent-@.service.d/pkg.conf" = settings.exec-start; }; } "torq-agent-@.service.d: a drop-in directory systemd also applies")
+      (foreignOnly { name = "the-sockets-dash-with-the-instance"; files = three; brought = { "torq-@alice.socket.d/pkg.conf" = "[Socket]\nSocketMode=0666\n"; }; } "torq-@alice.socket.d: a drop-in directory systemd also applies")
+      (refuses "the-dash-with-the-instance-delegates" { "torq-agent@alice.service" = ours; "torq-@alice.service.d/pkg.conf" = delegates; } "" "torq-@alice.service.d/pkg.conf: Delegate=yes")
+      # Which file, from which package, and why: said for a drop-in for every service.
+      (let args = { name = "every-service-said"; files = three; brought = { "service.d/10-pkg.conf" = settings.environment; }; }; in each "every-service-said" [
+        (foreignOnly args "  service.d/10-pkg.conf: from /nix/store/")
+        (foreignOnly args "-every-service-said-package (the file is /nix/store/")
+        (foreignOnly args "TorqOS refuses it whatever it sets")
+        (foreignOnly { name = "a-drop-in-said"; files = three; brought = { "torq-agent@alice.service.d/10-pkg.conf" = settings.user; }; } "  torq-agent@alice.service.d/10-pkg.conf: from /nix/store/")
+      ])
 
       # Each place systemd reads a drop-in for one of the agent's units, whatever is in it.
       (foreignOnly { name = "the-templates"; files = three; brought = { "torq-agent@.service.d/pkg.conf" = settings.user; }; } "torq-agent@.service.d: a drop-in directory of the agent's units")
@@ -188,7 +265,7 @@ let
           name = "a-packages-unit-not-ours"; files = { "torq-agent@alice.socket" = socket; }; brought = { "torq-agent@alice.service" = "[Service]\nExecStart=/bin/true\nUser=root\n"; };
           extra = "mkdir $out/torq-agent@alice.service.d && ln -s ${mine}/torq-agent@alice.service $out/torq-agent@alice.service.d/overrides.conf";
           expected = { "torq-agent@alice.service" = "${mine}/torq-agent@alice.service"; };
-        }; in pkgs.linkFarmFromDrvs "a-packages-unit-not-ours" [
+        }; in each "a-packages-unit-not-ours" [
           (foreignOnly args "torq-agent@alice.service: not the unit this configuration writes (it is /nix/store/")
           (foreignOnly args "torq-agent@alice.service.d: a drop-in directory of the agent's units")
         ])
@@ -253,6 +330,18 @@ let
       grep -q -F ${lib.escapeShellArg ownHeading} "$failed/testBuildFailure.log"
       touch $out
     '';
+  # The same, refused for what one of the agent's units says (rule 3), and not for whose the file is.
+  refusesText = name: extra: says:
+    pkgs.runCommand "refused-text-${name}" { failed = pkgs.testers.testBuildFailure (ofSystem { imports = [ withKey extra ]; }); } ''
+      grep -F -- ${lib.escapeShellArg says} "$failed/testBuildFailure.log"
+      grep -q -F ${lib.escapeShellArg textHeading} "$failed/testBuildFailure.log"
+      if grep -q -F ${lib.escapeShellArg ownHeading} "$failed/testBuildFailure.log"; then
+        echo "agent-units: ${name}: refused for whose the file is too, which this case is not about" >&2
+        cat "$failed/testBuildFailure.log" >&2
+        exit 1
+      fi
+      touch $out
+    '';
   brings = name: files: { systemd.packages = [ (package "brings-${name}" files) ]; };
   # The system's build depends on the check (NixOS's system.checks: named in the system's own derivation), so a
   # configuration that fails it is not built. Read from the derivation, which evaluation gives; nothing is built.
@@ -310,6 +399,48 @@ let
     (refusesConfig "ours-as-a-drop-in" { systemd.services."torq-agent@dev".overrideStrategy = "asDropin"; } "torq-agent@dev.service: the unit this configuration writes is not there")
     (refusesConfig "a-templates-drop-in-of-ours" { systemd.services."torq-agent@" = { overrideStrategy = "asDropin"; serviceConfig.User = "root"; }; } "torq-agent@.service.d: a drop-in directory of the agent's units")
     (refusesConfig "an-alias-of-ours" { systemd.services.other = { aliases = [ "torq-agent@dev.service" ]; serviceConfig.ExecStart = "/bin/true"; }; } "torq-agent@dev.service: not the unit this configuration writes (it is other.service")
+
+    # What the files say (rule 3), through NixOS's own module system: another part of the configuration changes
+    # one of the agent's units, and the file is still "the one this configuration writes". Each a control too:
+    # `ofSystem withKey` above is the same configuration without the change, and passes.
+    (refusesText "its-user" { systemd.services."torq-agent@dev".serviceConfig.User = lib.mkForce "root"; } "torq-agent@dev.service: User: the unit as built says \"User=root\"")
+    (refusesText "its-user-lacking" { systemd.services."torq-agent@dev".serviceConfig.User = lib.mkForce "root"; } "torq-agent@dev.service: User: the unit as built lacks \"User=torq-resident-dev\"")
+    (refusesText "its-command" { systemd.services."torq-agent@dev".serviceConfig.ExecStart = lib.mkForce "/bin/sh -c true"; } "torq-agent@dev.service: ExecStart: the unit as built says \"ExecStart=/bin/sh -c true\"")
+    (refusesText "a-command-before" { systemd.services."torq-agent@dev".serviceConfig.ExecStartPre = [ "+/bin/sh -c true" ]; } "torq-agent@dev.service: ExecStartPre: the unit as built says \"ExecStartPre=+/bin/sh -c true\"")
+    (refusesText "a-script-before" { systemd.services."torq-agent@dev".preStart = "true"; } "torq-agent@dev.service: ExecStartPre: the unit as built says")
+    (refusesText "a-credential" { systemd.services."torq-agent@dev".serviceConfig.LoadCredential = [ "more:/etc/shadow" ]; } "torq-agent@dev.service: LoadCredential: the unit as built says \"LoadCredential=more:/etc/shadow\"")
+    (refusesText "its-sandbox" { systemd.services."torq-agent@dev".serviceConfig.ProtectHome = lib.mkForce false; } "torq-agent@dev.service: ProtectHome: the unit as built says \"ProtectHome=false\"")
+    (refusesText "its-sandbox-widened" { systemd.services."torq-agent@dev".serviceConfig.ReadWritePaths = [ "/" ]; } "torq-agent@dev.service: ReadWritePaths: the unit as built says \"ReadWritePaths=/\"")
+    (refusesText "its-environment" { systemd.services."torq-agent@dev".environment.LD_PRELOAD = "/tmp/x.so"; } "torq-agent@dev.service: Environment: the unit as built says \"Environment=\"LD_PRELOAD=/tmp/x.so\"\"")
+    (refusesText "its-path" ({ pkgs, ... }: { systemd.services."torq-agent@dev".path = [ pkgs.hello ]; }) "torq-agent@dev.service: Environment: the unit as built says \"Environment=\"PATH=")
+    (refusesText "delegated" { systemd.services."torq-agent@dev".serviceConfig.Delegate = true; } "torq-agent@dev.service: Delegate: the unit as built says \"Delegate=true\"")
+    (refusesText "a-dependency" { systemd.services."torq-agent@dev".onFailure = [ "other.service" ]; } "torq-agent@dev.service: OnFailure: the unit as built says")
+    (refusesText "the-sockets-mode" { systemd.sockets."torq-agent@dev".socketConfig.SocketMode = lib.mkForce "0666"; } "torq-agent@dev.socket: SocketMode: the unit as built says \"SocketMode=0666\"")
+    (refusesText "the-sockets-owner" { systemd.sockets."torq-agent@dev".socketConfig.SocketUser = lib.mkForce "pat"; } "torq-agent@dev.socket: SocketUser: the unit as built says \"SocketUser=pat\"")
+    (refusesText "another-place-to-listen" { systemd.sockets."torq-agent@dev".listenStreams = [ "/tmp/agent.sock" ]; } "torq-agent@dev.socket: ListenStream: the unit as built says \"ListenStream=/tmp/agent.sock\"")
+    (refusesText "the-key-units-command" { systemd.services."torq-agent-key@dev".serviceConfig.ExecStart = lib.mkForce "/bin/sh -c true"; } "torq-agent-key@dev.service: ExecStart: the unit as built says \"ExecStart=/bin/sh -c true\"")
+    # Not through systemd.services at all: the unit's text, and the unit's file, forced.
+    (refusesText "its-text-forced" { systemd.units."torq-agent@dev.service".text = lib.mkForce "[Service]\nExecStart=/bin/sh -c true\n"; } "torq-agent@dev.service: ExecStart: the unit as built says \"ExecStart=/bin/sh -c true\"")
+    (refusesText "its-file-forced" ({ pkgs, ... }: { systemd.units."torq-agent@dev.service".unit = lib.mkForce (pkgs.writeTextDir "torq-agent@dev.service" "[Service]\nExecStart=/bin/sh -c true\n"); })
+      "torq-agent@dev.service: ExecStart: the unit as built says \"ExecStart=/bin/sh -c true\"")
+    # A setting given to every service by extending the option's type (as NixOS's own modules add options to
+    # every service): the text TorqOS's module means is made through nixpkgs' own types, so this is a difference.
+    (refusesText "every-services-type" { options.systemd.services = lib.mkOption { type = lib.types.attrsOf (lib.types.submodule { config.serviceConfig.SupplementaryGroups = [ "wheel" ]; }); }; }
+      "torq-agent@dev.service: SupplementaryGroups: the unit as built says \"SupplementaryGroups=wheel\"")
+    # The configuration's own `wantedBy` is written into the unit's text by NixOS ([Install]), so it is refused
+    # here too, though the directory of links it makes changes nothing in the unit. The same wish from the other
+    # side, a target that wants the agent's unit, is let by (the control).
+    (refusesText "wanted-by" { systemd.services."torq-agent@dev".wantedBy = [ "multi-user.target" ]; } "torq-agent@dev.service: WantedBy: the unit as built says \"WantedBy=multi-user.target\"")
+    (ofSystem { imports = [ withKey ]; systemd.targets.multi-user.wants = [ "torq-agent@dev.service" ]; })
+    # Another name for the agent's unit, of the configuration's own making: its drop-ins would be the agent's.
+    (refusesConfig "another-name-for-ours" { systemd.services."torq-agent@dev".aliases = [ "other.service" ]; } "other.service: another name for the agent's unit torq-agent@dev.service")
+    (refusesConfig "another-names-drop-in" { systemd.services."torq-agent@dev".aliases = [ "other.service" ]; systemd.services.other = { overrideStrategy = "asDropin"; serviceConfig.User = "root"; }; }
+      "other.service: another name for the agent's unit torq-agent@dev.service")
+    # The directories cut at a dash with the instance kept, through NixOS's own laying out.
+    (refusesConfig "the-dash-with-the-instance" (brings "the-dash-with-the-instance" { "torq-@dev.service.d/10-pkg.conf" = settings.user; }) "torq-@dev.service.d: a drop-in directory systemd also applies")
+    (refusesConfig "the-dash-as-a-template" { systemd.services."torq-@" = { overrideStrategy = "asDropin"; serviceConfig.User = "root"; }; } "torq-@.service.d: a drop-in directory systemd also applies")
+    # Which file and from which package, through NixOS's own laying out.
+    (refusesConfig "every-services-said" (brings "every-services-said" { "service.d/10-pkg.conf" = settings.environment; }) "-brings-every-services-said (the file is /nix/store/")
   ];
 
   # The flake's own hosts, each with a resident agent (a key named) and the desktop on: what TorqOS itself puts

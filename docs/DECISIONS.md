@@ -2824,6 +2824,22 @@ vouches for, that only proposes, every change ledgered and undone in one command
   (systemd's merging would have to be done again here). Not judged: the configuration's own text, which is a
   ledgered commit, and what root writes on the running machine. `checks.agent-units` (run, the flake's hosts
   included). Open: KNOWN-GAPS 6zzo.
+- **Amended: what the agent's unit files say (2026-11-14, later still).** The check above held each unit to
+  "the file this configuration wrote", and any module could make the configuration write another
+  (`serviceConfig.User = lib.mkForce "root"`). Decided: each of the agent's units must be, byte for byte, the
+  text TorqOS's module means, which is the module's own values put through nixpkgs' own types and unit writer
+  (`utils.systemdUtils`), compared with the finished file in the units as built and, earlier, by an assertion.
+  The whole text, for the same reason as before: no list of settings that matter has an end. Not chosen:
+  asserting chosen settings of `config.systemd.services` (a list again, and `systemd.units.<name>.text` goes
+  round it); writing the expected text by hand (NixOS's rendering copied, and broken by every nixpkgs bump);
+  the option's own type for the values (a module that extends it for every service would change both sides
+  alike). No drop-in is merged here: none is allowed. Also decided: an alias of one of these units is refused
+  (systemd applies the alias's drop-ins to the unit); the list of drop-in directories follows systemd 260.5's
+  source (`torq-@<person>.service.d`, `torq-@.service.d` and the key unit's were missing); `.wants`,
+  `.requires` and `.upholds` stay unread, because systemd takes only names from them; and a package's generic
+  `service.d` drop-in stays refused with no way round, the log now naming the file and its package. Not held:
+  what every service gets (`systemd.globalEnvironment`, the default `PATH`, the manager's defaults).
+  `checks.agent-units`, `checks.agent-assertions` (run). Open: KNOWN-GAPS 6zzo.
 - **Amended: a missing key said to the person (2026-11-14, later the same day).** A person who is no
   administrator was told only that their agent did not answer. Decided: the root unit that says the missing
   key in the journal also leaves an empty file of root's, `/run/torq/agent-key-missing/<person>`, and

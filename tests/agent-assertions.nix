@@ -61,7 +61,19 @@ let
     (refuses "a delegated resident unit" { torq.agent.doctor = doctorOn; systemd.services."torq-agent@dev".serviceConfig.Delegate = true; } "systemd.services.\"torq-agent@dev\": no Delegate or DelegateSubgroup")
     (refuses "a resident unit's subgroup" { torq.agent.doctor = doctorOn; systemd.services."torq-agent@dev".serviceConfig.DelegateSubgroup = "x"; } "systemd.services.\"torq-agent@dev\": no Delegate or DelegateSubgroup")
     (refuses "a delegated template" { torq.agent.doctor = doctorOn; systemd.services."torq-agent@".serviceConfig.Delegate = true; } "in any torq-agent@ unit")
-    (refuses "a lingering agent" { torq.agent.doctor = doctorOn; users.users.torq-agent-dev.linger = true; } "neither account has a user manager of its own")
+    # The agent's units say only what TorqOS's module writes (modules/agent.nix, intendedText): another part of
+    # the configuration that changes one is refused here, at evaluation, by the unit and the setting. (The units
+    # as built are held to the same text: tests/agent-units.nix. The control is "the key root's", below.)
+    (let withKey = doctorOn // { apiKeyFile = "/var/lib/torq/secrets/model.key"; }; said = "the agent's unit says only what TorqOS's own module writes"; in lib.concatStringsSep ", " [
+      (refuses "the agent's user changed" { torq.agent.doctor = withKey; systemd.services."torq-agent@dev".serviceConfig.User = lib.mkForce "root"; } "systemd.units.\"torq-agent@dev.service\": ${said}")
+      (refuses "the agent's user changed, said" { torq.agent.doctor = withKey; systemd.services."torq-agent@dev".serviceConfig.User = lib.mkForce "root"; } "User: it says `User=root`, which TorqOS's module does not write; User: it lacks `User=torq-resident-dev`, which TorqOS's module writes")
+      (refuses "a command before the agent's" { torq.agent.doctor = withKey; systemd.services."torq-agent@dev".serviceConfig.ExecStartPre = [ "+/bin/sh -c true" ]; } "ExecStartPre: it says `ExecStartPre=+/bin/sh -c true`")
+      (refuses "the agent's sandbox changed" { torq.agent.doctor = withKey; systemd.services."torq-agent@dev".serviceConfig.ProtectSystem = lib.mkForce "full"; } "ProtectSystem: it says `ProtectSystem=full`")
+      (refuses "the socket's mode changed" { torq.agent.doctor = withKey; systemd.sockets."torq-agent@dev".socketConfig.SocketMode = lib.mkForce "0666"; } "systemd.units.\"torq-agent@dev.socket\": ${said}")
+      (refuses "the key unit's command changed" { torq.agent.doctor = withKey; systemd.services."torq-agent-key@dev".serviceConfig.ExecStart = lib.mkForce "/bin/sh -c true"; } "systemd.units.\"torq-agent-key@dev.service\": ${said}")
+      (refuses "the unit's text forced" { torq.agent.doctor = withKey; systemd.units."torq-agent@dev.service".text = lib.mkForce "[Service]\nExecStart=/bin/sh -c true\n"; } "ExecStart: it says `ExecStart=/bin/sh -c true`")
+    ])
+    (refuses "a lingering agent"{ torq.agent.doctor = doctorOn; users.users.torq-agent-dev.linger = true; } "neither account has a user manager of its own")
     (refuses "tracing allowed" { torq.agent.doctor = doctorOn; boot.kernel.sysctl."kernel.yama.ptrace_scope" = lib.mkForce 0; } "kernel.yama.ptrace_scope")
     (refuses "the key where the agent reads it" { torq.agent.doctor = doctorOn // { apiKeyFile = "/var/lib/torq-agent-dev/model.key"; }; } "a file only root reads")
     (refuses "the key in /var/tmp" { torq.agent.doctor = doctorOn // { apiKeyFile = "/var/tmp/model.key"; }; } "a file only root reads")

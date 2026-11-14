@@ -4,7 +4,7 @@
 # what `torq.agent.mayPropose` lists and its own person's packages; a person applies. Each is made for
 # TorqOS's own agent (M5) and for the AI tools people already use — Claude Code first — run as it
 # rather than as the person.
-{ config, lib, pkgs, ... }:
+{ config, lib, pkgs, utils, ... }:
 
 let
   cfg = config.torq.agent;
@@ -34,6 +34,138 @@ let
   ownUnits = lib.concatMap (person: [ "torq-agent@${person}.service" "torq-agent@${person}.socket" ]
     ++ lib.optional (modelKey != null) "torq-agent-key@${person}.service") (lib.attrValues agents);
   expectedUnits = lib.genAttrs ownUnits (name: "${config.systemd.units.${name}.unit}/${name}");
+  # What each of those units must say, word for word (2026-11-14, KNOWN-GAPS 6zzo): the text NixOS makes of
+  # this module's own values (ownSockets, ownServices, below) and of nothing else. Why this way. Another module
+  # can change the agent's unit through the module system (`systemd.services."torq-agent@<person>".serviceConfig
+  # .User = lib.mkForce "root"`, a new ExecStartPre, a credential, a sandbox line taken back) and the result is
+  # still "the file the configuration wrote", which is all the rule on whose the files are can see. No list of
+  # settings that matter has an end, so none is kept here either: the whole text must be the same. The values
+  # are put through nixpkgs' own types and its own writer of unit text (`utils.systemdUtils`), so nothing of
+  # NixOS's rendering is copied here, and through the types as nixpkgs declares them, not `options.systemd
+  # .services.type`: a module that adds settings to every service by extending that option's type is then seen
+  # as a difference too. The same text is held against the finished file in the units as built (unitsCheck),
+  # which is the one that cannot be gone round (`systemd.units.<name>.text` or `.unit` forced directly); the
+  # assertion below says it earlier, at `commit check`, with the option's name.
+  # What still comes from the rest of the configuration, by design: what NixOS gives every service
+  # (`systemd.globalEnvironment`: LOCALE_ARCHIVE, TZDIR; the default PATH's packages), and the programs' own
+  # store paths.
+  alone = kind: type: values: (lib.mergeDefinitions [ "systemd" kind ] type [ { file = "TorqOS's modules/agent.nix"; value = values; } ]).mergedValue;
+  intendedText =
+    lib.mapAttrs' (n: v: lib.nameValuePair "${n}.service" (utils.systemdUtils.lib.serviceToUnit v).text) (alone "services" utils.systemdUtils.types.services ownServices)
+    // lib.mapAttrs' (n: v: lib.nameValuePair "${n}.socket" (utils.systemdUtils.lib.socketToUnit v).text) (alone "sockets" utils.systemdUtils.types.sockets ownSockets);
+  intendedUnits = lib.genAttrs ownUnits (name: intendedText.${name});
+  # How a unit's text differs from what this module writes, said by the setting (the word before `=`).
+  textDifferences = name:
+    let
+      lines = t: lib.filter (l: l != "") (lib.splitString "\n" (if t == null then "" else t));
+      want = lines intendedUnits.${name};
+      got = lines (config.systemd.units.${name}.text or null);
+      setting = l: lib.head (lib.splitString "=" l);
+      says = lib.subtractLists want got;
+      lacks = lib.subtractLists got want;
+    in
+      map (l: "${setting l}: it says `${l}`, which TorqOS's module does not write") says
+      ++ map (l: "${setting l}: it lacks `${l}`, which TorqOS's module writes") lacks
+      ++ lib.optional (says == [ ] && lacks == [ ] && got != want) "its lines are in another order, or said more than once";
+  # Only the person may connect: the socket theirs, 0600, in a directory root's.
+  ownSockets = lib.mapAttrs' (agent: person: lib.nameValuePair "torq-agent@${person}" {
+    description = "${person}'s TorqOS agent: its socket";
+    wantedBy = [ "sockets.target" ];
+    socketConfig = {
+      ListenStream = "/run/torq-agent/${person}.sock";
+      SocketUser = person;
+      SocketGroup = "root";
+      SocketMode = "0600";
+      DirectoryMode = "0755";
+      Accept = false;
+      RemoveOnStop = true;
+    };
+  }) agents;
+  ownServices = lib.mapAttrs' (agent: person: lib.nameValuePair "torq-agent@${person}" {
+    description = "${person}'s TorqOS agent (proposes; a person applies)";
+    requires = [ "torq-agent@${person}.socket" ];
+    after = [ "torq-agent@${person}.socket" "torq-broker.socket" ];
+    # A start that failed: if the model's key is missing, TorqOS says so in this unit's journal (keyMissing).
+    onFailure = lib.optional (modelKey != null) "torq-agent-key@${person}.service";
+    serviceConfig = {
+      ExecStart = "${config.torq.agent.doctor.package}/bin/torq-agent-service ${person}";
+      # The listening socket as standard input (Accept=no): the program takes it from there.
+      StandardInput = "socket";
+      StandardOutput = "journal";
+      StandardError = "journal";
+      # Its own account, never the agent's (ADR-051 3 amended 2026-11-11).
+      User = residentOf person;
+      Group = residentOf person;
+      # Its memory and its programs' home (`home`, which the service makes): the agent's, 0700, outside the
+      # agent's home, hidden from `torq agent run` (modules/agent-run.sh). The agent's home itself is out of
+      # its reach (below): every program run as the agent can write there, and nothing it leaves is read by
+      # what runs in this unit — which is why the broker may take this unit for the resident agent (ADR-051
+      # step 5).
+      WorkingDirectory = "/var/lib/torq-agent-memory/${person}";
+      StateDirectory = "torq-agent-memory/${person}";
+      StateDirectoryMode = "0700";
+      InaccessiblePaths = [ "-/var/lib/${agent}" ];
+      # The model's key (a file only root reads): this unit's own credential, in a place only it sees; hidden
+      # from `torq agent run` besides (modules/agent-run.sh hides /run/credentials). ADR-051 step 5, amended.
+      LoadCredential = lib.optional (modelKey != null) "model-key:${toString modelKey}";
+      # (As root, outside the sandbox, as `+` runs a command: it also takes away root's word of a missing
+      # key, the person's, in /run.)
+      ExecStartPre = lib.optional (modelKey != null) "+${keyCheck} ${person}";
+      # The launcher's sandbox: every home (and /root, and the people's runtime directories in
+      # /run/user) out of reach, /tmp its own, no privilege at all.
+      ProtectHome = true;
+      PrivateTmp = true;
+      NoNewPrivileges = true;
+      CapabilityBoundingSet = "";
+      AmbientCapabilities = "";
+      # And more: the system read-only but its memory; no other user's processes seen; the kernel's
+      # settings, modules, logs and clock, and the control groups, untouchable (no Delegate: a process of
+      # the agent's cannot move itself into this unit's group, whose cgroup.procs is root's).
+      ProtectSystem = "strict";
+      ProtectProc = "invisible";
+      ProtectKernelTunables = true;
+      ProtectKernelModules = true;
+      ProtectKernelLogs = true;
+      ProtectControlGroups = true;
+      ProtectClock = true;
+      ProtectHostname = true;
+      RestrictNamespaces = true;
+      RestrictRealtime = true;
+      RestrictSUIDSGID = true;
+      LockPersonality = true;
+      MemoryDenyWriteExecute = true;
+      RemoveIPC = true;
+      PrivateIPC = true;
+      KeyringMode = "private";
+      UMask = "0077";
+      # Unix sockets (the broker, the local model), the network (a remote model), and netlink: the
+      # doctor's `ip` and `iw` read the interfaces through it (hardware_facts).
+      RestrictAddressFamilies = [ "AF_UNIX" "AF_INET" "AF_INET6" "AF_NETLINK" ];
+      SystemCallFilter = [ "@system-service" ];
+      SystemCallErrorNumber = "EPERM";
+      SystemCallArchitectures = "native";
+      # Not PrivateUsers: in a user namespace of its own, SO_PEERCRED would name every caller nobody.
+      # Not PrivateDevices: the doctor's rfkill and lsblk read devices.
+    };
+  }) agents
+  # What says a missing key (keyMissing), started only by the agent unit's failure. Root, as the check at the
+  # start is, since the key's directory is root's alone to look into; but with one capability (to look, not to
+  # write), a read-only system and no new privilege. It is given no credential and never opens the key.
+  // lib.optionalAttrs (modelKey != null) (lib.mapAttrs' (agent: person: lib.nameValuePair "torq-agent-key@${person}" {
+    description = "${person}'s TorqOS agent: says a missing model key";
+    # Never held back for starting often: it runs once for each failed start, which systemd already limits.
+    unitConfig.StartLimitIntervalSec = 0;
+    serviceConfig = {
+      Type = "oneshot";
+      ExecStart = "${keyMissing} torq-agent@${person}.service";
+      CapabilityBoundingSet = "CAP_DAC_READ_SEARCH";
+      NoNewPrivileges = true;
+      ProtectSystem = "strict";
+      # The one place it writes: its word for the person (keyMissingDir, root's own directory, where being
+      # its owner is enough to write). Not there, it still says its line in the journal.
+      ReadWritePaths = [ "-${keyMissingDir}" ];
+    };
+  }) agents);
   residents = lib.optionalAttrs resident (lib.listToAttrs (map (p: lib.nameValuePair (residentOf p) p) (lib.filter fits cfg.people)));
   # Claude Code for the agents (ADR-051 5, `torq agent tools`): the version dev mode pins (modules/dev.nix), unfree,
   # so only where `torq unfree` allows it — else the assertion below says so, and nothing unfree is evaluated.
@@ -326,6 +458,13 @@ in
           message = "users.users.${agent}.linger, users.users.${residentOf person}.linger: neither account has a user manager of its own (a second line behind the uids: its units would be its own to make, outside the resident agent's control group).";
         }
       ]) agents)
+      # Each of the agent's units says what this module writes and nothing else (intendedText, above): who it
+      # runs as, what it runs, its credentials, its sandbox, its socket. Said here for `commit check`; the units
+      # as built are held to the same text (unitsCheck).
+      ++ map (name: {
+        assertion = (config.systemd.units.${name}.text or null) == intendedUnits.${name};
+        message = "systemd.units.\"${name}\": the agent's unit says only what TorqOS's own module writes (who the agent runs as, what it runs, its credentials, its sandbox, its socket); another part of this configuration changes it. ${lib.concatStringsSep "; " (textDifferences name)}.";
+      }) ownUnits
       ++ [{
         assertion = delegatedUnits == [ ];
         message = "systemd.units ${lib.concatStringsSep ", " delegatedUnits}: no Delegate or DelegateSubgroup in any torq-agent@ unit, an instance or the template — a second line behind the resident account's uid (the unit's control group, root's to fill).";
@@ -341,8 +480,9 @@ in
     # build that refuses.
     # And, since 2026-11-14, whose the files are: the agent's units are there as exactly the files this module
     # writes (expectedUnits), with no drop-in and no other unit of their names, so nothing a package brings can
-    # change who the agent runs as, what it runs, its credentials or its sandbox.
-    system.checks = [ (unitsCheck { units = config.environment.etc."systemd/system".source; expected = expectedUnits; }) ];
+    # change who the agent runs as, what it runs, its credentials or its sandbox. And each of those files says,
+    # word for word, what this module writes (intendedUnits), so nothing in the configuration can either.
+    system.checks = [ (unitsCheck { units = config.environment.etc."systemd/system".source; expected = expectedUnits; intended = intendedUnits; }) ];
     # Only the person may connect (the socket theirs, 0600, in a directory root's) — and the service
     # answers only them, by the kernel's word (SO_PEERCRED), root included.
     # Each person's resident agent's own account (ADR-051 3, amended 2026-11-11): hidden — no password, no login,
@@ -358,104 +498,8 @@ in
       hashedPassword = "!";
     }) residents;
     users.groups = lib.mapAttrs (_: _: { }) residents;
-    systemd.sockets = lib.mapAttrs' (agent: person: lib.nameValuePair "torq-agent@${person}" {
-      description = "${person}'s TorqOS agent: its socket";
-      wantedBy = [ "sockets.target" ];
-      socketConfig = {
-        ListenStream = "/run/torq-agent/${person}.sock";
-        SocketUser = person;
-        SocketGroup = "root";
-        SocketMode = "0600";
-        DirectoryMode = "0755";
-        Accept = false;
-        RemoveOnStop = true;
-      };
-    }) agents;
-    systemd.services = lib.mapAttrs' (agent: person: lib.nameValuePair "torq-agent@${person}" {
-      description = "${person}'s TorqOS agent (proposes; a person applies)";
-      requires = [ "torq-agent@${person}.socket" ];
-      after = [ "torq-agent@${person}.socket" "torq-broker.socket" ];
-      # A start that failed: if the model's key is missing, TorqOS says so in this unit's journal (keyMissing).
-      onFailure = lib.optional (modelKey != null) "torq-agent-key@${person}.service";
-      serviceConfig = {
-        ExecStart = "${config.torq.agent.doctor.package}/bin/torq-agent-service ${person}";
-        # The listening socket as standard input (Accept=no): the program takes it from there.
-        StandardInput = "socket";
-        StandardOutput = "journal";
-        StandardError = "journal";
-        # Its own account, never the agent's (ADR-051 3 amended 2026-11-11).
-        User = residentOf person;
-        Group = residentOf person;
-        # Its memory and its programs' home (`home`, which the service makes): the agent's, 0700, outside the
-        # agent's home, hidden from `torq agent run` (modules/agent-run.sh). The agent's home itself is out of
-        # its reach (below): every program run as the agent can write there, and nothing it leaves is read by
-        # what runs in this unit — which is why the broker may take this unit for the resident agent (ADR-051
-        # step 5).
-        WorkingDirectory = "/var/lib/torq-agent-memory/${person}";
-        StateDirectory = "torq-agent-memory/${person}";
-        StateDirectoryMode = "0700";
-        InaccessiblePaths = [ "-/var/lib/${agent}" ];
-        # The model's key (a file only root reads): this unit's own credential, in a place only it sees; hidden
-        # from `torq agent run` besides (modules/agent-run.sh hides /run/credentials). ADR-051 step 5, amended.
-        LoadCredential = lib.optional (modelKey != null) "model-key:${toString modelKey}";
-        # (As root, outside the sandbox, as `+` runs a command: it also takes away root's word of a missing
-        # key, the person's, in /run.)
-        ExecStartPre = lib.optional (modelKey != null) "+${keyCheck} ${person}";
-        # The launcher's sandbox: every home (and /root, and the people's runtime directories in
-        # /run/user) out of reach, /tmp its own, no privilege at all.
-        ProtectHome = true;
-        PrivateTmp = true;
-        NoNewPrivileges = true;
-        CapabilityBoundingSet = "";
-        AmbientCapabilities = "";
-        # And more: the system read-only but its memory; no other user's processes seen; the kernel's
-        # settings, modules, logs and clock, and the control groups, untouchable (no Delegate: a process of
-        # the agent's cannot move itself into this unit's group, whose cgroup.procs is root's).
-        ProtectSystem = "strict";
-        ProtectProc = "invisible";
-        ProtectKernelTunables = true;
-        ProtectKernelModules = true;
-        ProtectKernelLogs = true;
-        ProtectControlGroups = true;
-        ProtectClock = true;
-        ProtectHostname = true;
-        RestrictNamespaces = true;
-        RestrictRealtime = true;
-        RestrictSUIDSGID = true;
-        LockPersonality = true;
-        MemoryDenyWriteExecute = true;
-        RemoveIPC = true;
-        PrivateIPC = true;
-        KeyringMode = "private";
-        UMask = "0077";
-        # Unix sockets (the broker, the local model), the network (a remote model), and netlink: the
-        # doctor's `ip` and `iw` read the interfaces through it (hardware_facts).
-        RestrictAddressFamilies = [ "AF_UNIX" "AF_INET" "AF_INET6" "AF_NETLINK" ];
-        SystemCallFilter = [ "@system-service" ];
-        SystemCallErrorNumber = "EPERM";
-        SystemCallArchitectures = "native";
-        # Not PrivateUsers: in a user namespace of its own, SO_PEERCRED would name every caller nobody.
-        # Not PrivateDevices: the doctor's rfkill and lsblk read devices.
-      };
-    }) agents
-    # What says a missing key (keyMissing), started only by the agent unit's failure. Root, as the check at the
-    # start is, since the key's directory is root's alone to look into; but with one capability (to look, not to
-    # write), a read-only system and no new privilege. It is given no credential and never opens the key.
-    // lib.optionalAttrs (modelKey != null) (lib.mapAttrs' (agent: person: lib.nameValuePair "torq-agent-key@${person}" {
-      description = "${person}'s TorqOS agent: says a missing model key";
-      # Never held back for starting often: it runs once for each failed start, which systemd already limits.
-      unitConfig.StartLimitIntervalSec = 0;
-      serviceConfig = {
-        Type = "oneshot";
-        ExecStart = "${keyMissing} torq-agent@${person}.service";
-        CapabilityBoundingSet = "CAP_DAC_READ_SEARCH";
-        NoNewPrivileges = true;
-        ProtectSystem = "strict";
-        # The one place it writes: its word for the person (keyMissingDir, root's own directory, where being
-        # its owner is enough to write). Not there, it still says its line in the journal.
-        ReadWritePaths = [ "-${keyMissingDir}" ];
-      };
-    }) agents);
+    systemd.sockets = ownSockets;
+    systemd.services = ownServices;
     # Root's, and only root writes there: a person reads that their word is there, and can put none of their
     # own. In /run, so no word outlives a restart of the machine.
     systemd.tmpfiles.settings."10-torq-agent" = lib.mkIf (modelKey != null) {

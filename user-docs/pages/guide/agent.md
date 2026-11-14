@@ -173,9 +173,12 @@ starts; an administrator starts it again with `sudo systemctl restart torq-agent
 If the key file is there but is not root's alone, your agent does not start either, and `torq ask` says only
 that it did not answer: that reason is in the journal alone.
 
-A package may not change your agent's service. A TorqOS machine with a resident agent does not build if a
-package brings a unit file or a drop-in for `torq-agent@<you>.service`, its socket or `torq-agent-key@<you>.service`
-(or one that applies to every service, `service.d`): the build's log names the file.
+Nothing but TorqOS's own module may change your agent's service. A TorqOS machine with a resident agent does
+not build if a package brings a unit file or a drop-in for `torq-agent@<you>.service`, its socket or
+`torq-agent-key@<you>.service` (or one that applies to every service, `service.d`): the build's log names the
+file and the package it comes from. Nor does it build if another part of the machine's configuration changes
+one of those units (who it runs as, what it runs, its credentials, its sandbox, its socket): `commit check`
+and the build's log name the unit and the setting. There is no setting that turns this off.
 
 ## Claude Code, as your agent
 
