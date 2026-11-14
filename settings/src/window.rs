@@ -321,6 +321,9 @@ pub enum Message {
     /// The same about the failure beside it, or the draft's changes: built when pressed, not at every frame (a
     /// draft's diff was cleaned at every redraw).
     AskAgentFailure,
+    /// A setting (its place, its value in the draft) or an alarm line: built when pressed too.
+    AskAgentSetting(String, String),
+    AskAgentAlarm(String),
     AskAgentDraft,
     /// What became of opening the agent's window (an error, said on the page).
     AskedAgent(Result<(), String>),
@@ -1110,6 +1113,11 @@ impl Settings {
                     return cosmic::Application::update(self, Message::AskAgent(About::Failure { command, said }.handoff()));
                 }
             }
+            Message::AskAgentSetting(place, value) => {
+                let h = About::Setting { place: &place, help: &self.help, value: &value }.handoff();
+                return cosmic::Application::update(self, Message::AskAgent(h));
+            }
+            Message::AskAgentAlarm(alarm) => return cosmic::Application::update(self, Message::AskAgent(About::Alarm(&alarm).handoff())),
             Message::AskAgentDraft => {
                 if let Some(Loaded::Got(diff)) = self.outputs.get(COMPARE) {
                     return cosmic::Application::update(self, Message::AskAgent(About::Draft(diff).handoff()));
@@ -1350,8 +1358,7 @@ impl Settings {
         if !path.is_empty() {
             let place = path.join(" ");
             let value = draft.map(|v| v.join(", ")).unwrap_or_else(|| "not set".into());
-            let h = About::Setting { place: &place, help: &self.help, value: &value }.handoff();
-            col = col.push(widget::button::text("Ask the agent about this setting").on_press(Message::AskAgent(h)));
+            col = col.push(widget::button::text("Ask the agent about this setting").on_press(Message::AskAgentSetting(place, value)));
         }
         let active = self.active.get(path);
 
@@ -1499,7 +1506,7 @@ impl Settings {
                     let mut row = vec![widget::text::body(l.to_string()).width(Length::Fill).into()];
                     // An alarm, not the all-well line: the agent can look at it.
                     if !l.starts_with('✓') {
-                        row.push(widget::button::text("Ask the agent").on_press(Message::AskAgent(About::Alarm(l).handoff())).into());
+                        row.push(widget::button::text("Ask the agent").on_press(Message::AskAgentAlarm(l.to_string())).into());
                     }
                     alarms = alarms.add(settings::item_row(row).align_y(Alignment::Center));
                 }

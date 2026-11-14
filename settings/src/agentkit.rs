@@ -91,8 +91,9 @@ pub struct Look {
     pub fates: Vec<(u64, Fate)>,
 }
 
-/// Look at the agent, off the drawing thread: `client` as it was, `seqs` the proposals to look up.
-pub async fn look(client: Result<Client, Unreachable>, seqs: Vec<u64>) -> Look {
+/// Look at the agent, off the drawing thread: `client` as it was, `seqs` the proposals to look up, `known` the fates
+/// found before (a final one is not looked up again, and with none to look up the ledger is not read).
+pub async fn look(client: Result<Client, Unreachable>, seqs: Vec<u64>, known: Vec<(u64, Fate)>) -> Look {
     let failed = |e: String| Look { client: Err(Unreachable::Broken(e.clone())), reach: Err(Unreachable::Broken(e)), brain: None, fates: vec![] };
     off(move || {
         let client = client.or_else(|_| Client::mine());
@@ -105,10 +106,12 @@ pub async fn look(client: Result<Client, Unreachable>, seqs: Vec<u64>) -> Look {
             },
         };
         // The ledger unread: each said so, and the reason in the journal, not "looking it up…" for good.
-        let fates = torq::app::agent_fates(&seqs).unwrap_or_else(|e| {
+        let todo = torq::app::fates_to_look_up(&seqs, &known);
+        let looked = torq::app::agent_fates(&todo).unwrap_or_else(|e| {
             eprintln!("torq: looking up what became of the agent's proposals: {e:#}");
-            seqs.iter().map(|&s| (s, Fate::Unread)).collect()
+            todo.iter().map(|&s| (s, Fate::Unread)).collect()
         });
+        let fates = torq::app::merge_fates(&seqs, &known, looked);
         Look { client, reach, brain: setup::brain().ok().flatten(), fates }
     })
     .await

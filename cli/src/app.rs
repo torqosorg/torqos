@@ -2257,6 +2257,39 @@ pub fn agent_fates(seqs: &[u64]) -> Result<Vec<(u64, crate::agent::conversation:
     Ok(crate::agent::conversation::fates(&entries, &crate::agent::agent_of(&crate::me()?), seqs))
 }
 
+/// Which of `seqs` the ledger must be read for: not those whose fate is already known and final. A proposal that was
+/// applied or declined stays so; the rest (waiting, failed, not yours (a number may become one),
+/// unread, not yet looked up) can change. With nothing to look up the ledger is not read at all.
+pub fn fates_to_look_up(seqs: &[u64], known: &[(u64, crate::agent::conversation::Fate)]) -> Vec<u64> {
+    use crate::agent::conversation::Fate;
+    seqs.iter()
+        .copied()
+        .filter(|s| !known.iter().any(|(k, f)| k == s && matches!(f, Fate::Applied | Fate::Declined)))
+        .collect()
+}
+
+/// The fate of each of `seqs`: what was just looked up, else what was known.
+pub fn merge_fates(seqs: &[u64], known: &[(u64, crate::agent::conversation::Fate)], looked: Vec<(u64, crate::agent::conversation::Fate)>) -> Vec<(u64, crate::agent::conversation::Fate)> {
+    seqs.iter().filter_map(|s| looked.iter().chain(known.iter()).find(|(k, _)| k == s).copied()).collect()
+}
+
+/// A tunnel's line in the panel: what it is while off, "Connecting to …", "Up · its forwards", why it retries, or why it stopped.
+pub fn tunnel_line(t: &crate::tunnels::Tunnel, state: &crate::tunnels::State) -> String {
+    use crate::tunnels::State;
+    match state {
+        State::Off => t.describe(),
+        State::Connecting => format!("Connecting to {}…", t.destination),
+        State::Up => format!("Up · {}", t.forwards.iter().map(|f| f.describe()).collect::<Vec<_>>().join(", ")),
+        State::Retrying(why) => why.clone(),
+        State::Failed(why) => format!("Stopped: {why}"),
+    }
+}
+
+/// Whether the tunnel's row offers "Ask the agent": only one that will not come up (retrying or stopped).
+pub fn tunnel_askable(state: &crate::tunnels::State) -> bool {
+    matches!(state, crate::tunnels::State::Retrying(_) | crate::tunnels::State::Failed(_))
+}
+
 /// Whether Settings and the applets offer `me` Decline of proposal `e`, by their own say: narrower than the broker's rule,
 /// on purpose (Proposal.yours): their own agent proposed it.
 fn yours(e: &history::Entry, me: &str) -> bool {
@@ -3937,6 +3970,32 @@ mod moved_decisions {
         assert_eq!(question_to_ask("  what is up \n", false).as_deref(), Some("what is up"));
         assert_eq!(question_to_ask("  \n", false), None);
         assert_eq!(question_to_ask("hello", true), None);
+    }
+
+    #[test]
+    fn the_ledger_is_read_only_for_proposals_that_can_still_change() {
+        use crate::agent::conversation::Fate::*;
+        let known = [(1, Applied), (2, Declined), (3, Waiting), (4, Unread), (5, NotYours)];
+        assert_eq!(fates_to_look_up(&[1, 2, 3, 4, 5, 6], &known), vec![3, 4, 5, 6]);
+        assert!(fates_to_look_up(&[1, 2], &known).is_empty(), "nothing to look up: the ledger is not read");
+        assert_eq!(fates_to_look_up(&[7], &[]), vec![7]);
+        // What was looked up wins; what was not is kept; the order is the conversation's.
+        assert_eq!(merge_fates(&[1, 3, 4], &known, vec![(3, Applied), (4, Failed)]), vec![(1, Applied), (3, Applied), (4, Failed)]);
+        assert_eq!(merge_fates(&[9], &known, vec![]), vec![], "a number nothing says is not invented");
+    }
+
+    #[test]
+    fn a_tunnels_line_and_when_the_agent_is_offered() {
+        use crate::tunnels::State;
+        let t = crate::tunnels::Tunnel { name: "db".into(), destination: "host".into(), port: None, forwards: vec![crate::tunnels::Forward::Socks(1080)] };
+        assert_eq!(tunnel_line(&t, &State::Off), t.describe());
+        assert_eq!(tunnel_line(&t, &State::Connecting), "Connecting to host…");
+        assert_eq!(tunnel_line(&t, &State::Up), "Up · SOCKS on 127.0.0.1:1080");
+        assert_eq!(tunnel_line(&t, &State::Retrying("refused".into())), "refused");
+        assert_eq!(tunnel_line(&t, &State::Failed("bad key".into())), "Stopped: bad key");
+        for (s, askable) in [(State::Off, false), (State::Connecting, false), (State::Up, false), (State::Retrying("x".into()), true), (State::Failed("x".into()), true)] {
+            assert_eq!(tunnel_askable(&s), askable, "{s:?}");
+        }
     }
 
     #[test]
