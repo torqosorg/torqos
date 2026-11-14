@@ -195,6 +195,8 @@ pub struct Status {
     pub running: bool,
     /// How many turns of the conversation it remembers.
     pub turns: usize,
+    /// Which conversation it is: changes when it is forgotten (0: an older agent, which does not say).
+    pub conversation: u64,
 }
 
 /// The caller's own agent: its socket, and whose it must be.
@@ -309,7 +311,7 @@ impl Client {
         let mut l = self.send(&Request::Status)?;
         loop {
             match l.next("its status")? {
-                Event::Status { running, turns } => return Ok(Status { running, turns }),
+                Event::Status { running, turns, conversation } => return Ok(Status { running, turns, conversation }),
                 Event::Error { text } => return Err(Unreachable::Refused(crate::history::clean(&text))),
                 _ => {}
             }
@@ -321,7 +323,7 @@ impl Client {
         let mut l = self.send(&Request::Stop)?;
         loop {
             match l.next("stop")? {
-                Event::Status { running, turns } => return Ok(Status { running, turns }),
+                Event::Status { running, turns, conversation } => return Ok(Status { running, turns, conversation }),
                 Event::Error { text } => return Err(Unreachable::Refused(crate::history::clean(&text))),
                 _ => {}
             }
@@ -504,13 +506,13 @@ mod tests {
     #[test]
     fn status_stop_and_forget() {
         let (_d, path, asked) = service(|req| match req {
-            r#"{"type":"status"}"# => vec![r#"{"type":"status","running":true,"turns":4}"#.into()],
-            r#"{"type":"stop"}"# => vec![r#"{"type":"status","running":false,"turns":4}"#.into()],
+            r#"{"type":"status"}"# => vec![r#"{"type":"status","running":true,"turns":4,"conversation":7}"#.into()],
+            r#"{"type":"stop"}"# => vec![r#"{"type":"status","running":false,"turns":4,"conversation":7}"#.into()],
             _ => vec![r#"{"type":"error","text":"a task is running: stop it first\u001b[2J"}"#.into(), r#"{"type":"done","exit":1}"#.into()],
         });
         let c = quick(&path);
-        assert_eq!(c.status().unwrap(), Status { running: true, turns: 4 });
-        assert_eq!(c.stop().unwrap(), Status { running: false, turns: 4 });
+        assert_eq!(c.status().unwrap(), Status { running: true, turns: 4, conversation: 7 });
+        assert_eq!(c.stop().unwrap(), Status { running: false, turns: 4, conversation: 7 });
         let refused = c.forget().unwrap_err();
         assert!(matches!(&refused, Unreachable::Refused(t) if t.starts_with("a task is running") && !t.contains('\u{1b}')), "{refused:?}");
         let sent: Vec<String> = asked.try_iter().collect();
@@ -552,7 +554,7 @@ mod tests {
         assert!(matches!(quick(&d.path().join("none.sock")).status(), Err(Unreachable::NoService(_))));
         std::fs::write(d.path().join("file"), "").unwrap();
         assert!(matches!(quick(&d.path().join("file")).status(), Err(Unreachable::NotYours(_))));
-        assert!(quick(&path).status().unwrap() == Status { running: false, turns: 0 }, "one's own is asked");
+        assert!(quick(&path).status().unwrap() == Status { running: false, turns: 0, conversation: 0 }, "one's own is asked; an agent that names no conversation is 0");
     }
 
     /// A socket no one listens on any more: an error at once, not a wait.
