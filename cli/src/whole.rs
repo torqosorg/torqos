@@ -478,7 +478,7 @@ impl Whole<'_> {
         if self.entries(d).iter().any(|(w, _)| w.starts_with(&r.loc)) {
             return None;
         }
-        Some(format!("{} replaces the default {}", r.loc.join(" "), crate::nixos::default_text(v)))
+        Some(format!("{} replaces NixOS's default {}", r.loc.join(" "), crate::nixos::default_text(v)))
     }
 
     /// The path entries are shown below: an old name's, by its NixOS path.

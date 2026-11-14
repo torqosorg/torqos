@@ -4741,10 +4741,10 @@ mod tests {
         let mut s = session(d.path(), None, &m);
         s.exec("configure").unwrap();
         let first = s.exec("set services openssh ports 2222").unwrap();
-        assert!(first.contains("services openssh ports replaces the default [ 22 ]"), "{first}");
+        assert!(first.contains("services openssh ports replaces NixOS's default [ 22 ]"), "{first}");
         // Once set, it replaces nothing: a second value is not a replacement.
         assert!(!s.exec("set services openssh ports 2200").unwrap().contains("default"));
-        assert!(s.exec("set services openssh enable true").unwrap().contains("services openssh enable replaces the default false"));
+        assert!(s.exec("set services openssh enable true").unwrap().contains("services openssh enable replaces NixOS's default false"));
         // No known default (nullOr: null), an empty one, and a bad value (refused) say nothing.
         assert!(!s.exec("set time timeZone Europe/Berlin").unwrap().contains("default"));
         assert!(!s.exec("set services httpd extraConfig x").unwrap().contains("default"), "an empty default is not worth a line");

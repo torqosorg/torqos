@@ -232,7 +232,7 @@ Open issues found while bringing up M1 (2026-10-30). Fix with a failing test fir
    shows what each number holds before commit; a script that does not read the answer is as before.
 
 6x. **What a setting's default is, when nothing sets it** — fixed for plain values (2026-11-14): `set` says
-   "services openssh ports replaces the default [ 22 ]" once, when nothing sets the setting yet, and
+   "services openssh ports replaces NixOS's default [ 22 ]" once, when nothing sets the setting yet, and
    `show services openssh | display defaults` lists the known defaults below a place (`(set)` marks one the
    configuration sets). Empty defaults (`[ ]`, `""`) are not worth a line in `set`; the whole configuration
    is not listed (a place is asked for). Formerly: `show` said "Nothing is set at …" and nothing gave 22.
