@@ -1382,12 +1382,39 @@ Its §5 lists claims without a test.
      `journalctl -u torq-agent@<person>.service` and `systemctl status` show it. It is root's, as the check at
      the start is, with one capability (`CAP_DAC_READ_SEARCH`), a read-only system and no credential; it never
      opens the key. Left: systemd's own lines ("Failed to set up credentials") come first, and each failed
-     start says the line again. `torq ask` still says only that the agent did not answer and names the
-     journal (`cli/src/agent/client.rs`, the client the window shares), which is an administrator's to read: a person who is not an administrator is not
-     told the reason. A key file that is there and cannot be loaded for another reason (larger than systemd
+     start says the line again. A key file that is there and cannot be loaded for another reason (larger than systemd
      takes) gets only systemd's words. After several failed starts the socket itself may have stopped
      (systemd's start limit); whether asking again starts the agent once the key is back, without restarting
      `torq-agent@<person>.socket`, has not been tried.
+   - **A person who is no administrator is told the key is missing, by root's word (2026-11-14; torqcli's units
+     ran, the VM subtests are written and have not run).** `torq ask` and the applet said only that the agent
+     did not answer, and named a journal that person cannot read. Now `torq-agent-key@<person>.service`, after
+     its journal line, leaves an empty file `/run/torq/agent-key-missing/<person>` (root's, 0644, in a
+     directory root's alone to write, made by tmpfiles; it is the one place that unit may write). torqcli's
+     client (`cli/src/agent/client.rs`, which `torq ask`, the applet and the window share), when the agent is
+     silent, gone or broken, looks whether that file is there and then says "your agent cannot start: the
+     model's key is missing (it was when your agent last tried to start, N minutes ago); an administrator must
+     install it", with the journal's command. Nothing is widened: the file holds nothing (not the key, not its
+     path), the client reads only whose it is and its age, the key's directory stays root's, and the unit still
+     never opens the key. Considered:
+     - *a planted or linked word*: believed only as a plain file of root's in a directory of root's that no
+       group or other can write, the path itself looked at (a link is not followed). Someone who could forge
+       one is root. The worst a wrong word does is a wrong sentence: nothing is started, read or allowed by it;
+     - *a word that outlives the key's return*: taken away by the agent unit's own first command at its next
+       start (it runs only once systemd has loaded the key), before the key is judged, so a key that is there
+       and wrong is never called missing; and by the explaining unit when it finds the key there. The client
+       never says it against an agent that answers (what the service itself says is passed on as it is). What
+       is left: the key put back and no start tried since (the socket stopped after its failed starts, say)
+       leaves the word, which is why the sentence says when it was so, not that it is so now; and if the
+       removal at the start fails (it is not let to fail the start), an old word would be said against an agent
+       that later goes silent for another reason. /run is emptied at each boot;
+     - *what a person learns*: that the key was missing, for themselves or another person. Not a secret: the
+       key's path is in the configuration everyone here can read, and the key is the machine's, not a person's.
+     Also left: the client waits up to a second for the word after a failure (the explaining unit starts only
+     once the agent's has failed), so the first failed ask may still say only "did not answer"; a key that is
+     there and not root's alone is still said only in the journal; the applet's line ("Cannot start: the
+     model's key is missing…") comes from the same client and has not been seen on a desktop, and `settings/`
+     was not compiled for this change.
    - **A session is cited only by its own kind of caller** (fixed from step 5's review): a program of the agent's
      citing the resident agent's session id (the ledger shows it) is refused, so its proposal is never put in
      that session's record and told to the resident agent as its own; the resident agent cites only sessions

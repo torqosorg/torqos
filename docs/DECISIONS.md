@@ -2824,6 +2824,15 @@ vouches for, that only proposes, every change ledgered and undone in one command
   (systemd's merging would have to be done again here). Not judged: the configuration's own text, which is a
   ledgered commit, and what root writes on the running machine. `checks.agent-units` (run, the flake's hosts
   included). Open: KNOWN-GAPS 6zzo.
+- **Amended: a missing key said to the person (2026-11-14, later the same day).** A person who is no
+  administrator was told only that their agent did not answer. Decided: the root unit that says the missing
+  key in the journal also leaves an empty file of root's, `/run/torq/agent-key-missing/<person>`, and
+  torqcli's client says "the model's key is missing; an administrator must install it" when it finds that
+  file after a failure. Nothing is widened: the file holds nothing, the key's directory stays closed, no start
+  happens without the key. The file is taken away by the agent unit's first command at the next start that has
+  its key. Not chosen: letting the client look for the key (it cannot, by design), or a helper that answers
+  for root. torqcli's units and `checks.agent-assertions` (run); the VM subtests are written and have not
+  run. Open: KNOWN-GAPS 6zzo.
 
 ## ADR-052 — Secrets the agent may use and never read: `torq-secrets`
 - **Status:** accepted, 2026-11-10; its four questions settled by the owner the same day (below). Proposed

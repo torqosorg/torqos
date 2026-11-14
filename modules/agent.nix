@@ -44,8 +44,16 @@ let
   # that no one else may read (step 5's second review: the configuration can only check the path's name). Otherwise
   # the unit does not start, and its journal says why.
   modelKey = config.torq.agent.doctor.apiKeyFile;
+  # Root's word, for the person, that their agent could not start for want of the key (keyMissing writes it;
+  # torqcli's client reads that it is there, cli/src/agent/client.rs KEY_MISSING_DIR): an empty file named for
+  # the person, in a directory only root writes. It holds nothing of the key, not even its path.
+  keyMissingDir = "/run/torq/agent-key-missing";
   keyCheck = pkgs.writeShellScript "torq-agent-key-check" ''
     f=${lib.escapeShellArg (toString modelKey)}
+    # This command runs, so systemd has loaded the unit's credential: the key is there. Root's word that it was
+    # missing is taken away before the key is judged below, since a key that is there and wrong is not a key
+    # missing. ($1: the person, a login name; never fails the start.)
+    if [ -n "''${1-}" ]; then ${pkgs.coreutils}/bin/rm -f -- ${keyMissingDir}/"$1" || true; fi
     if [ -L "$f" ] || [ ! -f "$f" ]; then
       echo "torq-agent: the model's key, $f, is not a plain file (a link is not followed): the resident agent is not started" >&2
       exit 1
@@ -67,9 +75,26 @@ let
   keyMissing = pkgs.writeShellScript "torq-agent-key-missing" ''
     f=${lib.escapeShellArg (toString modelKey)}
     unit=$1
-    if [ -e "$f" ]; then exit 0; fi
+    # The same said to the person, who cannot read the journal or look into the key's directory: an empty file
+    # of root's, named for them (the unit's instance), that torqcli's client finds after its failure. Only that
+    # it is there is read. It is taken away as soon as it is no longer so: here, when the key is found there,
+    # and at the agent's next start that loads its key (keyCheck).
+    person=''${unit#torq-agent@}
+    person=''${person%.service}
+    word=${keyMissingDir}/$person
+    if [ -e "$f" ]; then
+      ${pkgs.coreutils}/bin/rm -f -- "$word" || true
+      exit 0
+    fi
     msg="torq-agent: the model's key, $f, is missing (torq.agent.doctor.apiKeyFile names it; a link to nothing counts as missing): the resident agent is not started without it. Put the key there as root's alone: sudo install -D -o root -g root -m 600 <the key's file> $f"
     printf 'MESSAGE=%s\nPRIORITY=3\nSYSLOG_IDENTIFIER=torq-agent\nOBJECT_SYSTEMD_UNIT=%s\n' "$msg" "$unit" | ${pkgs.util-linux}/bin/logger --journald || echo "$msg" >&2
+    # Made anew each time (never written through whatever was there), its time this failure's.
+    umask 022
+    ${pkgs.coreutils}/bin/rm -f -- "$word" || true
+    ${pkgs.coreutils}/bin/touch -- "$word" || echo "torq-agent: could not leave word of the missing key at $word" >&2
+    # The key put there while this ran: a start that loaded it may already have taken the word away, before it
+    # was written again just above. Not left to say what is no longer so.
+    if [ -e "$f" ]; then ${pkgs.coreutils}/bin/rm -f -- "$word" || true; fi
   '';
   # `torq agent run` (ADR-041, 5): a person starts a program as their own agent. This runs as root
   # (through sudo), hides every home and the people's runtime directories, gives a private /tmp,
@@ -373,7 +398,9 @@ in
         # The model's key (a file only root reads): this unit's own credential, in a place only it sees; hidden
         # from `torq agent run` besides (modules/agent-run.sh hides /run/credentials). ADR-051 step 5, amended.
         LoadCredential = lib.optional (modelKey != null) "model-key:${toString modelKey}";
-        ExecStartPre = lib.optional (modelKey != null) "+${keyCheck}";
+        # (As root, outside the sandbox, as `+` runs a command: it also takes away root's word of a missing
+        # key, the person's, in /run.)
+        ExecStartPre = lib.optional (modelKey != null) "+${keyCheck} ${person}";
         # The launcher's sandbox: every home (and /root, and the people's runtime directories in
         # /run/user) out of reach, /tmp its own, no privilege at all.
         ProtectHome = true;
@@ -424,8 +451,16 @@ in
         CapabilityBoundingSet = "CAP_DAC_READ_SEARCH";
         NoNewPrivileges = true;
         ProtectSystem = "strict";
+        # The one place it writes: its word for the person (keyMissingDir, root's own directory, where being
+        # its owner is enough to write). Not there, it still says its line in the journal.
+        ReadWritePaths = [ "-${keyMissingDir}" ];
       };
     }) agents);
+    # Root's, and only root writes there: a person reads that their word is there, and can put none of their
+    # own. In /run, so no word outlives a restart of the machine.
+    systemd.tmpfiles.settings."10-torq-agent" = lib.mkIf (modelKey != null) {
+      ${keyMissingDir}.d = { mode = "0755"; user = "root"; group = "root"; };
+    };
   })
   ];
 }

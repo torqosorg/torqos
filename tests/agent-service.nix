@@ -311,7 +311,7 @@ pkgs.testers.runNixOSTest {
         # systemd refuses the unit before any of its commands (the credential cannot be loaded), so the check at
         # the start never speaks: a unit of its own does, after the failure (modules/agent.nix, keyMissing), as
         # an entry about the agent's unit — where `torq ask` sends an administrator (journalctl -u, systemctl status).
-        key, says = "/var/lib/torq/secrets/model.key", "torq-agent-key@alice.service"
+        key, says, word = "/var/lib/torq/secrets/model.key", "torq-agent-key@alice.service", "/run/torq/agent-key-missing"
         for gone in [f"mv {key} /var/lib/torq/secrets/kept.key", f"mv {key} /var/lib/torq/secrets/kept.key && ln -s nothing-here {key}"]:
             machine.succeed(gone)
             # (Each start counted afresh: the starts before this, here and above, would reach systemd's limit.)
@@ -322,6 +322,11 @@ pkgs.testers.runNixOSTest {
             # Not started, by no other way: failed, no process, no credential left for it.
             assert prop("ActiveState") == "failed" and prop("MainPID") == "0", (prop("ActiveState"), prop("MainPID"))
             machine.fail(f"test -e /run/credentials/{unit}/model-key")
+            # And for the person, who cannot read that journal: root's word, an empty file of root's that anyone
+            # may see is there and only root may write (KNOWN-GAPS 6zzo). Nothing of the key is in it.
+            machine.wait_until_succeeds(f"test -e {word}/alice", timeout=30)
+            assert machine.succeed(f"stat -c %a:%U:%s {word}/alice").strip() == "644:root:0", "empty, root's, read by all"
+            assert machine.succeed(f"stat -c %a:%U {word}").strip() == "755:root"
             shown = machine.execute(f"systemctl status {unit} --no-pager --full -n 30 2>&1")[1]
             assert "is missing (torq.agent.doctor.apiKeyFile names it" in shown, shown
             # Root wrote it, about this unit; and the key's value is in neither unit's journal.
@@ -336,6 +341,11 @@ pkgs.testers.runNixOSTest {
         machine.fail(f"systemctl cat {says} | grep -F Credential")
         assert says_prop("CapabilityBoundingSet") == "cap_dac_read_search", says_prop("CapabilityBoundingSet")
         assert says_prop("NoNewPrivileges") == "yes" and says_prop("ProtectSystem") == "strict"
+        # The word is the one place the unit that says it may write, and the agent's own check at its start is
+        # given the person whose word it takes away (the units' text: `systemctl show` prints some unset
+        # properties as [unprintable]).
+        assert "ReadWritePaths=-/run/torq/agent-key-missing" in machine.succeed(f"systemctl cat {says}")
+        assert re.search(r"^ExecStartPre=\+/nix/store/\S+-torq-agent-key-check alice$", machine.succeed(f"systemctl cat {unit}"), re.M), "the check, as root, for alice"
         # The key there, a failure is not called a missing key: the check at the start says its own words, alone.
         machine.succeed(f"chmod 644 {key}; systemctl reset-failed {unit}; true")
         c = cursor()
@@ -344,10 +354,53 @@ pkgs.testers.runNixOSTest {
         # (Once what says a missing key has run, and ended having said nothing.)
         machine.wait_until_succeeds(f"journalctl -u {says} --no-pager --after-cursor={shlex.quote(c)} | grep -q Finished", timeout=30)
         machine.fail(f"journalctl -u {unit} --no-pager --after-cursor={shlex.quote(c)} | grep -F 'is missing (torq.agent'")
+        # A key that is there and wrong is not a key missing: no word of one, and an earlier word taken away.
+        machine.fail(f"test -e {word}/alice")
         machine.succeed(f"chmod 600 {key}")
         # Put right, it starts, with its key.
         machine.succeed(f"systemctl reset-failed {unit}; systemctl start {unit}")
         machine.succeed(f"systemctl is-active {unit} && test -s /run/credentials/{unit}/model-key")
+        # Started with its key: no word is left to say otherwise.
+        machine.fail(f"test -e {word}/alice")
+
+    with subtest("the model's key missing: a person who is no administrator is told why, by root's word and nothing more"):
+        # bob is no administrator: not the journal, not the key's directory. `torq ask` (and the applet, through
+        # the same client) said only that his agent did not answer. Now it says why, from root's word alone.
+        key, word = "/var/lib/torq/secrets/model.key", "/run/torq/agent-key-missing"
+        bobs = "torq-agent@bob.service"
+        machine.fail("su - bob -c 'ls /var/lib/torq/secrets'")
+        assert not {"wheel", "systemd-journal"} & set(machine.succeed("id -nG bob").split()), "bob reads no journal but his own"
+        # The control: with the key there and no word, nothing is said of a key (his agent answers).
+        machine.fail(f"test -e {word}/bob")
+        assert as_user("bob", "torq ask hello").strip() == "Hello alice."
+        machine.succeed(f"systemctl stop {bobs}; mv {key} /var/lib/torq/secrets/kept.key; systemctl reset-failed {bobs}; true")
+        code, out = machine.execute("su - bob -c 'torq ask hello' 2>&1")
+        assert code != 0, out
+        assert "the model's key is missing" in out and "an administrator must install it" in out and f"journalctl -u {bobs}" in out, out
+        assert "did not answer" not in out and "Hello" not in out and "sk-test-key" not in out and key not in out, out
+        assert machine.succeed(f"stat -c %a:%U:%s {word}/bob").strip() == "644:root:0"
+        # Not started, by no other way.
+        assert machine.succeed(f"systemctl show -P MainPID {bobs}").strip() == "0"
+        machine.fail(f"test -e /run/credentials/{bobs}/model-key")
+        # No one but root leaves or takes away a word: bob cannot say alice's key is missing, nor hide his own.
+        machine.fail(f"su - bob -c 'touch {word}/alice'")
+        machine.fail(f"su - bob -c 'rm -f {word}/bob'")
+        machine.succeed(f"test -e {word}/bob")
+        machine.fail(f"su - bob -c 'ln -s /etc/passwd {word}/carol'")
+        # Asked again: the same reason, still (the socket may have stopped by now, after its failed starts).
+        out = machine.execute("su - bob -c 'torq ask hello' 2>&1")[1]
+        assert "the model's key is missing" in out, out
+        # The key back (an administrator's doing, the socket started again in case it had stopped): his agent
+        # answers, and the word is gone with the start that loaded the key.
+        machine.succeed(f"mv /var/lib/torq/secrets/kept.key {key}")
+        machine.succeed(f"systemctl reset-failed {bobs} torq-agent@bob.socket; systemctl restart torq-agent@bob.socket")
+        assert as_user("bob", "torq ask hello").strip() == "Hello alice."
+        machine.fail(f"test -e {word}/bob")
+        # A word left behind while the agent runs (root's, by hand here) is not believed against an agent
+        # that answers.
+        machine.succeed(f"touch {word}/bob")
+        assert as_user("bob", "torq ask hello").strip() == "Hello alice."
+        machine.succeed(f"rm {word}/bob; systemctl stop {bobs}")
 
     with subtest("what the resident rule rests on, at run time: tracing only one's own descendants, no user manager for either account"):
         # agent-assertions checks the configuration; this, the running machine.

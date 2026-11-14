@@ -96,6 +96,29 @@ let
         && c.systemd.services."torq-agent@dev".serviceConfig.LoadCredential == [ ]
       then "no key named: nothing to say"
       else throw "agent-assertions: a unit for a missing key where no key is named")
+    # Root's word of a missing key, for the person (KNOWN-GAPS 6zzo, 2026-11-14): a directory in /run that only
+    # root writes and anyone reads; the unit that says a missing key may write there and nowhere else; the
+    # agent's own check at its start is given the person, whose word it takes away (still one command, as
+    # root); and the word's place is the one torqcli's client reads (cli/src/agent/client.rs, KEY_MISSING_DIR).
+    (let
+      c = configOf { torq.agent.doctor = doctorOn // { apiKeyFile = "/var/lib/torq/secrets/model.key"; }; };
+      dir = c.systemd.tmpfiles.settings."10-torq-agent"."/run/torq/agent-key-missing".d or null;
+      sc = c.systemd.services."torq-agent-key@dev".serviceConfig;
+      pre = c.systemd.services."torq-agent@dev".serviceConfig.ExecStartPre;
+      client = builtins.readFile ../cli/src/agent/client.rs;
+    in
+      if dir != null && dir.mode == "0755" && dir.user == "root" && dir.group == "root"
+        && sc.ReadWritePaths == [ "-/run/torq/agent-key-missing" ] && sc.ProtectSystem == "strict"
+        && !(sc ? BindPaths) && !(sc ? StateDirectory) && !(sc ? RuntimeDirectory)
+        && lib.length pre == 1 && lib.hasPrefix "+" (lib.head pre) && lib.hasSuffix "-torq-agent-key-check dev" (lib.head pre)
+        && lib.hasInfix "pub const KEY_MISSING_DIR: &str = \"/run/torq/agent-key-missing\";" client
+      then "a missing key's word: root's directory, the one place written"
+      else throw "agent-assertions: root's word of a missing key is not as it should be: ${builtins.toJSON { inherit dir pre; inherit (sc) ReadWritePaths; }}")
+    (let c = configOf { torq.agent.doctor = doctorOn; }; in
+      if !((c.systemd.tmpfiles.settings."10-torq-agent" or { }) ? "/run/torq/agent-key-missing")
+        && c.systemd.services."torq-agent@dev".serviceConfig.ExecStartPre == [ ]
+      then "no key named: no word of one"
+      else throw "agent-assertions: a place for a missing key's word where no key is named")
     (refuses "SETENV in sudoers text" ({ config, ... }: {
       security.sudo.extraConfig = "%wheel ALL=(root) NOPASSWD: SETENV: ${config.torq.agent.launcher}/bin/torq-agent-run";
     }) "a rule for torq-agent-run with SETENV")

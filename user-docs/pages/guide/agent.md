@@ -148,13 +148,30 @@ Only your resident agent gets it (as its service's credential): no program run a
 included — can read it, and so `torq doctor` and `torq agent propose` cannot use a keyed model; they say so.
 Ask with `torq ask`.
 
-If the key file is missing, or is not root's alone, your resident agent does not start, and `torq ask` says
-it did not answer. The reason is in its service's journal, which an administrator reads:
+If the key file is missing, your resident agent does not start, and `torq ask` tells you so, whether or not
+you are an administrator:
+
+```text
+bob@torq> torq ask hello
+error: your agent cannot start: the model's key is missing (it was when your agent last tried to start,
+less than a minute ago); an administrator must install it (journalctl -u torq-agent@bob.service says where,
+an administrator's)
+```
+
+The agent's panel shows the same reason. It says when the key was found missing, not that it still is: once
+an administrator has put the key back, ask again. Where the key belongs is in the service's journal, which an
+administrator reads:
 
 ```text
 alice@torq> sudo journalctl -u torq-agent@alice.service
 … torq-agent: the model's key, /var/lib/torq/secrets/model.key, is missing …
 ```
+
+If asking again still fails after the key is back, the agent's socket may have stopped after its failed
+starts; an administrator starts it again with `sudo systemctl restart torq-agent@bob.socket`.
+
+If the key file is there but is not root's alone, your agent does not start either, and `torq ask` says only
+that it did not answer: that reason is in the journal alone.
 
 A package may not change your agent's service. A TorqOS machine with a resident agent does not build if a
 package brings a unit file or a drop-in for `torq-agent@<you>.service`, its socket or `torq-agent-key@<you>.service`
