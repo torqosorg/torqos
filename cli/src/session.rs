@@ -779,8 +779,9 @@ impl<'a> Session<'a> {
                 let full = self.here(&words);
                 let mut d = self.candidate_data()?;
                 let was = d.source.clone();
+                let replaces = self.whole().replaced_default(&d, &full);
                 self.whole().set(&mut d, &full)?;
-                let note = self.rules_note(&d);
+                let note = format!("{}{}", replaces.map(|r| self.noted(&r)).unwrap_or_default(), self.rules_note(&d));
                 if d.source != was {
                     // A new source is locked now, in the candidate: what `commit` installs is shown first.
                     let shown = self.lock_source(d.source.as_deref().unwrap_or_default(), false)?;
@@ -926,6 +927,7 @@ impl<'a> Session<'a> {
             // Nothing set at a place: said, not an empty answer.
             None => w.show(d, path).map(|out| if out.is_empty() && !path.is_empty() { format!("Nothing is set at {}.\n", path.join(" ")) } else { out }),
             Some(Display::Set) => w.display_set(d, path),
+            Some(Display::Defaults) => w.display_defaults(d, path),
             Some(Display::Detail) => {
                 let mut out = w.show(d, path)?;
                 out.push_str(&format!("## {origin}\n"));
@@ -4731,6 +4733,42 @@ mod tests {
         assert!(raw.contains("+++ b/flake.lock\n") && raw.contains("+{\"nodes\":{}}") && raw.contains("+++ b/flake.nix\n"), "{raw}");
         assert!(!raw.contains("host.json"), "only what changed: {raw}");
         assert_eq!(s.exec("show system rollback 0 compare 1").unwrap(), "No differences: configurations 0 and 1 have the same settings.\n", "the tree did not change");
+    }
+
+    #[test]
+    fn set_says_which_default_it_replaces() {
+        let (d, m) = (repo(), Fake::default());
+        let mut s = session(d.path(), None, &m);
+        s.exec("configure").unwrap();
+        let first = s.exec("set services openssh ports 2222").unwrap();
+        assert!(first.contains("services openssh ports replaces the default [ 22 ]"), "{first}");
+        // Once set, it replaces nothing: a second value is not a replacement.
+        assert!(!s.exec("set services openssh ports 2200").unwrap().contains("default"));
+        assert!(s.exec("set services openssh enable true").unwrap().contains("services openssh enable replaces the default false"));
+        // No known default (nullOr: null), an empty one, and a bad value (refused) say nothing.
+        assert!(!s.exec("set time timeZone Europe/Berlin").unwrap().contains("default"));
+        assert!(!s.exec("set services httpd extraConfig x").unwrap().contains("default"), "an empty default is not worth a line");
+        assert!(s.exec("set services openssh enable maybe").is_err());
+    }
+
+    #[test]
+    fn display_defaults_lists_what_nothing_sets() {
+        let (d, m) = (repo(), Fake::default());
+        let mut s = session(d.path(), None, &m);
+        s.exec("configure").unwrap();
+        let out = s.exec("show services openssh | display defaults").unwrap();
+        assert!(out.contains("services openssh enable: false\n") && out.contains("services openssh ports: [ 22 ]\n"), "{out}");
+        assert!(out.contains("services openssh settings LogLevel: INFO\n"), "{out}");
+        assert!(!out.contains("httpd"), "only what is shown: {out}");
+        s.exec("set services openssh ports 2222").unwrap();
+        let out = s.exec("show services openssh | disp def").unwrap();
+        assert!(out.contains("services openssh ports: [ 22 ] (set)\n") && out.contains("enable: false\n"), "abbreviated, and the set one marked: {out}");
+        // A whole configuration is too many; a place with no default says so.
+        assert!(format!("{:#}", s.exec("show | display defaults").unwrap_err()).contains("needs a place"));
+        assert!(s.exec("show torq dev | display defaults").unwrap().contains("torq dev enable: false"));
+        // The operational show takes it too.
+        s.exec("exit").unwrap();
+        assert!(s.exec("show configuration services openssh | display defaults").unwrap().contains("services openssh ports: [ 22 ]"));
     }
 
     #[test]

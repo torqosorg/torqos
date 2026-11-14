@@ -18,6 +18,8 @@ pub enum Display {
     Set,
     /// With what is behind it: the files, commits, store paths.
     Detail,
+    /// What the settings below a place are when nothing sets them, where NixOS says (plain values).
+    Defaults,
     /// A comparison as the raw diff of the files (what the broker records).
     Diff,
 }
@@ -27,6 +29,7 @@ impl Display {
         match self {
             Display::Set => "set",
             Display::Detail => "detail",
+            Display::Defaults => "defaults",
             Display::Diff => "diff",
         }
     }
@@ -383,6 +386,7 @@ mod tests {
             (Mode::Operational, Op::ShowActive { path: vec![], display: None }),
             (Mode::Operational, Op::ShowActive { path: v("users dev"), display: set }),
             (Mode::Operational, Op::ShowActive { path: v("system"), display: detail }),
+            (Mode::Operational, Op::ShowActive { path: v("services openssh"), display: Some(Display::Defaults) }),
             (Mode::Operational, Op::ShowCommits { display: None }),
             (Mode::Operational, Op::ShowCommits { display: detail }),
             (Mode::Operational, Op::ShowRollback { n: 3, compare: None, display: None }),
@@ -647,13 +651,13 @@ mod tests {
         for (mode, line, want) in [
             (o, "show system commit | display set", "'set' is not a view (after `| display`) (one of: detail)"),
             (o, "show system alarms | display diff", "'diff' is not a view (after `| display`) (one of: detail)"),
-            (o, "show configuration | display diff", "'diff' is not a view (after `| display`) (one of: detail, set)"),
+            (o, "show configuration | display diff", "'diff' is not a view (after `| display`) (one of: detail, set, defaults)"),
             (o, "show system rollback 1 compare 0 | display set", "'set' is not a view (after `| display`) (one of: diff)"),
             (o, "show configuration | display set | display detail", "'display' is not a word here (after `show configuration | display set |`)"),
             (o, "show system commit extra", "'extra' is not a word here: nothing may follow `show system commit`"),
             (o, "show system rollback 1 compare", "needs <number> (the configuration to compare with)"),
             (c, "show | compare | display set", "'set' is not a view (after `| display`) (one of: diff)"),
-            (c, "show | display diff", "'diff' is not a view (after `| display`) (one of: detail, set)"),
+            (c, "show | display diff", "'diff' is not a view (after `| display`) (one of: detail, set, defaults)"),
             (o, "show system commit | count", "'count' is not a word here (after `show system commit |`): lines are counted with `| wc -l`"),
             (o, "show services | match ssh", "lines are matched with `| grep <pattern>`"),
         ] {
