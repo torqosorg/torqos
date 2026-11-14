@@ -204,8 +204,18 @@ let
     f=${lib.escapeShellArg (toString modelKey)}
     # This command runs, so systemd has loaded the unit's credential: the key is there. Root's word that it was
     # missing is taken away before the key is judged below, since a key that is there and wrong is not a key
-    # missing. ($1: the person, a login name; never fails the start.)
-    if [ -n "''${1-}" ]; then ${pkgs.coreutils}/bin/rm -f -- ${keyMissingDir}/"$1" || true; fi
+    # missing. ($1: the person, a login name.)
+    # A word that cannot be taken away stops the start, and says so: an agent that started never has a word
+    # left saying it could not (torqcli's client would repeat it to the person the next time the agent was slow
+    # to answer). It is root's own file in root's own directory in /run, so this fails only on a machine where
+    # something else is wrong (a directory put at that name, /run read-only), which the line names.
+    if [ -n "''${1-}" ]; then
+      word=${keyMissingDir}/"$1"
+      if ! ${pkgs.coreutils}/bin/rm -f -- "$word"; then
+        echo "torq-agent: root's word that the model's key was missing, $word, could not be taken away (the line before this says why): the resident agent is not started while that word would still be read. The key itself may be in order. Take the word away as root (sudo rm -r $word), then ask again" >&2
+        exit 1
+      fi
+    fi
     if [ -L "$f" ] || [ ! -f "$f" ]; then
       echo "torq-agent: the model's key, $f, is not a plain file (a link is not followed): the resident agent is not started" >&2
       exit 1

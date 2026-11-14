@@ -1528,10 +1528,16 @@ Its §5 lists claims without a test.
        start (it runs only once systemd has loaded the key), before the key is judged, so a key that is there
        and wrong is never called missing; and by the explaining unit when it finds the key there. The client
        never says it against an agent that answers (what the service itself says is passed on as it is). What
-       is left: the key put back and no start tried since (the socket stopped after its failed starts, say)
-       leaves the word, which is why the sentence says when it was so, not that it is so now; and if the
-       removal at the start fails (it is not let to fail the start), an old word would be said against an agent
-       that later goes silent for another reason. /run is emptied at each boot;
+       is left: the key put back and no start tried since leaves the word until the next question (which is
+       itself a start, now that the socket outlives failed starts, above), which is why the sentence says
+       when it was so, not that it is so now. A removal that fails at the start now stops the start, with a
+       line in the journal that names the word and how to take it away (2026-11-14, later; the script tried by
+       hand, the VM subtest written and not run): an agent that started has no word left, so none is said
+       against an agent that later goes silent for another reason. Until an administrator takes the word
+       away, the person is still told "the key is missing" for an agent that in truth was stopped by the
+       word; the journal the sentence names has the true line. It is root's file in root's directory in
+       /run, so this happens only where something else is wrong (a directory at that name, /run read-only).
+       /run is emptied at each boot;
      - *what a person learns*: that the key was missing, for themselves or another person. Not a secret: the
        key's path is in the configuration everyone here can read, and the key is the machine's, not a person's.
      Also left: the client waits up to a second for the word after a failure (the explaining unit starts only

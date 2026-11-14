@@ -411,6 +411,30 @@ pkgs.testers.runNixOSTest {
         assert as_user("bob", "torq ask hello").strip() == "Hello alice."
         machine.succeed(f"rm {word}/bob; systemctl stop {bobs}")
 
+    with subtest("root's word that cannot be taken away stops the start, and says so: no agent runs with a word left"):
+        # The agent's first command at a start takes the word away (modules/agent.nix, keyCheck). Were that to
+        # fail and the start go on, a word would be left beside an agent that runs, for torqcli's client to
+        # repeat the next time the agent was slow. A directory at the word's name is what `rm -f` cannot take
+        # away (and what the client does not believe: it is no plain file).
+        machine.succeed(f"systemctl stop {bobs}; test -s {key}; mkdir {word}/bob")
+        c = machine.succeed(f"journalctl -u {bobs} -n 0 --show-cursor --no-pager | sed -n 's/^-- cursor: //p'").strip()
+        code, out = machine.execute("su - bob -c 'torq ask hello' 2>&1")
+        assert code != 0 and "Hello" not in out, out
+        # The key is in its place: nothing is said of a missing key, here or in the journal.
+        assert "the model's key is missing" not in out and "sk-test-key" not in out, out
+        machine.wait_until_succeeds(f"journalctl -u {bobs} --no-pager --after-cursor={shlex.quote(c)} | grep -q 'could not be taken away'", timeout=30)
+        machine.fail(f"journalctl -u {bobs} --no-pager --after-cursor={shlex.quote(c)} | grep -F 'is missing (torq.agent'")
+        # Not started, by no other way; and his socket still listens.
+        machine.fail(f"systemctl is-active {bobs}")
+        assert machine.succeed(f"systemctl show -P MainPID {bobs}").strip() == "0"
+        machine.fail(f"test -e /run/credentials/{bobs}/model-key")
+        machine.succeed("systemctl is-active torq-agent@bob.socket")
+        # Taken away (an administrator's doing, as the journal's line says), the next question is answered.
+        machine.succeed(f"rmdir {word}/bob")
+        assert as_user("bob", "torq ask hello").strip() == "Hello alice."
+        machine.fail(f"test -e {word}/bob")
+        machine.succeed(f"systemctl stop {bobs}")
+
     with subtest("what the resident rule rests on, at run time: tracing only one's own descendants, no user manager for either account"):
         # agent-assertions checks the configuration; this, the running machine.
         assert machine.succeed("sysctl -n kernel.yama.ptrace_scope").strip() in ("1", "2", "3")

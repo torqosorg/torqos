@@ -2849,6 +2849,18 @@ vouches for, that only proposes, every change ledgered and undone in one command
   its key. Not chosen: letting the client look for the key (it cannot, by design), or a helper that answers
   for root. torqcli's units and `checks.agent-assertions` (run); the VM subtests are written and have not
   run. Open: KNOWN-GAPS 6zzo.
+- **Amended: the socket outlives failed starts; a word that stays stops the start (2026-11-14, later still).**
+  With the key missing, one `torq ask` left the agent's socket stopped for good: the waiting connection made
+  systemd start the failing service again and again until its limit of starts, which stops the socket
+  (reasoned from systemd 260.5's source; not seen on a machine). Decided: `FlushPending=yes` on the socket and
+  `StartLimitIntervalSec=0` on the unit, so one question is one start and no failed start costs the socket; the
+  key put back, the next question is answered with nothing restarted. Not chosen: a path unit that watches the
+  key and restarts the socket (a third unit of root's to hold to its text, and it mends only this one cause of
+  a failed start); the limits made larger (any limit is reached). And the agent unit's first command now fails
+  the start when it cannot take away root's word of a missing key, saying so, instead of going on: an agent
+  that runs never has a word left against it. Not chosen: the client judging a word stale by its age (a word
+  written a moment late would then be missed on a busy machine). `checks.agent-assertions` (run); the VM
+  subtests are written and have not run. Open: KNOWN-GAPS 6zzo.
 
 ## ADR-052 — Secrets the agent may use and never read: `torq-secrets`
 - **Status:** accepted, 2026-11-10; its four questions settled by the owner the same day (below). Proposed
