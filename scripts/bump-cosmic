@@ -7,3 +7,23 @@ nix flake update nixpkgs-cosmic
 src=$(nix eval --raw --impure --expr '(builtins.getFlake (toString ./.)).inputs.nixpkgs-cosmic.outPath')
 install -m 644 "$src/nixos/modules/services/desktop-managers/cosmic.nix" modules/cosmic/cosmic.nix
 install -m 644 "$src/nixos/modules/services/display-managers/cosmic-greeter.nix" modules/cosmic/cosmic-greeter.nix
+
+# The components COSMIC keeps settings in (cli/src/desktop.rs KNOWN_COMPONENTS) cannot be generated: only the
+# few with shipped defaults appear under share/cosmic of the packages. Check that those are all listed, and fail
+# loudly when not. Fetches from the binary cache only (--max-jobs 0): COSMIC is never compiled here. A component
+# with no shipped defaults is found only by running a COSMIC session and reading ~/.config/cosmic: add it by hand.
+pkgs=(cosmic-comp cosmic-panel cosmic-applets cosmic-settings cosmic-settings-daemon cosmic-session cosmic-bg
+  cosmic-launcher cosmic-applibrary cosmic-workspaces-epoch cosmic-osd cosmic-greeter cosmic-term cosmic-edit
+  cosmic-files cosmic-store cosmic-idle cosmic-notifications cosmic-randr cosmic-icons)
+share=""
+for p in "${pkgs[@]}"; do
+  out=$(nix build --no-link --print-out-paths --max-jobs 0 "path:$src#$p" 2>/dev/null) || continue
+  [ -d "$out/share/cosmic" ] && share="$share:$out/share/cosmic"
+done
+if [ -z "$share" ]; then
+  echo "bump-cosmic: WARNING: no COSMIC package could be fetched from the cache; KNOWN_COMPONENTS NOT CHECKED." >&2
+  echo "  Run by hand: TORQ_COSMIC_SHARE=<dir>:<dir> cargo test -p torqcli known_components_cover" >&2
+  exit 0
+fi
+TORQ_COSMIC_SHARE="${share#:}" nix develop --command cargo test --manifest-path cli/Cargo.toml known_components_cover \
+  || { echo "bump-cosmic: FAILED: COSMIC ships components cli/src/desktop.rs KNOWN_COMPONENTS lacks; add them." >&2; exit 1; }
