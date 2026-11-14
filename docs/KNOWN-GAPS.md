@@ -303,9 +303,13 @@ Open issues found while bringing up M1 (2026-10-30). Fix with a failing test fir
    a `rebuild` set by hand that switches before it builds is not run a second time: the links to the running
    system and the system profile are compared before and after, and if either moved the cache is removed
    but the command is not run again, so the change fails as any failed rebuild does (`may_run_again`, tests
-   `a_command_that_switched_is_not_run_again`, `a_rebuild_that_already_switched_is_not_run_again_on_a_damaged_cache`;
-   a command that switches in a way neither link shows, or fails before its switch has finished, is not
-   told apart). Not covered: a cache damaged so that Nix fails with none of those messages (a message not
+   `a_command_that_switched_is_not_run_again`, `a_rebuild_that_already_switched_is_not_run_again_on_a_damaged_cache`).
+   Closed 2026-11-14: only two commands reach this path, the default build (one `nix build`, the same twice) and
+   the default rebuild (build, then `nix-env --set`, then the switch, each only after the one before, test
+   `the_default_rebuild_builds_then_sets_the_profile_then_switches`), so nothing but the store is touched before
+   the profile link moves, and a switch that leaves both links as they were is to the system already there, which
+   runs the same again; the argument is at `may_run_again`. A command of the owner's own that acts before it
+   builds is told apart only by the links, and the module option says it must be safe to run twice. Not covered: a cache damaged so that Nix fails with none of those messages (a message not
    in Nix's or SQLite's text on hand is not guessed); damage in a person's own `~/.cache/nix` (their
    `nix`, not the broker's). (The store itself is safe from this since ADR-024: `fsync-store-paths`.)
 6u. **Packages cannot be found by the command they install** (`rg` → ripgrep, `nvim` → neovim).
