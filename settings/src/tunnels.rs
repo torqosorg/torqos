@@ -16,7 +16,7 @@ use cosmic::prelude::*;
 use cosmic::surface::action::{app_popup, destroy_popup};
 use cosmic::widget::{self, icon};
 use std::time::Duration;
-use torq::agent::handoff::{self, About, Handoff};
+use torq::agent::handoff::{self, About};
 use torq::tunnels::{self, State};
 
 fn main() -> cosmic::iced::Result {
@@ -68,7 +68,8 @@ enum Message {
     Save,
     Cancel,
     Edit,
-    AskAgent(Handoff),
+    /// Its name, where it goes and its state line: the handoff is built when pressed, not at every frame.
+    AskAgent(String, String, String),
     PopupClosed(Id),
     Surface(cosmic::surface::Action<Message>),
 }
@@ -154,13 +155,7 @@ impl Applet {
                     col = col.push(widget::text::caption(format!("Only one can be up at a time: {c}.")).width(Length::Fill));
                 }
                 for (t, (state, login)) in file.tunnels.iter().zip(self.states.iter()) {
-                    let line = match state {
-                        State::Off => t.describe(),
-                        State::Connecting => format!("Connecting to {}…", t.destination),
-                        State::Up => format!("Up · {}", t.forwards.iter().map(|f| f.describe()).collect::<Vec<_>>().join(", ")),
-                        State::Retrying(why) => why.clone(),
-                        State::Failed(why) => format!("Stopped: {why}"),
-                    };
+                    let line = torq::app::tunnel_line(t, state);
                     let name = t.name.clone();
                     let head = widget::row::with_capacity(2)
                         .align_y(Alignment::Center)
@@ -169,14 +164,14 @@ impl Applet {
                     let name = t.name.clone();
                     // One that will not come up: the agent can look at it with the person (its name, where it
                     // goes and its last word attached; ADR-051 4).
-                    let ask = matches!(state, State::Retrying(_) | State::Failed(_)).then(|| About::Tunnel { name: &t.name, destination: &t.destination, state: &line }.handoff());
+                    let ask = torq::app::tunnel_askable(state).then(|| Message::AskAgent(t.name.clone(), t.destination.clone(), line.clone()));
                     let mut row = widget::column::with_capacity(4)
                         .spacing(spacing.space_xxs)
                         .push(head)
                         .push(widget::text::caption(line).width(Length::Fill))
                         .push(widget::checkbox(*login).label("Start at login").on_toggle(move |on| Message::AtLogin(name.clone(), on)));
-                    if let Some(h) = ask {
-                        row = row.push(widget::button::text("Ask the agent").on_press(Message::AskAgent(h)));
+                    if let Some(m) = ask {
+                        row = row.push(widget::button::text("Ask the agent").on_press(m));
                     }
                     col = col.push(row);
                 }
@@ -325,7 +320,7 @@ impl cosmic::Application for Applet {
                 Err(e) => self.error = Some(format!("{e:#}")),
             },
             // Off the panel's thread (step 5's second review): systemd-run is waited for, bounded.
-            Message::AskAgent(h) => return act(move || handoff::open_window(&h, None)),
+            Message::AskAgent(name, destination, state) => return act(move || handoff::open_window(&About::Tunnel { name: &name, destination: &destination, state: &state }.handoff(), None)),
             Message::PopupClosed(id) => {
                 if self.popup == Some(id) {
                     self.popup = None;

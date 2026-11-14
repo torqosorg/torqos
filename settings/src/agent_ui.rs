@@ -281,8 +281,8 @@ impl cosmic::Application for Window {
                     return Task::none();
                 }
                 self.looking = true;
-                let (client, seqs) = (self.client.clone(), self.talk.proposals().into_iter().map(|(s, _)| s).collect());
-                return cosmic::task::future(async move { Message::Looked(agentkit::look(client, seqs).await) });
+                let (client, seqs, known) = (self.client.clone(), self.talk.proposals().into_iter().map(|(s, _)| s).collect(), self.fates.clone());
+                return cosmic::task::future(async move { Message::Looked(agentkit::look(client, seqs, known).await) });
             }
             Message::Looked(l) => {
                 self.looking = false;

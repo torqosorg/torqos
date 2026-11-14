@@ -321,6 +321,9 @@ pub enum Message {
     /// The same about the failure beside it, or the draft's changes: built when pressed, not at every frame (a
     /// draft's diff was cleaned at every redraw).
     AskAgentFailure,
+    /// A setting (its place, its value in the draft) or an alarm line: built when pressed too.
+    AskAgentSetting(String, String),
+    AskAgentAlarm(String),
     AskAgentDraft,
     /// What became of opening the agent's window (an error, said on the page).
     AskedAgent(Result<(), String>),
@@ -558,7 +561,7 @@ impl cosmic::Application for Settings {
             content = content.push(note(text, *failed));
             // Something failed: the agent can look at it with the person (what failed and what it said, attached).
             // Only beside the note it came with (`update` lets it go when any other changes the note).
-            if *failed && self.failure.is_some() {
+            if app::ask_about_failure_offered(self.note.as_ref(), self.failure.is_some()) {
                 content = content.push(widget::button::text("Ask the agent about this").on_press(Message::AskAgentFailure));
             }
         }
@@ -1110,6 +1113,11 @@ impl Settings {
                     return cosmic::Application::update(self, Message::AskAgent(About::Failure { command, said }.handoff()));
                 }
             }
+            Message::AskAgentSetting(place, value) => {
+                let h = About::Setting { place: &place, help: &self.help, value: &value }.handoff();
+                return cosmic::Application::update(self, Message::AskAgent(h));
+            }
+            Message::AskAgentAlarm(alarm) => return cosmic::Application::update(self, Message::AskAgent(About::Alarm(&alarm).handoff())),
             Message::AskAgentDraft => {
                 if let Some(Loaded::Got(diff)) = self.outputs.get(COMPARE) {
                     return cosmic::Application::update(self, Message::AskAgent(About::Draft(diff).handoff()));
@@ -1350,8 +1358,7 @@ impl Settings {
         if !path.is_empty() {
             let place = path.join(" ");
             let value = draft.map(|v| v.join(", ")).unwrap_or_else(|| "not set".into());
-            let h = About::Setting { place: &place, help: &self.help, value: &value }.handoff();
-            col = col.push(widget::button::text("Ask the agent about this setting").on_press(Message::AskAgent(h)));
+            col = col.push(widget::button::text("Ask the agent about this setting").on_press(Message::AskAgentSetting(place, value)));
         }
         let active = self.active.get(path);
 
@@ -1441,11 +1448,8 @@ impl Settings {
             Loaded::Failed(why) => return failed(why),
             Loaded::Got(g) => g,
         };
-        let (mark, colour, headline) = if g.well {
-            ("emblem-ok-symbolic", Colour::Good, "This machine is exactly as its history says")
-        } else {
-            ("dialog-warning-symbolic", Colour::Warn, "This machine needs a look")
-        };
+        let headline = app::overview_headline(g.well);
+        let (mark, colour) = if g.well { ("emblem-ok-symbolic", Colour::Good) } else { ("dialog-warning-symbolic", Colour::Warn) };
         let banner = widget::row::with_capacity(2)
             .push(colour.icon(mark, 32))
             .push(widget::column::with_capacity(2).push(widget::text::title3(headline)).push(widget::text::body(format!("TorqOS {}", g.version))))
@@ -1454,36 +1458,19 @@ impl Settings {
         let mut page = widget::column::with_capacity(3).push(banner).spacing(spacing.space_l);
 
         let mut waiting_on = settings::section().title("Waiting for you");
-        let mut any = false;
-        if let Some(c) = &g.confirm {
-            any = true;
-            let label = if matches!(g.needs, Needs::Restart(_)) { "Confirm, then restart" } else { "Confirm" };
-            waiting_on = waiting_on.add(attention(format!("Change #{} rolls back at {} unless you confirm it.", c.seq, c.deadline), widget::button::suggested(label).on_press(Message::Confirm)));
+        let rows = app::overview_waiting(g);
+        for (text, b) in &rows {
+            let (label, message) = (b.label(), match b {
+                app::WaitButton::Confirm { .. } => Message::Confirm,
+                app::WaitButton::Restart => Message::Restart,
+                app::WaitButton::LogOut => Message::LogOut,
+                app::WaitButton::ReviewDraft => Message::Review,
+                app::WaitButton::ReviewProposals => Message::Approve,
+            });
+            let button = if matches!(b, app::WaitButton::Confirm { .. }) { widget::button::suggested(label) } else { widget::button::standard(label) };
+            waiting_on = waiting_on.add(attention(text.clone(), button.on_press(message)));
         }
-        match (&g.needs, g.needs.line()) {
-            (Needs::Restart(_), Some(l)) => {
-                any = true;
-                waiting_on = waiting_on.add(attention(l, widget::button::standard("Restart…").on_press(Message::Restart)));
-            }
-            (Needs::LogOut(_), Some(l)) => {
-                any = true;
-                waiting_on = waiting_on.add(attention(l, widget::button::standard("Log out…").on_press(Message::LogOut)));
-            }
-            _ => {}
-        }
-        if g.draft {
-            any = true;
-            waiting_on = waiting_on.add(attention("You have changes not yet committed.".to_string(), widget::button::standard("Review").on_press(Message::Review)));
-        }
-        if g.waiting.0 > 0 {
-            any = true;
-            let mut s = if g.waiting.0 == 1 { "A proposal is waiting for you.".to_string() } else { format!("{} proposals are waiting for you.", g.waiting.0) };
-            if g.waiting.1 > 0 {
-                s.push_str(&format!(" {} came from a session that read untrusted content.", g.waiting.1));
-            }
-            waiting_on = waiting_on.add(attention(s, widget::button::standard("Review").on_press(Message::Approve)));
-        }
-        if any {
+        if !rows.is_empty() {
             page = page.push(waiting_on);
         }
 
@@ -1494,12 +1481,11 @@ impl Settings {
         let mut alarms = settings::section().title("Status");
         match &self.machine {
             Loaded::Got(m) => {
-                let lines = m.alarms.lines().map(str::trim).filter(|l| !l.is_empty() && !(m.well && l.trim_start_matches("✓ ").trim_end_matches('.') == headline));
-                for l in lines {
-                    let mut row = vec![widget::text::body(l.to_string()).width(Length::Fill).into()];
+                for (l, askable) in app::alarm_rows(&m.alarms, m.well, headline) {
+                    let mut row = vec![widget::text::body(l.clone()).width(Length::Fill).into()];
                     // An alarm, not the all-well line: the agent can look at it.
-                    if !l.starts_with('✓') {
-                        row.push(widget::button::text("Ask the agent").on_press(Message::AskAgent(About::Alarm(l).handoff())).into());
+                    if askable {
+                        row.push(widget::button::text("Ask the agent").on_press(Message::AskAgentAlarm(l)).into());
                     }
                     alarms = alarms.add(settings::item_row(row).align_y(Alignment::Center));
                 }
@@ -1773,8 +1759,8 @@ impl Settings {
                     // Decline beside one of the person's own agent's (torqcli shows the proposal and asks first);
                     // anyone else's an administrator declines in torqcli. The row opens what it does.
                     let mut cells: Vec<Element<'_, Message>> = vec![widget::mouse_area(row).on_press(Message::OpenProposal(p.seq)).into()];
-                    if p.yours {
-                        cells.push(widget::button::destructive("Decline…").on_press(Message::Act(At::Read, app::decline_line(p.seq))).into());
+                    if let Some(line) = app::decline_offer(p.seq, p.yours) {
+                        cells.push(widget::button::destructive("Decline…").on_press(Message::Act(At::Read, line)).into());
                     }
                     section = section.add(settings::item_row(cells).spacing(spacing.space_s).align_y(Alignment::Center));
                 }
@@ -1811,9 +1797,9 @@ impl Settings {
         }
         // Decline only on one of the person's own agent's (as on the list); torqcli shows it and asks first.
         let yours = matches!(&self.proposals, Loaded::Got(list) if list.iter().any(|p| p.seq == seq && p.yours));
-        let mut buttons = widget::row::with_capacity(2).spacing(spacing.space_xs).push(widget::button::suggested("Review and apply…").on_press(Message::Act(At::Read, format!("request system apply {seq}"))));
-        if yours {
-            buttons = buttons.push(widget::button::destructive("Decline…").on_press(Message::Act(At::Read, app::decline_line(seq))));
+        let mut buttons = widget::row::with_capacity(2).spacing(spacing.space_xs).push(widget::button::suggested("Review and apply…").on_press(Message::Act(At::Read, app::apply_line(seq))));
+        if let Some(line) = app::decline_offer(seq, yours) {
+            buttons = buttons.push(widget::button::destructive("Decline…").on_press(Message::Act(At::Read, line)));
         }
         page = page.push(buttons);
         page = page.push(widget::text::heading("What it does"));
@@ -1833,13 +1819,7 @@ impl Settings {
         };
         let automatic = s.saving == app::Saving::Automatic;
         let toggle = widget::toggler(automatic).on_toggle(|on| Message::DesktopSaving(if on { app::Saving::Automatic } else { app::Saving::Manual }));
-        let state = if !s.unsaved.is_empty() {
-            format!("Not saved yet: {}", app::desktop_words(&s.unsaved))
-        } else if !s.waiting.is_empty() {
-            format!("Saved: {} settings", s.saved)
-        } else {
-            format!("Saved: {} settings, nothing new since", s.saved)
-        };
+        let state = app::desktop_state(&s.unsaved, &s.waiting, s.saved);
         let mut save = widget::button::suggested("Save now");
         if self.busy.is_none() {
             save = save.on_press(Message::DesktopSave);
@@ -1850,8 +1830,8 @@ impl Settings {
                 .add(settings::item::builder("Save automatically").description("Your changes are saved by themselves, within 15 minutes. Off: only when you press Save now.").control(toggle))
                 .add(settings::item::builder(state).description("request system desktop save").control(save)),
         );
-        if s.to_apply > 0 {
-            page = page.push(widget::text::caption(format!("{} settings from your configuration are still to be put on this desktop: at your next login, or now with Save now.", s.to_apply)));
+        if let Some(n) = app::desktop_to_apply(s.to_apply) {
+            page = page.push(widget::text::caption(n));
         }
         if let Some(w) = app::desktop_waiting(&s.waiting) {
             page = page.push(widget::text::caption(w));
@@ -1901,10 +1881,9 @@ impl Settings {
                 Loaded::Got(list) => {
                     for a in list {
                         let have = installed.iter().any(|i| i.id == a.id);
-                        let action: Element<'_, Message> = if have {
-                            widget::text::caption("Installed").into()
-                        } else {
-                            widget::button::standard("Install").on_press_maybe(idle.then(|| Message::Install(a.id.clone()))).into()
+                        let action: Element<'_, Message> = match app::row_offer(have, idle) {
+                            None => widget::text::caption("Installed").into(),
+                            Some(enabled) => widget::button::standard("Install").on_press_maybe(enabled.then(|| Message::Install(a.id.clone()))).into(),
                         };
                         section = section.add(app_row(a, app::app_icon(&a.id), action));
                     }
@@ -1954,11 +1933,10 @@ impl Settings {
                 Loaded::Failed(why) => section = section.add(failed(why)),
                 Loaded::Got(list) if list.is_empty() => section = section.add(widget::text::body("Nothing found.")),
                 Loaded::Got(list) => {
-                    for t in list.iter().take(40) {
-                        let action: Element<'_, Message> = if mine.contains(&t.name) {
-                            widget::text::caption("Added").into()
-                        } else {
-                            widget::button::standard("Add").on_press_maybe(idle.then(|| Message::AddTool(t.name.clone()))).into()
+                    for t in list.iter().take(app::TOOLS_LISTED) {
+                        let action: Element<'_, Message> = match app::row_offer(mine.contains(&t.name), idle) {
+                            None => widget::text::caption("Added").into(),
+                            Some(enabled) => widget::button::standard("Add").on_press_maybe(enabled.then(|| Message::AddTool(t.name.clone()))).into(),
                         };
                         section = section.add(settings::item::builder(t.name.clone()).description(format!("{} · {}", t.version, t.summary)).control(action));
                     }
@@ -2082,24 +2060,14 @@ impl Settings {
             Some(a) => a.clone(),
             None => "None: the agent is not set up for you".to_string(),
         };
-        let service = match (&s.agent, s.service, &look.status) {
-            (None, _, _) => "Not set up for you: `torq agent people` names who has one (an administrator's change)".to_string(),
-            (_, false, _) => "Not on this machine: it runs where doctor mode is on".to_string(),
-            (_, true, Some(Ok(st))) if st.running => "Working on a question".to_string(),
-            (_, true, Some(Ok(_))) => "Set up, and idle".to_string(),
-            (_, true, Some(Err(e))) => format!("Set up, but it did not answer: {e}"),
-            (_, true, None) => "Set up".to_string(),
-        };
+        let service = app::agent_service_line(s.agent.as_deref(), s.service, look.status.as_ref());
         page = page.push(
             settings::section()
                 .title("For you")
                 .add(settings::item::builder("Your agent account").description(format!("{}'s agent, unprivileged; it sees only folders you share", s.me)).control(widget::text::body(account)))
                 .add(settings::item_row(vec![widget::column::with_capacity(2).push(widget::text::body("Its service")).push(widget::text::caption(service)).width(Length::Fill).into()])),
         );
-        let (model, endpoint, key) = match &s.brain {
-            None => ("None: doctor mode is off".to_string(), String::new(), "No".to_string()),
-            Some(b) => (b.line(), b.endpoint.clone(), if b.key { "Yes".to_string() } else { "No".to_string() }),
-        };
+        let (model, endpoint, key) = app::agent_model(s.brain.as_ref());
         let mut brain = settings::section().title("Its model").add(settings::item::builder("Model").description(endpoint).control(widget::text::body(model)));
         brain = brain.add(
             settings::item::builder("An API key is configured")
@@ -2107,20 +2075,7 @@ impl Settings {
                 .control(widget::text::body(key)),
         );
         page = page.push(brain);
-        let memory = match (&look.status, s.agent.is_some() && s.service) {
-            (Some(Ok(st)), _) => Some((
-                match st.turns {
-                    0 => "It remembers nothing of your conversation".to_string(),
-                    1 => "It remembers 1 turn of your conversation".to_string(),
-                    n => format!("It remembers {n} turns of your conversation"),
-                },
-                !st.running,
-            )),
-            // Not running: not asked (asking would start it). Forget still can, when asked to.
-            (None, true) => Some(("It is not running now: how much it remembers shows while it runs".to_string(), true)),
-            _ => None,
-        };
-        if let Some((kept, idle)) = memory {
+        if let Some((kept, idle)) = app::agent_memory(look.status.as_ref(), s.agent.is_some() && s.service) {
             let forget = widget::button::destructive("Forget…").on_press_maybe((self.busy.is_none() && idle).then_some(Message::Forget));
             page = page.push(
                 settings::section().title("Its memory").add(
@@ -2161,11 +2116,7 @@ impl Settings {
 
     fn commands(&self) -> Element<'_, Message> {
         let spacing = cosmic::theme::spacing();
-        let prompt = match (self.typed_cf, self.edit.is_empty()) {
-            (false, _) => "torqcli>".to_string(),
-            (true, true) => "torqcli#".to_string(),
-            (true, false) => format!("[edit {}] torqcli#", self.edit.join(" ")),
-        };
+        let prompt = app::command_prompt(self.typed_cf, &self.edit);
         let mut page = widget::column::with_capacity(4).spacing(spacing.space_m);
         page = page.push(widget::text::body("Anything torqcli can do. Choose what comes next, or type it."));
         page = page.push(

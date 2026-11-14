@@ -213,7 +213,7 @@ impl cosmic::Application for Applet {
     fn init(core: cosmic::Core, _flags: ()) -> (Self, Task<cosmic::Action<Message>>) {
         let client = Client::mine();
         let app = Applet { core, popup: None, client: client.clone(), reach: Ok(None), brain: None, fates: vec![], looking: true, talk: Conversation::default(), question: String::new(), note: None, tokens: None, declining: Default::default() };
-        (app, cosmic::task::future(async move { Message::Looked(agentkit::look(client, vec![]).await) }))
+        (app, cosmic::task::future(async move { Message::Looked(agentkit::look(client, vec![], vec![]).await) }))
     }
 
     fn on_close_requested(&self, id: Id) -> Option<Message> {
@@ -234,8 +234,8 @@ impl cosmic::Application for Applet {
                 }
                 self.looking = true;
                 // The service asked only while it runs: looking never starts it.
-                let (client, seqs) = (self.client.clone(), self.talk.proposals().into_iter().map(|(s, _)| s).collect());
-                return cosmic::task::future(async move { Message::Looked(agentkit::look(client, seqs).await) });
+                let (client, seqs, known) = (self.client.clone(), self.talk.proposals().into_iter().map(|(s, _)| s).collect(), self.fates.clone());
+                return cosmic::task::future(async move { Message::Looked(agentkit::look(client, seqs, known).await) });
             }
             Message::Looked(l) => {
                 self.looking = false;

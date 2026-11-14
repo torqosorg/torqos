@@ -630,8 +630,11 @@ Its §5 lists claims without a test.
    component only takes what is left; 2000 planted one-file components, 16 files of `MAX_VALUE` (exactly
    `MAX_TOTAL`) and a flood under every known name all leave each known component's settings kept. Still
    open: a program writing under a known name is saved as COSMIC's (up to an equal turn); a COSMIC component
-   missing from the list is kept only while room is left, so the list needs adding to as COSMIC grows
-   (`scripts/bump-cosmic` does not do it).
+   missing from the list is kept only while room is left. `scripts/bump-cosmic` now checks the list against the
+   `share/cosmic` directories of the pinned packages (test `the_known_components_cover_those_cosmic_ships_defaults_for`,
+   cache-only fetch, a loud warning when nothing can be fetched), but only the few components that ship defaults
+   appear there; the rest are found from a running session and added by hand
+   (2026-11-14).
 6zzb. **COSMIC's own settings can be personal, and the saved desktop is readable by every account** (6r; the
    review of work/autosave). Kept on purpose, as the person's desktop, but not harmless: the wallpaper's path
    (`CosmicBackground/v1/all`, a folder in the home), custom shortcuts (`CosmicSettings.Shortcuts/v1/custom`,

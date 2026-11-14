@@ -2257,6 +2257,39 @@ pub fn agent_fates(seqs: &[u64]) -> Result<Vec<(u64, crate::agent::conversation:
     Ok(crate::agent::conversation::fates(&entries, &crate::agent::agent_of(&crate::me()?), seqs))
 }
 
+/// Which of `seqs` the ledger must be read for: not those whose fate is already known and final. A proposal that was
+/// applied or declined stays so; the rest (waiting, failed, not yours (a number may become one),
+/// unread, not yet looked up) can change. With nothing to look up the ledger is not read at all.
+pub fn fates_to_look_up(seqs: &[u64], known: &[(u64, crate::agent::conversation::Fate)]) -> Vec<u64> {
+    use crate::agent::conversation::Fate;
+    seqs.iter()
+        .copied()
+        .filter(|s| !known.iter().any(|(k, f)| k == s && matches!(f, Fate::Applied | Fate::Declined)))
+        .collect()
+}
+
+/// The fate of each of `seqs`: what was just looked up, else what was known.
+pub fn merge_fates(seqs: &[u64], known: &[(u64, crate::agent::conversation::Fate)], looked: Vec<(u64, crate::agent::conversation::Fate)>) -> Vec<(u64, crate::agent::conversation::Fate)> {
+    seqs.iter().filter_map(|s| looked.iter().chain(known.iter()).find(|(k, _)| k == s).copied()).collect()
+}
+
+/// A tunnel's line in the panel: what it is while off, "Connecting to …", "Up · its forwards", why it retries, or why it stopped.
+pub fn tunnel_line(t: &crate::tunnels::Tunnel, state: &crate::tunnels::State) -> String {
+    use crate::tunnels::State;
+    match state {
+        State::Off => t.describe(),
+        State::Connecting => format!("Connecting to {}…", t.destination),
+        State::Up => format!("Up · {}", t.forwards.iter().map(|f| f.describe()).collect::<Vec<_>>().join(", ")),
+        State::Retrying(why) => why.clone(),
+        State::Failed(why) => format!("Stopped: {why}"),
+    }
+}
+
+/// Whether the tunnel's row offers "Ask the agent": only one that will not come up (retrying or stopped).
+pub fn tunnel_askable(state: &crate::tunnels::State) -> bool {
+    matches!(state, crate::tunnels::State::Retrying(_) | crate::tunnels::State::Failed(_))
+}
+
 /// Whether Settings and the applets offer `me` Decline of proposal `e`, by their own say: narrower than the broker's rule,
 /// on purpose (Proposal.yours): their own agent proposed it.
 fn yours(e: &history::Entry, me: &str) -> bool {
@@ -2403,6 +2436,275 @@ impl<'a> Panel<'a> {
             )),
             Panel::Draft | Panel::Well | Panel::Unknown => None,
         }
+    }
+}
+
+/// The colour of the badge on the panel's mark (the view maps each to the theme's colour).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Badge {
+    Warning,
+    Destructive,
+    Accent,
+}
+
+impl Panel<'_> {
+    /// The badge for this state: none when all is well or not known. A use of a secret that waits (`use_waits`) comes
+    /// first, as a warning: it is answered within two minutes or not at all.
+    pub fn badge(&self, use_waits: bool) -> Option<Badge> {
+        if use_waits {
+            return Some(Badge::Warning);
+        }
+        match self {
+            Panel::Confirm(_) | Panel::Needs(Needs::Restart(_)) => Some(Badge::Warning),
+            Panel::Alarm(_) => Some(Badge::Destructive),
+            Panel::Needs(_) | Panel::Waiting(..) | Panel::Draft => Some(Badge::Accent),
+            Panel::Well | Panel::Unknown => None,
+        }
+    }
+}
+
+/// The one button the panel's popup offers for what it says (beside "Open TorqOS Settings", which is always there).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PanelButton {
+    /// Confirm the commit (`restart_too`: and a restart is needed as well).
+    Confirm { restart_too: bool },
+    Restart,
+    LogOut,
+    /// Ask the agent about this alarm.
+    AskAgent(String),
+}
+
+impl PanelButton {
+    pub fn label(&self) -> &'static str {
+        match self {
+            PanelButton::Confirm { restart_too: true } => "Confirm, then restart",
+            PanelButton::Confirm { restart_too: false } => "Confirm",
+            PanelButton::Restart => "Restart…",
+            PanelButton::LogOut => "Log out…",
+            PanelButton::AskAgent(_) => "Ask the agent",
+        }
+    }
+}
+
+/// What the panel's popup says (after the heading, `panel_title`) and offers.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PanelPopup {
+    pub text: String,
+    pub button: Option<PanelButton>,
+    /// "Last change: …", only when all is well and there is one.
+    pub last: Option<String>,
+    /// The page "Open TorqOS Settings" opens.
+    pub open: &'static str,
+}
+
+/// The popup's heading.
+pub fn panel_title(glance: &Option<Result<Glance, String>>) -> String {
+    match glance {
+        Some(Ok(g)) => format!("TorqOS {}", g.version),
+        _ => "TorqOS".into(),
+    }
+}
+
+/// The popup for a look at the machine, `now` seconds since the epoch (for the countdown).
+pub fn panel_popup(glance: &Option<Result<Glance, String>>, now: i64) -> PanelPopup {
+    let mut p = PanelPopup { text: String::new(), button: None, last: None, open: "overview" };
+    match Panel::of(glance) {
+        Panel::Confirm(c) => {
+            let left = c.at.map(|at| (at - now).max(0)).map(|s| format!("{}:{:02} left. ", s / 60, s % 60)).unwrap_or_default();
+            p.text = format!("{left}Change #{} rolls back at {} unless you confirm it.", c.seq, c.deadline);
+            let restart_too = matches!(glance, Some(Ok(g)) if matches!(g.needs, Needs::Restart(_)));
+            p.button = Some(PanelButton::Confirm { restart_too });
+        }
+        Panel::Needs(n) => {
+            p.text = n.line().unwrap_or_default();
+            p.button = Some(if matches!(n, Needs::Restart(_)) { PanelButton::Restart } else { PanelButton::LogOut });
+        }
+        Panel::Alarm(a) => {
+            p.text = a.to_string();
+            p.button = Some(PanelButton::AskAgent(a.to_string()));
+        }
+        Panel::Waiting(n, tainted) => {
+            p.open = "proposals";
+            let what = if n == 1 { "A proposal is".to_string() } else { format!("{n} proposals are") };
+            p.text = format!("{what} waiting for you to approve or refuse.");
+            if tainted > 0 {
+                p.text.push_str(&format!(" {tainted} came from a session that read untrusted text."));
+            }
+        }
+        Panel::Draft => {
+            p.open = "changes";
+            p.text = "You have changes not yet committed.".into();
+        }
+        Panel::Well => {
+            p.text = "This machine is exactly as its history says.".into();
+            if let Some(Ok(Glance { last: Some(last), .. })) = glance {
+                p.last = Some(format!("Last change: {last}"));
+            }
+        }
+        Panel::Unknown => {
+            p.text = match glance {
+                Some(Err(e)) => format!("The broker did not answer: {e}"),
+                _ => "Asking the broker…".into(),
+            };
+        }
+    }
+    p
+}
+
+// ── What TorqOS Settings' pages decide (they only draw it) ──
+
+/// The overview's headline, which the status lines are also compared with.
+pub fn overview_headline(well: bool) -> &'static str {
+    if well { "This machine is exactly as its history says" } else { "This machine needs a look" }
+}
+
+/// The button of a row of the overview's "Waiting for you".
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WaitButton {
+    /// Confirm the commit (`restart_too`: a restart is needed as well).
+    Confirm { restart_too: bool },
+    Restart,
+    LogOut,
+    /// The draft: its changes.
+    ReviewDraft,
+    /// The proposals.
+    ReviewProposals,
+}
+
+impl WaitButton {
+    pub fn label(&self) -> &'static str {
+        match self {
+            WaitButton::Confirm { restart_too: true } => "Confirm, then restart",
+            WaitButton::Confirm { restart_too: false } => "Confirm",
+            WaitButton::Restart => "Restart…",
+            WaitButton::LogOut => "Log out…",
+            WaitButton::ReviewDraft | WaitButton::ReviewProposals => "Review",
+        }
+    }
+}
+
+/// What waits for the person, as the overview lists it, in its order: the commit to confirm, a restart or a log out,
+/// the draft, the proposals.
+pub fn overview_waiting(g: &Glance) -> Vec<(String, WaitButton)> {
+    let mut rows = Vec::new();
+    if let Some(c) = &g.confirm {
+        rows.push((format!("Change #{} rolls back at {} unless you confirm it.", c.seq, c.deadline), WaitButton::Confirm { restart_too: matches!(g.needs, Needs::Restart(_)) }));
+    }
+    match (&g.needs, g.needs.line()) {
+        (Needs::Restart(_), Some(l)) => rows.push((l, WaitButton::Restart)),
+        (Needs::LogOut(_), Some(l)) => rows.push((l, WaitButton::LogOut)),
+        _ => {}
+    }
+    if g.draft {
+        rows.push(("You have changes not yet committed.".to_string(), WaitButton::ReviewDraft));
+    }
+    if g.waiting.0 > 0 {
+        let mut s = if g.waiting.0 == 1 { "A proposal is waiting for you.".to_string() } else { format!("{} proposals are waiting for you.", g.waiting.0) };
+        if g.waiting.1 > 0 {
+            s.push_str(&format!(" {} came from a session that read untrusted content.", g.waiting.1));
+        }
+        rows.push((s, WaitButton::ReviewProposals));
+    }
+    rows
+}
+
+/// The lines of `show system alarms` the overview lists, each with whether "Ask the agent" is offered beside it (an alarm,
+/// not an all-well line). When the alarms say all is well (`well`), the line that only says so (the `headline`) is left out.
+pub fn alarm_rows(alarms: &str, well: bool, headline: &str) -> Vec<(String, bool)> {
+    alarms
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty() && !(well && l.trim_start_matches("✓ ").trim_end_matches('.') == headline))
+        .map(|l| (l.to_string(), !l.starts_with('✓')))
+        .collect()
+}
+
+/// Whether "Ask the agent about this" stands beside the note: the note is a failure, and the command that failed is
+/// still kept with it.
+pub fn ask_about_failure_offered(note: Option<&(String, bool)>, failure_kept: bool) -> bool {
+    failure_kept && note.is_some_and(|(_, failed)| *failed)
+}
+
+/// The Decline line offered beside a proposal: only on one of the person's own agent's (torqcli shows it and asks first).
+pub fn decline_offer(seq: u64, yours: bool) -> Option<String> {
+    yours.then(|| decline_line(seq))
+}
+
+/// The line behind "Review and apply…".
+pub fn apply_line(seq: u64) -> String {
+    format!("request system apply {seq}")
+}
+
+/// What an app or tool row offers: None when the person has it already (a word says so), else its button and whether it
+/// can be pressed (not while other work is under way).
+pub fn row_offer(have: bool, idle: bool) -> Option<bool> {
+    (!have).then_some(idle)
+}
+
+/// The most tool search results listed.
+pub const TOOLS_LISTED: usize = 40;
+
+/// The Desktop page's line for what is saved: what is not saved yet; else how many settings, and whether the
+/// automatic save holds anything back.
+pub fn desktop_state(unsaved: &[String], waiting: &[String], saved: usize) -> String {
+    if !unsaved.is_empty() {
+        format!("Not saved yet: {}", desktop_words(unsaved))
+    } else if !waiting.is_empty() {
+        format!("Saved: {saved} settings")
+    } else {
+        format!("Saved: {saved} settings, nothing new since")
+    }
+}
+
+/// The Desktop page's note on settings still to be put on this desktop (None: none).
+pub fn desktop_to_apply(n: usize) -> Option<String> {
+    (n > 0).then(|| format!("{n} settings from your configuration are still to be put on this desktop: at your next login, or now with Save now."))
+}
+
+/// The Agent page's line for its service.
+pub fn agent_service_line(agent: Option<&str>, service: bool, status: Option<&Result<crate::agent::client::Status, String>>) -> String {
+    match (agent, service, status) {
+        (None, _, _) => "Not set up for you: `torq agent people` names who has one (an administrator's change)".to_string(),
+        (_, false, _) => "Not on this machine: it runs where doctor mode is on".to_string(),
+        (_, true, Some(Ok(st))) if st.running => "Working on a question".to_string(),
+        (_, true, Some(Ok(_))) => "Set up, and idle".to_string(),
+        (_, true, Some(Err(e))) => format!("Set up, but it did not answer: {e}"),
+        (_, true, None) => "Set up".to_string(),
+    }
+}
+
+/// The Agent page's model section: the model's line, its endpoint, whether a key is configured.
+pub fn agent_model(brain: Option<&crate::agent::setup::Brain>) -> (String, String, &'static str) {
+    match brain {
+        None => ("None: doctor mode is off".to_string(), String::new(), "No"),
+        Some(b) => (b.line(), b.endpoint.clone(), if b.key { "Yes" } else { "No" }),
+    }
+}
+
+/// The Agent page's memory section: what it says of how much the agent remembers, and whether Forget can be pressed
+/// (not while it works). None: no section (no agent, or its service is not here).
+pub fn agent_memory(status: Option<&Result<crate::agent::client::Status, String>>, has_service: bool) -> Option<(String, bool)> {
+    match (status, has_service) {
+        (Some(Ok(st)), _) => Some((
+            match st.turns {
+                0 => "It remembers nothing of your conversation".to_string(),
+                1 => "It remembers 1 turn of your conversation".to_string(),
+                n => format!("It remembers {n} turns of your conversation"),
+            },
+            !st.running,
+        )),
+        // Not running: not asked (asking would start it). Forget still can, when asked to.
+        (None, true) => Some(("It is not running now: how much it remembers shows while it runs".to_string(), true)),
+        _ => None,
+    }
+}
+
+/// The prompt of the Commands page: `torqcli>`, `torqcli#` in configuration mode, `[edit …] torqcli#` in a part of the tree.
+pub fn command_prompt(configuration: bool, edit: &[String]) -> String {
+    match (configuration, edit.is_empty()) {
+        (false, _) => "torqcli>".to_string(),
+        (true, true) => "torqcli#".to_string(),
+        (true, false) => format!("[edit {}] torqcli#", edit.join(" ")),
     }
 }
 
@@ -3937,6 +4239,188 @@ mod moved_decisions {
         assert_eq!(question_to_ask("  what is up \n", false).as_deref(), Some("what is up"));
         assert_eq!(question_to_ask("  \n", false), None);
         assert_eq!(question_to_ask("hello", true), None);
+    }
+
+
+    /// The panel's popup and badge for each state: the text, the one button it offers, the page it opens.
+    #[test]
+    fn the_panels_popup_and_badge_for_each_state() {
+        let glance = || Glance { version: "0.4.0".into(), last: Some("Added vim".into()), ..glance() };
+        let pop = |g: Glance| panel_popup(&Some(Ok(g)), 1000);
+        let badge = |g: Glance| Panel::of(&Some(Ok(g))).badge(false);
+        // Well: said so, with the last change; no badge, no button.
+        let p = pop(glance());
+        assert_eq!((p.text.as_str(), p.last.as_deref(), p.open, p.button.clone()), ("This machine is exactly as its history says.", Some("Last change: Added vim"), "overview", None));
+        assert_eq!(badge(glance()), None);
+        assert_eq!(panel_title(&Some(Ok(glance()))), "TorqOS 0.4.0");
+        assert_eq!(panel_title(&None), "TorqOS");
+        // Unknown.
+        assert_eq!(panel_popup(&None, 0).text, "Asking the broker…");
+        assert_eq!(panel_popup(&Some(Err("down".into())), 0).text, "The broker did not answer: down");
+        assert_eq!(Panel::of(&None).badge(false), None);
+        // A commit to confirm: the countdown (never negative), "then restart" when a restart is needed too.
+        let confirm = Confirm { seq: 7, deadline: "12:30".into(), at: Some(1000 + 125) };
+        let mut g = glance();
+        g.confirm = Some(confirm.clone());
+        let p = pop(g.clone());
+        assert_eq!(p.text, "2:05 left. Change #7 rolls back at 12:30 unless you confirm it.");
+        assert_eq!(p.button, Some(PanelButton::Confirm { restart_too: false }));
+        assert_eq!(badge(g.clone()), Some(Badge::Warning));
+        g.needs = Needs::Restart(vec!["kernel"]);
+        assert_eq!(pop(g.clone()).button.unwrap().label(), "Confirm, then restart");
+        g.confirm = Some(Confirm { at: Some(5), ..confirm.clone() });
+        assert!(pop(g.clone()).text.starts_with("0:00 left. "));
+        g.confirm = Some(Confirm { at: None, ..confirm });
+        assert!(pop(g).text.starts_with("Change #7 rolls back"), "no deadline in seconds: no countdown");
+        // Needs: restart is a warning, a log out is not; the button follows.
+        let mut g = glance();
+        g.needs = Needs::Restart(vec!["kernel"]);
+        assert_eq!((pop(g.clone()).button, badge(g)), (Some(PanelButton::Restart), Some(Badge::Warning)));
+        let mut g = glance();
+        g.needs = Needs::LogOut(vec!["desktop"]);
+        let p = pop(g.clone());
+        assert_eq!((p.button.clone().unwrap().label(), badge(g)), ("Log out…", Some(Badge::Accent)));
+        assert_eq!(p.text, "Log out and back in to use the new desktop.");
+        // Only for the next start: said elsewhere, not asked here.
+        let mut g = glance();
+        g.needs = Needs::NextStart(vec!["kernel"]);
+        assert_eq!((pop(g.clone()).button, badge(g)), (None, None));
+        // An alarm: the agent can look at it.
+        let mut g = glance();
+        g.alarm = Some("disk is full".into());
+        let p = pop(g.clone());
+        assert_eq!((p.text.as_str(), p.button.clone().unwrap().label(), badge(g)), ("disk is full", "Ask the agent", Some(Badge::Destructive)));
+        assert_eq!(p.button, Some(PanelButton::AskAgent("disk is full".into())));
+        // Proposals waiting, and the untrusted ones said.
+        let mut g = glance();
+        g.waiting = (1, 0);
+        let p = pop(g.clone());
+        assert_eq!((p.text.as_str(), p.open, badge(g.clone())), ("A proposal is waiting for you to approve or refuse.", "proposals", Some(Badge::Accent)));
+        g.waiting = (3, 2);
+        assert_eq!(pop(g).text, "3 proposals are waiting for you to approve or refuse. 2 came from a session that read untrusted text.");
+        // A draft.
+        let mut g = glance();
+        g.draft = true;
+        let p = pop(g.clone());
+        assert_eq!((p.text.as_str(), p.open, badge(g)), ("You have changes not yet committed.", "changes", Some(Badge::Accent)));
+        // A use of a secret that waits comes first.
+        assert_eq!(Panel::Well.badge(true), Some(Badge::Warning));
+    }
+
+    #[test]
+    fn what_the_overview_lists_as_waiting_and_as_alarms() {
+        let mut g = glance();
+        assert!(overview_waiting(&g).is_empty());
+        g.confirm = Some(Confirm { seq: 3, deadline: "09:00".into(), at: None });
+        g.needs = Needs::Restart(vec!["kernel"]);
+        g.draft = true;
+        g.waiting = (2, 1);
+        let rows = overview_waiting(&g);
+        let buttons: Vec<_> = rows.iter().map(|(_, b)| (b.label(), *b)).collect();
+        assert_eq!(buttons, vec![
+            ("Confirm, then restart", WaitButton::Confirm { restart_too: true }),
+            ("Restart…", WaitButton::Restart),
+            ("Review", WaitButton::ReviewDraft),
+            ("Review", WaitButton::ReviewProposals),
+        ]);
+        assert_eq!(rows[0].0, "Change #3 rolls back at 09:00 unless you confirm it.");
+        assert_eq!(rows[2].0, "You have changes not yet committed.");
+        assert_eq!(rows[3].0, "2 proposals are waiting for you. 1 came from a session that read untrusted content.");
+        g.confirm = None;
+        g.needs = Needs::LogOut(vec!["desktop"]);
+        g.waiting = (1, 0);
+        let rows = overview_waiting(&g);
+        assert_eq!((rows[0].1, rows[0].1.label()), (WaitButton::LogOut, "Log out…"));
+        assert_eq!(rows[2].0, "A proposal is waiting for you.");
+        // Only for the next start: nothing to press.
+        g.needs = Needs::NextStart(vec!["kernel"]);
+        g.draft = false;
+        g.waiting = (0, 0);
+        assert!(overview_waiting(&g).is_empty());
+        assert_eq!(WaitButton::Confirm { restart_too: false }.label(), "Confirm");
+
+        let text = "✓ This machine is exactly as its history says.\n\n  disk is full  \n✓ backups fresh\n";
+        assert_eq!(overview_headline(true), "This machine is exactly as its history says");
+        // Well: the all-well line is the headline's; an alarm is asked about, an all-well line is not.
+        assert_eq!(alarm_rows(text, true, overview_headline(true)), vec![("disk is full".to_string(), true), ("✓ backups fresh".to_string(), false)]);
+        // Not well: every line stays.
+        assert_eq!(alarm_rows(text, false, overview_headline(false)).len(), 3);
+        assert!(alarm_rows("", true, overview_headline(true)).is_empty());
+    }
+
+    #[test]
+    fn the_buttons_beside_a_note_a_proposal_and_a_row() {
+        let failed = ("it broke".to_string(), true);
+        let fine = ("Done".to_string(), false);
+        assert!(ask_about_failure_offered(Some(&failed), true));
+        assert!(!ask_about_failure_offered(Some(&failed), false), "the failure kept is another's");
+        assert!(!ask_about_failure_offered(Some(&fine), true));
+        assert!(!ask_about_failure_offered(None, true));
+        assert_eq!(decline_offer(5, true), Some(decline_line(5)));
+        assert_eq!(decline_offer(5, false), None, "another's is declined in torqcli");
+        assert_eq!(apply_line(5), "request system apply 5");
+        assert_eq!((row_offer(true, true), row_offer(false, true), row_offer(false, false)), (None, Some(true), Some(false)));
+    }
+
+    #[test]
+    fn the_desktop_and_commands_pages_words() {
+        let s = |v: &[&str]| v.iter().map(|x| x.to_string()).collect::<Vec<_>>();
+        assert_eq!(desktop_state(&[], &[], 12), "Saved: 12 settings, nothing new since");
+        assert_eq!(desktop_state(&[], &s(&["com.system76.CosmicComp/v1/x"]), 12), "Saved: 12 settings");
+        assert!(desktop_state(&s(&["com.system76.CosmicComp/v1/x"]), &s(&["a"]), 12).starts_with("Not saved yet: "));
+        assert_eq!(desktop_to_apply(0), None);
+        assert!(desktop_to_apply(3).unwrap().starts_with("3 settings from your configuration"));
+        assert_eq!(command_prompt(false, &s(&["x"])), "torqcli>");
+        assert_eq!(command_prompt(true, &[]), "torqcli#");
+        assert_eq!(command_prompt(true, &s(&["system", "software"])), "[edit system software] torqcli#");
+    }
+
+    #[test]
+    fn the_agent_pages_service_model_and_memory() {
+        use crate::agent::client::Status;
+        let idle = Ok(Status { running: false, turns: 0 });
+        let busy = Ok(Status { running: true, turns: 1 });
+        assert!(agent_service_line(None, true, None).starts_with("Not set up for you"));
+        assert!(agent_service_line(Some("a"), false, None).starts_with("Not on this machine"));
+        assert_eq!(agent_service_line(Some("a"), true, Some(&busy)), "Working on a question");
+        assert_eq!(agent_service_line(Some("a"), true, Some(&idle)), "Set up, and idle");
+        assert_eq!(agent_service_line(Some("a"), true, Some(&Err("no".into()))), "Set up, but it did not answer: no");
+        assert_eq!(agent_service_line(Some("a"), true, None), "Set up");
+        assert_eq!(agent_model(None), ("None: doctor mode is off".to_string(), String::new(), "No"));
+        let b = crate::agent::setup::Brain { place: crate::agent::setup::Place::Local, model: "m".into(), endpoint: "http://x".into(), key: true };
+        assert_eq!(agent_model(Some(&b)), (b.line(), "http://x".to_string(), "Yes"));
+        assert_eq!(agent_memory(Some(&idle), false), Some(("It remembers nothing of your conversation".into(), true)));
+        assert_eq!(agent_memory(Some(&busy), true), Some(("It remembers 1 turn of your conversation".into(), false)));
+        assert_eq!(agent_memory(Some(&Ok(Status { running: false, turns: 4 })), true).unwrap().0, "It remembers 4 turns of your conversation");
+        assert_eq!(agent_memory(None, true).map(|m| m.1), Some(true));
+        assert_eq!(agent_memory(None, false), None);
+        assert_eq!(agent_memory(Some(&Err("x".into())), true), None);
+    }
+
+    #[test]
+    fn the_ledger_is_read_only_for_proposals_that_can_still_change() {
+        use crate::agent::conversation::Fate::*;
+        let known = [(1, Applied), (2, Declined), (3, Waiting), (4, Unread), (5, NotYours)];
+        assert_eq!(fates_to_look_up(&[1, 2, 3, 4, 5, 6], &known), vec![3, 4, 5, 6]);
+        assert!(fates_to_look_up(&[1, 2], &known).is_empty(), "nothing to look up: the ledger is not read");
+        assert_eq!(fates_to_look_up(&[7], &[]), vec![7]);
+        // What was looked up wins; what was not is kept; the order is the conversation's.
+        assert_eq!(merge_fates(&[1, 3, 4], &known, vec![(3, Applied), (4, Failed)]), vec![(1, Applied), (3, Applied), (4, Failed)]);
+        assert_eq!(merge_fates(&[9], &known, vec![]), vec![], "a number nothing says is not invented");
+    }
+
+    #[test]
+    fn a_tunnels_line_and_when_the_agent_is_offered() {
+        use crate::tunnels::State;
+        let t = crate::tunnels::Tunnel { name: "db".into(), destination: "host".into(), port: None, forwards: vec![crate::tunnels::Forward::Socks(1080)] };
+        assert_eq!(tunnel_line(&t, &State::Off), t.describe());
+        assert_eq!(tunnel_line(&t, &State::Connecting), "Connecting to host…");
+        assert_eq!(tunnel_line(&t, &State::Up), "Up · SOCKS on 127.0.0.1:1080");
+        assert_eq!(tunnel_line(&t, &State::Retrying("refused".into())), "refused");
+        assert_eq!(tunnel_line(&t, &State::Failed("bad key".into())), "Stopped: bad key");
+        for (s, askable) in [(State::Off, false), (State::Connecting, false), (State::Up, false), (State::Retrying("x".into()), true), (State::Failed("x".into()), true)] {
+            assert_eq!(tunnel_askable(&s), askable, "{s:?}");
+        }
     }
 
     #[test]

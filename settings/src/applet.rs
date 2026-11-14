@@ -290,15 +290,11 @@ impl Applet {
         let theme = cosmic::theme::active();
         let c = theme.cosmic();
         // A use of a secret that waits is answered within two minutes or not at all: it comes first.
-        if self.asking.shown().is_some() {
-            return mark(Some(c.warning_color()));
-        }
-        mark(match self.state() {
-            Panel::Confirm(_) | Panel::Needs(Needs::Restart(_)) => Some(c.warning_color()),
-            Panel::Alarm(_) => Some(c.destructive_color()),
-            Panel::Needs(_) | Panel::Waiting(..) | Panel::Draft => Some(c.accent_color()),
-            Panel::Well | Panel::Unknown => None,
-        })
+        mark(self.state().badge(self.asking.shown().is_some()).map(|b| match b {
+            app::Badge::Warning => c.warning_color(),
+            app::Badge::Destructive => c.destructive_color(),
+            app::Badge::Accent => c.accent_color(),
+        }))
     }
 
     /// What became of an answer given here, or of a use that ended without one: a failure in the destructive style.
@@ -413,59 +409,27 @@ impl Applet {
         // The popup's own buttons take no press in the first moment after a note or a dialog stood here.
         let settled = self.asking.settled(Instant::now());
         let mut col = widget::column::with_capacity(6).spacing(spacing.space_s).padding(spacing.space_s).width(Length::Fixed(340.0));
-        let version = match &self.glance {
-            Some(Ok(g)) => format!("TorqOS {}", g.version),
-            _ => "TorqOS".into(),
-        };
-        col = col.push(widget::text::heading(version));
-        let line = |s: String| widget::text::body(s).width(Length::Fill);
-        let mut open = "overview";
-        match self.state() {
-            Panel::Confirm(c) => {
-                let left = c.at.map(|at| (at - self.now).max(0)).map(|s| format!("{}:{:02} left. ", s / 60, s % 60)).unwrap_or_default();
-                col = col.push(line(format!("{left}Change #{} rolls back at {} unless you confirm it.", c.seq, c.deadline)));
-                let both = matches!(&self.glance, Some(Ok(g)) if matches!(g.needs, Needs::Restart(_)));
-                col = col.push(widget::button::suggested(if both { "Confirm, then restart" } else { "Confirm" }).on_press_maybe(settled.then_some(Message::Confirm)));
-            }
-            Panel::Needs(n) => {
-                col = col.push(line(n.line().unwrap_or_default()));
-                col = col.push(match n {
-                    Needs::Restart(_) => widget::button::suggested("Restart…").on_press_maybe(settled.then_some(Message::Restart)),
-                    _ => widget::button::suggested("Log out…").on_press_maybe(settled.then_some(Message::LogOut)),
-                });
-            }
-            Panel::Alarm(a) => {
-                col = col.push(line(a.to_string()));
-                // The agent can look at it with the person: the alarm attached (ADR-051 4).
-                col = col.push(widget::button::text("Ask the agent").on_press_maybe(settled.then(|| Message::AskAgent(a.to_string()))));
-            }
-            Panel::Waiting(n, tainted) => {
-                open = "proposals";
-                let what = if n == 1 { "A proposal is".to_string() } else { format!("{n} proposals are") };
-                let mut s = format!("{what} waiting for you to approve or refuse.");
-                if tainted > 0 {
-                    s.push_str(&format!(" {tainted} came from a session that read untrusted text."));
-                }
-                col = col.push(line(s));
-            }
-            Panel::Draft => {
-                open = "changes";
-                col = col.push(line("You have changes not yet committed.".into()));
-            }
-            Panel::Well => {
-                col = col.push(line("This machine is exactly as its history says.".into()));
-                if let Some(Ok(Glance { last: Some(last), .. })) = &self.glance {
-                    col = col.push(widget::text::caption(format!("Last change: {last}")));
-                }
-            }
-            Panel::Unknown => {
-                let s = match &self.glance {
-                    Some(Err(e)) => format!("The broker did not answer: {e}"),
-                    _ => "Asking the broker…".into(),
-                };
-                col = col.push(line(s));
-            }
+        col = col.push(widget::text::heading(app::panel_title(&self.glance)));
+        // What it says and offers is decided in `torq::app`; its buttons take no press while the popup settles.
+        let p = app::panel_popup(&self.glance, self.now);
+        col = col.push(widget::text::body(p.text).width(Length::Fill));
+        if let Some(b) = p.button {
+            let button = match &b {
+                app::PanelButton::Confirm { .. } | app::PanelButton::Restart | app::PanelButton::LogOut => widget::button::suggested(b.label()),
+                app::PanelButton::AskAgent(_) => widget::button::text(b.label()),
+            };
+            let message = match b {
+                app::PanelButton::Confirm { .. } => Message::Confirm,
+                app::PanelButton::Restart => Message::Restart,
+                app::PanelButton::LogOut => Message::LogOut,
+                app::PanelButton::AskAgent(alarm) => Message::AskAgent(alarm),
+            };
+            col = col.push(button.on_press_maybe(settled.then_some(message)));
         }
+        if let Some(last) = p.last {
+            col = col.push(widget::text::caption(last));
+        }
+        let open = p.open;
         for (told, what) in [(&self.unsaved, UNSAVED), (&self.unapplied, UNAPPLIED), (&self.apps, APPS), (&self.uses_unread, USES_UNREAD)] {
             if let Some(why) = told.why() {
                 col = col.push(widget::text::caption(format!("{what}: {why}")));

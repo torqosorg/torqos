@@ -819,6 +819,31 @@ mod tests {
         }
     }
 
+    /// Every component COSMIC ships default settings for (a directory under `share/cosmic`) is in the list. The
+    /// directory is `$TORQ_COSMIC_SHARE` (`scripts/bump-cosmic` points it at the pinned packages'), else the
+    /// installed system's; skipped when neither exists. It is a subset check: a component with no shipped defaults
+    /// (most of them) is only known from a session, so the list still needs hand additions.
+    #[test]
+    fn the_known_components_cover_those_cosmic_ships_defaults_for() {
+        let dirs: Vec<PathBuf> = match std::env::var_os("TORQ_COSMIC_SHARE") {
+            Some(v) => std::env::split_paths(&v).collect(),
+            None => vec![PathBuf::from("/run/current-system/sw/share/cosmic")],
+        };
+        let mut missing = Vec::new();
+        for dir in dirs {
+            let Ok(rd) = std::fs::read_dir(&dir) else { continue };
+            for e in rd.flatten() {
+                let name = e.file_name().to_string_lossy().into_owned();
+                if name.starts_with("com.system76.") {
+                    if !KNOWN_COMPONENTS.contains(&name.as_str()) {
+                        missing.push(name);
+                    }
+                }
+            }
+        }
+        assert!(missing.is_empty(), "COSMIC ships defaults for components not in KNOWN_COMPONENTS: {missing:?}");
+    }
+
     #[test]
     fn what_is_behind_a_link_is_left_alone() {
         let d = tempfile::tempdir().unwrap();
