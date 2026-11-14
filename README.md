@@ -63,8 +63,8 @@ It has **one base and two faces**:
       <h4>🤖&nbsp; The machine an AI can drive</h4>
       The same base with an optional desktop (COSMIC) on it, where an agent <i>proposes</i>, a
       person approves, and anything it did can be undone. The agent never gets root and never
-      bypasses the broker. <b>Experimental:</b> the desktop is on the main branch and not yet in a
-      release; the agent exists, but no model ships with it. See
+      bypasses the broker. <b>Experimental:</b> the desktop is only in the <code>v0.4.0-rc1</code>
+      pre-release and on the main branch; the agent exists on main (not released), but no model ships with it. See
       <a href="#project-status">Project status</a> and the <a href="docs/ROADMAP.md">roadmap</a>.
     </td>
   </tr>
@@ -282,12 +282,13 @@ maintainers rather than in a public issue.
 | **M3** — trust: identity from the kernel, the agent's account, the config repo's remote (off by default), strict mode, data snapshots | ✅ | Done; in `v0.3.x` |
 | **M3.5** — the install on real hardware | 🟧 | Partly: an offline first build, network-first setup, and TorqOS installed on the owner's laptop. Not built: the console UI, an answers file for unattended installs, recipes (shared configuration repositories), the installer's other ways (beside another system, a partition) |
 | **M4** — the desktop as a configuration, applications, data | 🟧 | Largely built, in the `v0.4.0-rc1` pre-release: COSMIC, TorqOS Settings, a panel applet, SSH tunnels, approval as a dialog. It has run on one physical machine, the owner's laptop. Not built: wrapping COSMIC's own settings pages, applications by rung, syncing data |
-| **M5** — the agent: doctor mode, proposals, session trust | 🟧 | The non-GUI half is built, in `v0.3.x`, and is experimental: the doctor is off by default, no model ships with it, and no real model has been tried (the tests use a scripted one). The rest is parked until after `0.4.0` |
+| **M5** — the agent: doctor mode, proposals, session trust | 🟧 | The non-GUI half is built, in `v0.3.x`, and is experimental: the doctor is off by default, no model ships with it, and no real model has been tried (the tests use a scripted one). The resident agent (one for each person), its applet and window, and `torq-mcp` for coding tools are on `main`, not released; the harness's other tools and subagents are not built |
 | Later — owner-rooted boot security: the owner's Secure Boot keys, TPM2, disk encryption | ⬜ | Designed (ADR-033, [docs/SECURITY-MODEL.md](docs/SECURITY-MODEL.md)); not built |
 
 Released: `v0.1.0` to `v0.3.2`, and `v0.4.0-rc1` as a pre-release: the desktop and secrets
 (ADR-052, which lets the agent use a token or key without being able to read it; not a password
-manager). In `v0.4.0-rc1` secrets are command line only. After it, TorqOS Settings has a Secrets page
+manager). In `v0.4.0-rc1` secrets are command line only. On `main`, not released, an agent's use that asks waits
+for its person to approve it (at a terminal or in the panel applet's dialog), and TorqOS Settings has a Secrets page
 that does what `request system secret …` does: it lists the secrets, changes what each may be used
 for, deletes one, and takes a value typed twice in masked fields. It never shows a value, does not
 read one from a file (both stay in a terminal), and a value pasted into it stays in the clipboard.
@@ -349,9 +350,10 @@ flake.nix          the entry point: packages, images, the ISO, VM tests, the mac
 modules/           the distribution, as NixOS modules (torq.* options)
 cli/               torqcli, the shell, and the ISO's installer (Rust)
 broker/            torq-broker, the privileged writer, ledger and rollback (Rust)
-agent/             torq-doctor, the agent's program: doctor mode and proposals (Rust; experimental)
+agent/             torq-doctor, the agent's program (doctor mode, proposals), torq-agent-service (each person's resident agent) and torq-mcp (Rust; experimental)
+secrets/           torq-secrets, the daemon that uses a secret for a program that never reads it (Rust)
 wire/              torq-wire, the words of the broker's socket and the ledger, shared by the three (Rust)
-settings/          TorqOS Settings, the panel applet and the SSH-tunnels applet for the desktop (Rust)
+settings/          TorqOS Settings, the panel applet, the SSH-tunnels applet and the agent's applet and window for the desktop (Rust)
 scripts/           the release helpers (bump-version) and the COSMIC update helper
 templates/config/  the configuration repository each machine starts from
 hosts/             the image, the ISO installer, a development VM
