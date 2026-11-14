@@ -1005,6 +1005,21 @@ mod tests {
     }
 
     #[test]
+    fn a_leaf_reads_a_bar_in_brackets_as_the_single_value_bar() {
+        // `[ "|" ]` is how `| display set` writes a value that is a bar alone: one value, not a list.
+        // (A leaf with no type of its own takes any text; the fixture's leaves are all checked.)
+        let s = Schema::parse(r#"{"version":1,"nodes":{"note":{"file":"note.json","help":"Any text","key":"note","kind":"leaf","tier":"user"}}}"#).unwrap();
+        let mut c = Config::default();
+        s.set(&mut c, &w("note [ | ]")).unwrap();
+        assert_eq!(s.entries(&c), vec![(w("note"), Val::One("|".into()))]);
+        // The same value, typed bare, is the same; two values are still refused.
+        let mut bare = Config::default();
+        s.set(&mut bare, &w("note |")).unwrap();
+        assert_eq!(bare, c);
+        assert!(err(s.set(&mut Config::default(), &w("note [ a b ]"))).contains("exactly one value"));
+    }
+
+    #[test]
     fn display_set_is_one_command_per_value() {
         let (s, c) = (schema(), configured());
         assert_eq!(

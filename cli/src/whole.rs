@@ -439,6 +439,48 @@ impl Whole<'_> {
         Ok(crate::tree::display_set_entries(&all))
     }
 
+    /// `| display defaults` below `path`: the known default of each setting at or below it, one per
+    /// line, marked `(set)` where the configuration sets it. Only what NixOS declares as a plain value
+    /// is known; a setting with another kind of default is not listed. A whole configuration is too
+    /// many: a place is asked for.
+    pub fn display_defaults(&self, d: &Data, path: &[String]) -> Result<String> {
+        let path: &[String] = &self.spelled(path);
+        if path.is_empty() {
+            bail!("| display defaults needs a place: `show services openssh | display defaults`");
+        }
+        self.below(d, path)?;
+        let Some((at, found)) = self.tree.defaults_below(path) else {
+            return Ok(format!("No default is known for {}.\n", path.join(" ")));
+        };
+        if found.is_empty() {
+            return Ok(format!("No default is known at or below {}.\n", at.join(" ")));
+        }
+        let set = self.entries(d);
+        let mut out = String::new();
+        for (loc, v) in found {
+            let is_set = set.iter().any(|(w, _)| w.starts_with(&loc));
+            out.push_str(&format!("{}: {}{}\n", loc.join(" "), crate::nixos::default_text(v), if is_set { " (set)" } else { "" }));
+        }
+        Ok(out)
+    }
+
+    /// What `set <words>` replaces, as one short line, before it is done: the known default of a
+    /// NixOS setting nothing sets yet. None for anything else (a setting already set, one TorqOS keeps
+    /// in its own files, one with no known default, or an empty one — an empty list or text says
+    /// nothing).
+    pub fn replaced_default(&self, d: &Data, words: &[String]) -> Option<String> {
+        let words: &[String] = &self.spelled(words);
+        if self.hand(words, &d.config).ok().flatten().is_some() {
+            return None;
+        }
+        let r = self.tree.resolve(words).ok()?;
+        let v = r.default.filter(|v| !matches!(v, serde_json::Value::String(s) if s.is_empty()) && !matches!(v, serde_json::Value::Array(a) if a.is_empty()))?;
+        if self.entries(d).iter().any(|(w, _)| w.starts_with(&r.loc)) {
+            return None;
+        }
+        Some(format!("{} replaces NixOS's default {}", r.loc.join(" "), crate::nixos::default_text(v)))
+    }
+
     /// The path entries are shown below: an old name's, by its NixOS path.
     fn shown_path(&self, d: &Data, path: &[String]) -> Vec<String> {
         translate(path, 1, true).filter(|_| self.schema.resolve_in(path, Some(&d.config)).is_ok()).unwrap_or_else(|| path.to_vec())

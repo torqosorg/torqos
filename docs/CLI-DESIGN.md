@@ -109,7 +109,9 @@ them, with the setting's own rules (below). `?` offers only what can be set: not
 nor read-only settings, nor what the fence keeps out. Where a value is a file, `?` and Tab offer the
 configuration's Nix files (`file show|edit|delete <nix-file>`); `save` and `load` take any `<file>`.
 
-**Pipes**: `| compare`, and one `| display`: `set` (a configuration as `set` commands), `detail` (what
+**Pipes**: `| compare`, and one `| display`: `set` (a configuration as `set` commands), `defaults` (what the
+settings of a place are when nothing sets them: NixOS's own defaults, plain values only; a place is asked for,
+not the whole configuration; `(set)` marks one the configuration sets), `detail` (what
 is behind a view: the config repo files and commit of a configuration, the commit ids of `show system
 commit`, the broker's commits and store paths in `show system alarms`), `diff` (a comparison as the
 raw diff of the files: for the candidate exactly what `commit` proposes; between two commits, the
@@ -587,7 +589,7 @@ the running machine (/proc, `ip -j addr`, `df`, the system profiles, /etc/passwd
   shell reads it instantly for parsing, `?` and Tab. Closed sets carry their values (time zones from
   tzdata's index, the old list's service names, the machine's users); open ones a type (`package`,
   `host-name`). NixOS's settings are described in `/etc/torq/nixos-schema.json`
-  (modules/nixos-schema.nix): each setting's type, values and range (read-only settings left out),
+  (modules/nixos-schema.nix): each setting's type, values and range (read-only settings left out), its default where that is a plain value (bool, number, text, a list of those: `set` says which default it replaces, `| display defaults` lists them),
   the sections that take any key and their values' type, and this machine's nixpkgs package names. `tests/tree.nix` keeps it consistent: parents exist, files and keys fit the kind,
   `users <name> …` is user tier and nothing else is, and its user-tier files are exactly the
   allowed user leaves. Syntax is checked as you type; meaning (does the package exist, is it free)

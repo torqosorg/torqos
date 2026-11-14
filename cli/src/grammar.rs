@@ -238,7 +238,7 @@ impl Read {
 
 // ── The commands ─────────────────────────────────────────────────────────────────────────────────
 
-const CONFIGURATION_VIEWS: &[Display] = &[Display::Detail, Display::Set];
+const CONFIGURATION_VIEWS: &[Display] = &[Display::Detail, Display::Set, Display::Defaults];
 const DETAIL: &[Display] = &[Display::Detail];
 const COMPARISON: &[Display] = &[Display::Diff];
 
@@ -896,6 +896,7 @@ fn apply_pipes(node: &Node, segments: &mut [Vec<String>], read: &mut Read, befor
                 read.display = Some(match view.as_str() {
                     "set" => Display::Set,
                     "detail" => Display::Detail,
+                    "defaults" => Display::Defaults,
                     _ => Display::Diff,
                 });
             }
@@ -1040,6 +1041,7 @@ pub fn pipe_next(mode: Mode, words: &[String]) -> Vec<(String, String, Option<Va
         [d] if d == "display" && filters.is_empty() => views(node, &walked.read).into_iter().map(|v| {
             let help = match v.as_str() {
                 "set" => "As set commands",
+                "defaults" => "What the settings are when nothing sets them (NixOS's defaults, plain values only)",
                 "detail" if node.pipes == Pipes::Candidate || matches!(node.pipes, Pipes::Views(x) if x.contains(&Display::Set)) => "With the files and commit behind it",
                 "detail" if node.pipes == Pipes::Steps => "Each step as it happens, how long it took, and Nix's and the broker's own output",
                 "detail" => "With the commits and store paths behind it",

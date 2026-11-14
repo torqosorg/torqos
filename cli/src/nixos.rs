@@ -113,6 +113,15 @@ impl Type {
     }
 }
 
+/// A default as it is typed: `false`, `22`, `prohibit-password`, `""`, `[ 22 80 ]`, `[ ]`.
+pub fn default_text(v: &Value) -> String {
+    match v {
+        Value::Array(a) => format!("[ {}]", a.iter().map(|x| format!("{} ", default_text(x))).collect::<String>()),
+        Value::String(s) => crate::syntax::quote(s),
+        other => other.to_string(),
+    }
+}
+
 fn plain(v: &Value) -> String {
     match v {
         Value::String(s) => s.clone(),
@@ -138,6 +147,9 @@ struct Entry {
     #[serde(default)]
     help: String,
     free: Option<Type>,
+    /// What the setting is when nothing sets it, where that is a plain value (bool, number, text, a
+    /// list of those): modules/nixos-schema.nix leaves out any other.
+    default: Option<Value>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -160,6 +172,8 @@ struct File {
 #[derive(Debug, Default, Clone)]
 pub struct Node {
     pub setting: Option<(Type, String)>,
+    /// What the setting is when nothing sets it (a plain value), where the schema knows.
+    pub default: Option<Value>,
     pub children: BTreeMap<String, Node>,
     /// A section that takes any key besides its own (NixOS passes them on as written): what each
     /// such key is.
@@ -175,6 +189,8 @@ pub struct Resolved<'a> {
     /// (`services.httpd.virtualHosts."example.com".forceSSL` → [services, httpd, virtualHosts, example.com, forceSSL]).
     pub loc: Vec<String>,
     pub ty: &'a Type,
+    /// What the setting is when nothing sets it, where the schema knows.
+    pub default: Option<&'a Value>,
     /// The words after the path: the value.
     pub values: Vec<String>,
 }
@@ -202,6 +218,8 @@ impl Tree {
             }
             if let Some(ty) = e.ty {
                 n.setting = Some((ty, e.help));
+                // (Only a setting has one: the entry of a section that takes any key does not.)
+                n.default = e.default;
             }
             if let Some(free) = e.free {
                 let help = "A key of its own: NixOS passes it on to the program as it is written".to_string();
@@ -273,11 +291,32 @@ impl Tree {
     pub fn resolve(&self, words: &[String]) -> Result<Resolved<'_>> {
         let w = self.walk(words)?;
         match &w.node.setting {
-            Some((ty, help)) if takes_value(ty) => Ok(Resolved { help, loc: w.loc, ty, values: w.values }),
+            Some((ty, help)) if takes_value(ty) => Ok(Resolved { help, loc: w.loc, ty, default: w.node.default.as_ref(), values: w.values }),
             // A service (or anything with an `enable`): how to turn it on.
             _ if w.node.children.contains_key("enable") => bail!("{0}: not a setting by itself: `set {0} enable true` turns it on (`?` shows its settings)", w.loc.join(" ")),
             _ => bail!("{}: not a setting by itself (`?` shows what is below it)", w.loc.join(" ")),
         }
+    }
+
+    /// The known defaults of the settings at or below `words`, each by its path in the tree (an
+    /// entry's name is `<name>`, a numbered item `*`), in order. The path as the tree names it comes
+    /// first; None where `words` lead nowhere.
+    pub fn defaults_below(&self, words: &[String]) -> Option<(Vec<String>, Vec<(Vec<String>, &Value)>)> {
+        fn collect<'a>(n: &'a Node, at: &mut Vec<String>, out: &mut Vec<(Vec<String>, &'a Value)>) {
+            if let Some(v) = &n.default {
+                out.push((at.clone(), v));
+            }
+            for (k, c) in &n.children {
+                at.push(k.clone());
+                collect(c, at, out);
+                at.pop();
+            }
+        }
+        let w = self.walk(words).ok().filter(|w| w.values.is_empty())?;
+        let mut out = Vec::new();
+        let mut at = w.loc.clone();
+        collect(w.node, &mut at, &mut out);
+        Some((w.loc, out))
     }
 
     /// Where in `words` a list's entry is numbered (`… ipv4 addresses 2 address` → [5]), as far as
@@ -583,6 +622,22 @@ pub fn value(ty: &Type, words: &[String]) -> Result<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_default_is_read_with_its_setting_and_listed_below_a_place() {
+        let t = tree();
+        let w = |s: &str| s.split_whitespace().map(String::from).collect::<Vec<_>>();
+        let ports = t.resolve(&w("services openssh ports 2222")).unwrap();
+        assert_eq!(ports.default, Some(&serde_json::json!([22])));
+        assert_eq!(t.resolve(&w("time timeZone UTC")).unwrap().default, None, "null is no plain value");
+        let (at, found) = t.defaults_below(&w("services opens")).unwrap();
+        assert_eq!(at, w("services openssh"), "the path as the tree names it");
+        let names: Vec<String> = found.iter().map(|(l, _)| l.join(" ")).collect();
+        assert_eq!(names, ["services openssh enable", "services openssh ports", "services openssh settings LogLevel", "services openssh settings PasswordAuthentication"]);
+        assert_eq!(default_text(&serde_json::json!(["a b", 22])), r#"[ "a b" 22 ]"#);
+        assert_eq!(default_text(&serde_json::json!([])), "[ ]");
+        assert!(t.defaults_below(&w("services openssh ports 22")).is_none(), "a value is no place");
+    }
 
     fn tree() -> Tree {
         Tree::parse(include_str!("nixos-fixture.json")).unwrap()

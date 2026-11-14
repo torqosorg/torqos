@@ -324,23 +324,33 @@ Open issues found while bringing up M1 (2026-10-30). Fix with a failing test fir
    addresses: entry 2 is now 1`, `cli/src/settings.rs` `renumbered`, 2026-11-12), and `show | compare`
    shows what each number holds before commit; a script that does not read the answer is as before.
 
-6x. **What a setting's default is, when nothing sets it, is not shown.** `show` says "Nothing is set
-   at …", and `set services openssh ports 2222` does not say it replaces the default 22. Reading
-   every setting's default when the schema is built fails: some defaults raise errors Nix cannot
-   catch (`builtins.tryEval` catches only `throw` and `assert`; a missing attribute, or an option
-   "accessed but has no value defined", ends the evaluation), NixOS's own documented defaults
-   included. Reading one when it is asked for would mean evaluating the configuration (seconds).
-   Possible: defaults written by NixOS's manual build, or an evaluation per setting in its own
-   process.
-   Plan (not built): (1) modules/nixos-schema.nix gains an optional `default` per entry (and cli/src/nixos.rs
-   `Entry` a `default: Option<Value>`), filled from NixOS's own options document
-   (`config.system.build.manual.optionsJSON`, where each default is already rendered, `literalExpression`
-   ones as text, errors caught by its build) and kept only for plain values (bool, number, text, a list of
-   those) so nothing is guessed; (2) `set` on a path with a default that is not yet set says "replaces
-   the default <value>" (cli/src/session.rs, where `set` answers); (3) `show <path> | display defaults`
-   (a new view word, grammar.rs `Display`) lists the known defaults below the path.
-   The first step is the large one: the manual build is a separate derivation (seconds to minutes), and
-   its JSON must be checked against the real options before any default is printed.
+6x. **What a setting's default is, when nothing sets it** — fixed for plain values (2026-11-14): `set` says
+   "services openssh ports replaces NixOS's default [ 22 ]" once, when nothing sets the setting yet, and
+   `show services openssh | display defaults` lists the known defaults below a place (`(set)` marks one the
+   configuration sets). Empty defaults (`[ ]`, `""`) are not worth a line in `set`; the whole configuration
+   is not listed (a place is asked for). Formerly: `show` said "Nothing is set at …" and nothing gave 22.
+   - **How:** modules/nixos-schema.nix gives an entry a `default` (read by cli/src/nixos.rs `Entry`) from
+     the option's own `default`, kept only if it is a bool, number, text without a store path, or a list of
+     those. A cheaper source than the manual's options document works: the NixOS manual reads `default` just
+     as directly, and the schema already walks the same options. On this system: 14,297 of the settings have
+     one (5,788 bool, 4,760 text, 1,542 number, 2,207 list); the schema grew from 5,115,201 to 5,386,647
+     bytes (944,635 from 893,932 gzipped), and building it from about 2.5 s to 3.4 s; the image, dev VM and
+     installer systems all build it.
+   - **What fails, exactly:** forcing an option's `default` when it also has a `defaultText` aborts the
+     evaluation with an error `builtins.tryEval` does not catch (measured: `expected a set but found null`
+     over all such options). Such a default depends on the configuration (that is why the text exists), so
+     it is no fixed value: an option with a `defaultText` has no default here, and its `default` is never
+     touched. Every other plain default evaluated (all three systems), so the earlier fear of failures
+     "NixOS's documented defaults included" is this case only. `tryEval` still guards a `throw` or an
+     `assert`; a default that fails in another way would stop the schema's build (the build fails, it is
+     not quietly wrong).
+   - **What has none:** null, packages, attribute sets, paths, `mkIf` and similar wrappers, text carrying a
+     store path, lists with any of those, and every option with a `defaultText`.
+   - **Honesty limits:** the default is the option's declared one, not what TorqOS's own modules or a
+     NixOS profile set on this machine (a setting a TorqOS module turns on still shows NixOS's `false` as its
+     default); a default that depends on other settings without saying so in a `defaultText` would be
+     shown as it is on this system. `set` on a setting TorqOS keeps in its own files (the hand schema) says
+     nothing. Not run: a comparison of every default against the rendered manual.
 6y. **Reading the history** was the owner's alone, with a password, out of dev mode; since the socket
    broker (ADR-040) it is anyone's on the machine to read, and only the broker writes it. Formerly: the history is
    privileged (ADR-026).

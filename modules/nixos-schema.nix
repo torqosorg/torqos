@@ -75,6 +75,21 @@ let
   # `nodes.<name>`): paths are written from the system itself.
   prefix = builtins.length options.networking.hostName.loc - 2;
 
+  # What an option is when nothing sets it, where that is a plain value: a bool, a number, text, or a
+  # list of those. Nothing else (null, a package, an attribute set, a path, a `mkIf`, text carrying a
+  # store path) is a default torqcli can state, so it has none here. An option with a `defaultText`
+  # is left alone: its `default` depends on the configuration (that is why the text exists, as the
+  # NixOS manual has it) and is no fixed value; the declared text is no value either. NixOS's own
+  # manual reads `default` just as directly, so this is the same trust, with `tryEval` for a `throw`
+  # or an `assert` in one.
+  plainDefault = opt:
+    let
+      plain = v: builtins.isBool v || builtins.isInt v || builtins.isFloat v || (builtins.isString v && !builtins.hasContext v);
+      keep = v: plain v || (builtins.isList v && builtins.all plain v);
+      r = builtins.tryEval (if opt ? default && !(opt ? defaultText) && keep opt.default then { value = opt.default; } else { });
+    in
+    if r.success then r.value else { };
+
   walk = opts: builtins.concatMap (opt:
     let
       visible = opt.visible or true;
@@ -83,7 +98,7 @@ let
       subs = builtins.tryEval (opt.type.getSubOptions opt.loc);
       below = if visible == true && subs.success && subs.value != { } then walk subs.value else [ ];
       at' = lib.drop prefix opt.loc;
-      entry = { loc = at'; type = forms.${lib.concatStringsSep " " at'} or (typeOf 8 opt.type // lib.optionalAttrs (names ? ${lib.concatStringsSep " " at'}) { names = names.${lib.concatStringsSep " " at'}; }); help = help (opt.description or ""); };
+      entry = { loc = at'; type = forms.${lib.concatStringsSep " " at'} or (typeOf 8 opt.type // lib.optionalAttrs (names ? ${lib.concatStringsSep " " at'}) { names = names.${lib.concatStringsSep " " at'}; }); help = help (opt.description or ""); } // lib.optionalAttrs ((plainDefault opt) ? value) { default = (plainDefault opt).value; };
       # A section that takes any key (RFC 42's `settings`: a freeform type, attrsOf of what each key
       # takes): where, in the tree, and the type of each key's value. Where entries are named (an
       # attrsOf or listOf of submodules), at the entry.

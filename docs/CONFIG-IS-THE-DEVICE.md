@@ -173,7 +173,7 @@ torq.desktop.enable = true;       →  torq desktop enable true
    path itself; NixOS's types check every value. All system tier at the broker.
 **Built (S3a–S3c):** the fence; settings.rs (the nixos/ files) and whole.rs (one tree of NixOS paths
    over both kinds of files, the mapping table, old names as aliases); `configure` — set, delete,
-   edit, show, compare, `| display set|detail`, `?` and Tab — on it; the SSH key check by NixOS's
+   edit, show, compare, `| display set|detail|defaults`, `?` and Tab — on it; the SSH key check by NixOS's
    path too; reserved words refused as entry names.
 **Built (S3d):** this machine's owner, dev mode, SSH and desktop moved from system.nix/desktop.nix
    into nixos/torq.json and nixos/services.json (ledger #35); the migrated repo built the very
