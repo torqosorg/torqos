@@ -159,7 +159,100 @@ Open issues found while bringing up M1 (2026-10-30). Fix with a failing test fir
    (an assertion in `modules/base.nix`, checked by `boot-menu` in flake.nix): a config file or a hand-made
    proposal that sets it does not build. A configuration that already holds it stops building until
    it is removed. To do: make the new boot entry
-   one-shot until a confirmed commit is confirmed.
+   one-shot until a confirmed commit is confirmed. **Not built: a plan (2026-11-14), waiting for the
+   owner's decisions below.** It is not a contained change: it reverses a guarantee that is written
+   down and tested.
+
+   *Today, as the code is* (`broker/src/lib.rs` `apply_locked`, `confirm`, `expire_locked`;
+   `torq-confirm-boot` in `modules/broker.nix`; NixOS's `systemd-boot-builder.py`):
+   - **During the window the new system is not a boot entry at all.** `commit confirmed` builds it and
+     runs `switch-to-configuration test`: no profile generation, nothing written to the EFI partition.
+     The kernel, the initrd and the boot loader's settings of the change are therefore never tried in
+     the window, whatever its length; only what activation changes is.
+   - **A restart inside the window** starts the old system (the only default), and `torq-confirm-boot`
+     (`expire-confirm --reboot`) resets the repo and ledgers `rolled_back` with `by_reboot` (the boot ID
+     differs). `tests/trust-loop.nix` "commit confirmed: a restart before confirming rolls back";
+     `tests/boot.nix` asserts "not a boot entry, until it is confirmed".
+   - **Power loss in the window**: the same, by itself, with nobody there (`tests/boot.nix`, the power cut).
+   - **A confirm after a restart** is refused ("the machine has restarted since it was applied"), and
+     the rollback above has usually run already.
+   - **A rollback by the timer** activates the anchor's store path with the anchor's own commands and
+     resets the repo; the boot default never moved. A changed kernel never ran, so nothing is left over.
+   - **A new system that cannot start**: nobody finds out in the window. `confirm` (or a plain `commit`)
+     sets the profile and runs the new system's `switch-to-configuration boot`: the new entry, and
+     the default, in one step, untried. The next restart, perhaps weeks later, stops in the initrd's
+     emergency shell, and stays there: the way back is a person at the console choosing an older entry.
+
+   *The one boot loader* is systemd-boot, written by NixOS's installer (`hosts/image`, `hosts/dev-vm`,
+   every `first-build` configuration; `canTouchEfiVariables` true on installed machines); no GRUB, no
+   BIOS start (the ISO's own loader is NixOS's and the broker never commits there). Two facts of that
+   writer shape any design: it writes an entry for each of the last `configurationLimit` generations
+   *of the system profile*, and the default it writes is the generation whose system is the one
+   whose `switch-to-configuration` was run, not the profile's link. Its entries are
+   `nixos-generation-<N>.conf` (and `…-specialisation-<name>.conf`). The pinned nixpkgs has no
+   boot counting (`boot.loader.systemd-boot.bootCounting`), which would be the other mechanism.
+
+   *The design, if it is wanted* (all the broker's, as root, which it is: no new privilege; `bootctl`
+   is in its fixed PATH with systemd):
+   1. **Only for a change that changes how the machine starts**: a pure function over the two systems'
+      `kernel`, `initrd`, `kernel-params` (and the loader's settings) links, anchor against new. Any other
+      commit confirmed stays exactly as today.
+   2. **Arming.** `nix-env -p <profile> --set <new>` (generation N+1), `--switch-generation <N>` back, then
+      the *anchor's* `switch-to-configuration boot`: entries N and N+1, the default N. Then `bootctl
+      set-oneshot nixos-generation-<N+1>.conf`, read back (`LoaderEntryOneShot`). Any step failing: the
+      generation is deleted, the anchor's boot command run again, and the commit confirmed goes on as
+      today, saying so. Never the new system's installer before the confirm: it would replace
+      systemd-boot itself and `loader.conf` with the untried ones.
+   3. **A restart in the window starts the new system once.** At that boot the broker finds the
+      waiting change with another boot ID and the booted system equal to `system`: it does not roll
+      back; it arms the timer again and `confirm` is accepted. Booted on the anchor instead (the new
+      one did not start, and the firmware used its one try): `rolled_back`, `by_reboot`, as today,
+      and generation N+1 and its entry are removed.
+   4. **Confirm** as today (the profile, the new system's boot command), and clears the one-shot.
+      **Rollback** (timer, person, reboot): the one-shot cleared, N+1 deleted, the anchor's boot command;
+      "restored" also means the one-shot is gone. After a trial boot the old kernel is back only at
+      the next restart, and the ledger says so.
+   5. **The ledger**: in the `applied` entry's `confirm` record, `trial: { generation, entry }` or the
+      reason there is none; `rolled_back` gains `booted` (the trial, or the anchor); `confirmed` gains
+      whether the system had been started. No new kind.
+   6. **Without EFI variables** (a test VM started from its kernel, `canTouchEfiVariables` false, a
+      firmware that refuses the write): no trial, today's behaviour, said at the commit. QEMU with
+      `useEFIBoot` keeps its variables across a restart: `tests/boot.nix` already uses `bootctl
+      set-oneshot` so.
+   7. **`configurationLimit`** below 2 would keep only N+1 and leave the default naming an entry that
+      is gone: no trial then (or an assertion). The trial also needs room for one more kernel and
+      initrd on the EFI partition before the confirm, not at it (the machines with 249 MiB).
+
+   *How it could leave a machine not starting, or on the old system, and what prevents each:*
+   - The default moved to the untried system: never, the anchor's installer writes it (2), and the
+     broker reads `loader.conf` and the variable back before it ledgers the trial.
+   - The new system hangs instead of restarting (the emergency shell, root locked): **not prevented.**
+     One-shot gives "the next start after that is the old one", so a power cycle with no menu and
+     no console; "by itself" needs a watchdog or a restart on a failed boot, a separate decision.
+   - **Power returns in the window with nobody there: the machine starts the untried system, where
+     today it starts the confirmed one.** This is the guarantee that changes (ADR-016, CLI-DESIGN,
+     the two subtests above), for these commits only. The timer armed again at that boot bounds it
+     when the new system starts; it does not when it hangs.
+   - The one-shot left set after a rollback or lost before the restart: cleared and read back in (4);
+     lost, the machine starts the anchor and it is ledgered as a rollback by restart, the true
+     outcome though not the wanted one.
+   - The deadline passed while the machine was restarting: a rollback the moment it comes up, before
+     anyone can confirm, unless the window is counted from the trial boot (a decision).
+   - The timer's broker, after a trial boot, is the new system's: the anchor's commands are still
+     used (`restore_commands`), as 6h describes.
+   - Stuck unconfirmed for ever: the pending change still blocks every other change, the push of
+     `main` and backups, now across a restart; the timer armed at boot and `MAX_ROLLBACK_ATTEMPTS` end it.
+   - A plain `commit` and a `confirm` without a restart in the window are untouched, so the gap stays
+     for them; torqcli's warning must keep saying so.
+
+   *Decisions for the owner:* (a) may a restart or a power cut inside the window start the unconfirmed
+   system once, for a boot-changing commit confirmed, instead of always rolling back; (b) or should
+   the trial be asked for explicitly, which needs a new command word (torqcli has no restart command)
+   and keeps the power-cut guarantee whole; (c) the window after a trial boot: the rest of the old
+   one, or a new one; (d) a hung start: a watchdog or restart-on-failure during a trial, or the power
+   button; (e) a plain `commit` that changes how the machine starts: left as it is, or made to ask
+   for `commit confirmed`. Size, as estimated: 400 to 600 lines of broker code and a boot-time unit
+   changed, beside the tests.
 
 6o. **A flake.lock that does not match flake.nix is fetched before it is refused** (review of S4b).
    The broker builds with `--no-update-lock-file`, so such a commit never builds, but to find out
