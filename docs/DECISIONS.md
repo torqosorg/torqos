@@ -2368,7 +2368,7 @@ vouches for, that only proposes, every change ledgered and undone in one command
   window and the Agent page ask its status only while systemd says it runs (`systemctl` by absolute path,
   killed after 5 s); asking a question, Forget and `--check` start it. The Agent page's Forget is a torqcli line,
   `request system agent forget` (new, beside `request system agent trust`; the grammar checks it), and an open
-  window notices a Forget from elsewhere (its count shrank: `conversation::forgotten`) and stops showing that
+  window notices a Forget from elsewhere (the status names the conversation by a number that changes at every Forget, `conversation::forgotten`; an older agent that names none is told by its count shrinking) and stops showing that
   conversation. The endpoint is shown as scheme, host and path only, and `torq.agent.doctor.endpoint` refuses
   a query or fragment (an assertion, `checks.agent-assertions`). torqcli's `me()` is the uid's name in
   /etc/passwd (not `id` on PATH) — an account only NSS knows (homed, LDAP) is not found, and TorqOS declares
