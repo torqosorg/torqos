@@ -5,40 +5,15 @@
 # reaches her own service from her session (`torq-agent-ui --check`) and says what it remembers; someone
 # with no agent is told so; and the window is one a person — started again, the one open stays the only one.
 # Step 4's entry points: `ask` in the login shell, the launcher's plugin where pop-launcher looks, a crash offered
-# with nothing sent until the person asks, Super+Shift+A opening the window (Super+A still the App Library's). The model is scripted (as in
-# tests/agent-service.nix).
+# with nothing sent until the person asks, Super+Shift+A opening the window (Super+A still the App Library's). The
+# agent's engine is Claude Code, standing in (as in tests/agent-service.nix); doctor mode is off.
 { pkgs, self }:
 
 let
   # The owner's password, `torq-desktop`, as the broker keeps it (modules/accounts.nix).
   hash = "$6$torqtestsalt$wXsKSX3z/kTvGvAzmdrks4iI95ZmWWtQgfYUMV/OEbQ7h7HZxSpMJYh0hvWPma/izeabeQYfkEhhQhWA52xbE1";
-  fakeModel = pkgs.writeScript "fake-model" ''
-    #!${pkgs.python3}/bin/python3
-    import json
-    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-    class H(BaseHTTPRequestHandler):
-        def log_message(self, *args):
-            pass
-        def do_POST(self):
-            self.rfile.read(int(self.headers["Content-Length"]))
-            out = json.dumps({"choices": [{"message": {"role": "assistant", "content": "Hello alice."}}]}).encode()
-            self.send_response(200)
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Content-Length", str(len(out)))
-            self.end_headers()
-            self.wfile.write(out)
-    # On a unix socket in a directory only root writes (its RuntimeDirectory): a model no account here can stand
-    # in for, so the resident agent's sessions start clean (ADR-051 step 5; a TCP one on this machine would not).
-    import os, socketserver
-    class S(socketserver.ThreadingMixIn, socketserver.UnixStreamServer):
-        daemon_threads = True
-    SOCK = "/run/fake-model/model.sock"
-    if os.path.exists(SOCK):
-        os.unlink(SOCK)
-    server = S(SOCK, H)
-    os.chmod(SOCK, 0o666)
-    server.serve_forever()
-  '';
+  # The engine: Claude Code, standing in (tests/stand-in-engine.nix).
+  claude = import ./stand-in-engine.nix { inherit pkgs; };
 in
 pkgs.testers.runNixOSTest {
   name = "torq-desktop-agent";
@@ -54,10 +29,12 @@ pkgs.testers.runNixOSTest {
     users.users.root.hashedPasswordFile = lib.mkForce null;
     virtualisation.memorySize = 4096;
     torq.broker.rebuildCommand = "true";
-    # alice's agent, resident, asking a scripted model on this machine.
+    # alice's agent, with an engine: Claude Code chosen, allowed, installed for the agents, and standing in.
     torq.agent.people = [ "alice" ];
-    torq.agent.doctor = { enable = true; endpoint = "unix:/run/fake-model/model.sock"; model = "fake"; maxSteps = 2; };
-    systemd.services.fake-model = { wantedBy = [ "multi-user.target" ]; serviceConfig = { ExecStart = fakeModel; RuntimeDirectory = "fake-model"; }; };
+    torq.unfree.packages = [ "claude-code" ];
+    torq.agent.tools = [ "claude-code" ];
+    torq.agent.engine = "claude-code";
+    torq.agent.claudeCode = claude;
   };
 
   testScript = ''
@@ -110,14 +87,19 @@ pkgs.testers.runNixOSTest {
 
     with subtest("from her session, the client the UIs share reaches her own agent"):
         out = in_session("torq-agent-ui --check")
-        assert out.splitlines()[0] == "Idle · remembers nothing yet", out
-        assert "Local model (llama-server on this machine)" in out, out
-        assert machine.succeed(f"ps -o user= -p $(systemctl show -P MainPID {unit})").strip() == "torq-resident-alice"
+        assert out.splitlines()[0] == "Idle · no conversation yet", out
+        # What answers is said: the engine, and that what it reads leaves the machine.
+        assert "Claude Code · REMOTE: what it reads goes to its own service" in out, out
+        assert machine.succeed(f"ps -o user= -p $(systemctl show -P MainPID {unit})").strip() == "torq-agent-alice"
+        # Not signed in yet: the same client says so, with what to do; alice does it, at a terminal.
+        code, out = machine.execute("su - alice -c 'torq ask hello' 2>&1")
+        assert code != 0 and "Claude Code is not signed in for your agent" in out and "torq agent run -- claude" in out, out
+        assert machine.succeed("su - alice -c 'torq agent run -- claude --stand-in-login'").strip() == "signed in"
         assert in_session("torq ask hello").strip() == "Hello alice."
-        assert in_session("torq-agent-ui --check").splitlines()[0] == "Idle · remembers 1 turn"
+        assert in_session("torq-agent-ui --check").splitlines()[0] == "Idle · a conversation of 1 question"
         # The Agent page's Forget is a torqcli line: through her own socket, and the count says so.
         assert "forgotten the conversation" in in_session("torqcli request system agent forget")
-        assert in_session("torq-agent-ui --check").splitlines()[0] == "Idle · remembers nothing yet"
+        assert in_session("torq-agent-ui --check").splitlines()[0] == "Idle · no conversation yet"
 
     with subtest("someone with no agent is told so, and reaches no one's"):
         # (Not a second person: COSMIC's greeter would no longer open on alice.)

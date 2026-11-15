@@ -52,6 +52,8 @@ let
 in
 pkgs.testers.runNixOSTest {
   name = "torq-agent-proposals";
+  # `torq unfree` sets nixpkgs.config (modules/unfree.nix), so the node builds its own package set.
+  node.pkgsReadOnly = false;
 
   nodes.machine = { pkgs, lib, ... }: {
     imports = [ self.nixosModules.default ];
@@ -66,6 +68,12 @@ pkgs.testers.runNixOSTest {
     torq.broker.rebuildCommand = "true";
     torq.agent.doctor = { enable = true; endpoint = "unix:/run/fake-model/model.sock"; model = "fake"; journal = true; maxSteps = 2; };
     systemd.services.fake-model = { wantedBy = [ "multi-user.target" ]; serviceConfig = { ExecStart = fakeModel; RuntimeDirectory = "fake-model"; }; };
+    # An engine, so that the agent has its service (ADR-055): the old loop's rule is still tried from that
+    # service's control group, as the old loop's account, until both go (phase 2). The engine is never asked here.
+    torq.unfree.packages = [ "claude-code" ];
+    torq.agent.tools = [ "claude-code" ];
+    torq.agent.engine = "claude-code";
+    torq.agent.claudeCode = import ./stand-in-engine.nix { inherit pkgs; };
     environment.systemPackages = [ pkgs.socat pkgs.jq pkgs.tmux ];
   };
 
@@ -89,14 +97,13 @@ pkgs.testers.runNixOSTest {
             return machine.succeed(f"su -s /bin/sh {who} -c {shlex.quote(cmd)}")
         unit = f"torq-agent@{who.removeprefix('torq-agent-')}.service"
         machine.succeed(f"systemctl start {unit}")
-        # `systemctl start` comes back when the service is forked, before systemd has made its state directory and
-        # the service its home there: on a busy host the command below was run first and found them not its own yet.
-        machine.wait_until_succeeds(f"test \"$(stat -c %a:%U /var/lib/torq-agent-memory/{who.removeprefix('torq-agent-')}/home)\" = 700:{who.replace('torq-agent-', 'torq-resident-', 1)}", timeout=60)
+        # A home for the old loop's account to run torqcli in (its own service made one; the bridge makes none).
+        machine.succeed(f"install -d -m 700 -o {who.replace('torq-agent-', 'torq-resident-', 1)} -g {who.replace('torq-agent-', 'torq-resident-', 1)} /var/lib/torq-test-resident/{who.removeprefix('torq-agent-')}")
         cg = machine.succeed(f"systemctl show -P ControlGroup {unit}").strip()
         procs = shlex.quote(f"/sys/fs/cgroup{cg}/cgroup.procs")
         # The resident agent's own account (ADR-051 3 amended 2026-11-11): the agent account is never resident.
         res = who.replace("torq-agent-", "torq-resident-", 1)
-        script = f"echo $$ > {procs} && exec setpriv --reuid {res} --regid {res} --init-groups -- env HOME=/var/lib/torq-agent-memory/{who.removeprefix('torq-agent-')}/home sh -c {shlex.quote(cmd)}"
+        script = f"echo $$ > {procs} && exec setpriv --reuid {res} --regid {res} --init-groups -- env HOME=/var/lib/torq-test-resident/{who.removeprefix('torq-agent-')} sh -c {shlex.quote(cmd)}"
         return machine.succeed(f"sh -c {shlex.quote(script)}")
 
     def ask(user, request, resident=False):

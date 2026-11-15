@@ -89,8 +89,10 @@ pkgs.testers.runNixOSTest {
     users.users.alice.hashedPassword = hash;
     users.users.bob = { isNormalUser = true; hashedPasswordFile = lib.mkForce null; hashedPassword = hash; };
     torq.agent.people = [ "alice" ];
-    # Doctor mode on, for alice's resident service (the control below speaks from its control group); no model
-    # is ever asked.
+    # Doctor mode on, for the old loop's account and the broker's rule about it (the control below speaks from
+    # the agent service's control group as that account); no model is ever asked. And the engine, so that the
+    # service is there (ADR-055): it is never asked either.
+    torq.agent.engine = "claude-code";
     torq.agent.doctor = { enable = true; endpoint = "http://127.0.0.1:9/v1"; model = "none"; journal = true; };
     # Where the control below says the model is: a directory only root writes.
     systemd.tmpfiles.rules = [ "d /run/torq-test-model 0755 root root -" ];
@@ -99,6 +101,9 @@ pkgs.testers.runNixOSTest {
     torq.unfree.packages = [ "claude-code" ];
     torq.agent.tools = [ "claude-code" ];
     torq.agent.claudeCode = claude;
+    # `claude` typed plainly is off here (it is on by default, and is TorqOS's own command, tried in
+    # tests/agent-service.nix): this test's claim is where the tool itself is, on no person's PATH.
+    torq.agent.plainCommand = false;
     environment.systemPackages = [ pkgs.socat pkgs.jq (lib.hiPrio torqcli) ];
   };
 
@@ -146,7 +151,7 @@ pkgs.testers.runNixOSTest {
         machine.fail("su - bob -c 'command -v claude'")
         assert as_alice("torq agent run -- sh -c 'command -v claude'").strip() == "/etc/profiles/per-user/torq-agent-alice/bin/claude"
         machine.succeed("test -x /run/current-system/sw/bin/torq-mcp")
-        assert json.loads(machine.succeed("cat /etc/torq/agent-tools.json")) == {"tools": ["claude-code"]}
+        assert json.loads(machine.succeed("cat /etc/torq/agent-tools.json")) == {"tools": ["claude-code"], "engine": "claude-code"}
 
     with subtest("the launcher links TorqOS into its settings, as the agent, keeping what was there"):
         # What the tool (or the person, through it) had set: kept.
@@ -199,6 +204,8 @@ pkgs.testers.runNixOSTest {
         # another of its addresses ([::1] beside the real 127.0.0.1) and answer as the model.
         unit = "torq-agent@alice.service"
         machine.succeed(f"systemctl start {unit}")
+        # A home for the old loop's account to run torqcli in (its own service made one; the bridge makes none).
+        machine.succeed("install -d -m 700 -o torq-resident-alice -g torq-resident-alice /var/lib/torq-test-resident/alice")
         cg = machine.succeed(f"systemctl show -P ControlGroup {unit}").strip()
         assert cg == "/system.slice/system-torq\\x2dagent.slice/torq-agent@alice.service", cg
         procs = shlex.quote(f"/sys/fs/cgroup{cg}/cgroup.procs")
@@ -206,7 +213,7 @@ pkgs.testers.runNixOSTest {
         def resident(reason):
             inner = "TORQ_AGENT_SESSION=$(torqcli agent session start) torqcli -c " + shlex.quote(f'configure; set users alice packages htop; commit comment "{reason}"')
             # Root moves this shell into the unit's group (root may; no process of the agent's can), then becomes the agent.
-            machine.succeed(f"sh -c {shlex.quote(f'echo $$ > {procs} && exec setpriv --reuid torq-resident-alice --regid torq-resident-alice --init-groups -- env HOME=/var/lib/torq-agent-memory/alice/home sh -c {shlex.quote(inner)}')}")
+            machine.succeed(f"sh -c {shlex.quote(f'echo $$ > {procs} && exec setpriv --reuid torq-resident-alice --regid torq-resident-alice --init-groups -- env HOME=/var/lib/torq-test-resident/alice sh -c {shlex.quote(inner)}')}")
             return proposal(reason)
 
         assert json.loads(machine.succeed("cat /etc/torq/broker.json"))["model"] == "http://127.0.0.1:9/v1"

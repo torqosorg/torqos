@@ -11,6 +11,8 @@ let
 in
 pkgs.testers.runNixOSTest {
   name = "torq-agents-per-person";
+  # `torq unfree` sets nixpkgs.config (modules/unfree.nix), so the node builds its own package set.
+  node.pkgsReadOnly = false;
 
   nodes.machine = { pkgs, lib, ... }: {
     imports = [ self.nixosModules.default ];
@@ -32,6 +34,12 @@ pkgs.testers.runNixOSTest {
     # agent's sessions can start clean (a TCP model on this machine would taint them: ADR-051 step 5).
     torq.agent.doctor = { enable = true; endpoint = "unix:/run/torq-test-model/none.sock"; model = "none"; };
     systemd.tmpfiles.rules = [ "d /run/torq-test-model 0755 root root -" ];
+    # An engine, so that the agent has its service (ADR-055): the old loop's rule is still tried from that
+    # service's control group, as the old loop's account, until both go (phase 2). The engine is never asked here.
+    torq.unfree.packages = [ "claude-code" ];
+    torq.agent.tools = [ "claude-code" ];
+    torq.agent.engine = "claude-code";
+    torq.agent.claudeCode = import ./stand-in-engine.nix { inherit pkgs; };
     # Named like an agent account, made by hand, not in torq.agent.people: no agent.
     users.users.torq-agent-carol = { isSystemUser = true; group = "torq-agent-carol"; home = "/var/lib/torq-agent-carol"; createHome = true; };
     users.groups.torq-agent-carol = { };
@@ -46,6 +54,9 @@ pkgs.testers.runNixOSTest {
     repo = "/var/lib/torq/config"
     machine.succeed(f"mkdir -p {repo} && echo '{{}}' > {repo}/desktop.json && touch {repo}/flake.nix && torq-broker init")
     PASSWORD = "Torq-sock-2210"
+    # A home for each old-loop account to run torqcli in (its own service made one; the bridge makes none).
+    for person in ["alice", "bob"]:
+        machine.succeed(f"install -d -m 700 -o torq-resident-{person} -g torq-resident-{person} /var/lib/torq-test-resident/{person}")
 
     def as_agent(who, cmd, resident):
         # As the agent account `who`. `resident`: from inside its person's torq-agent@<person>.service's control
@@ -59,7 +70,7 @@ pkgs.testers.runNixOSTest {
         procs = shlex.quote(f"/sys/fs/cgroup{cg}/cgroup.procs")
         # The resident agent's own account (ADR-051 3 amended 2026-11-11): the agent account is never resident.
         res = who.replace("torq-agent-", "torq-resident-", 1)
-        script = f"echo $$ > {procs} && exec setpriv --reuid {res} --regid {res} --init-groups -- env HOME=/var/lib/torq-agent-memory/{who.removeprefix('torq-agent-')}/home sh -c {shlex.quote(cmd)}"
+        script = f"echo $$ > {procs} && exec setpriv --reuid {res} --regid {res} --init-groups -- env HOME=/var/lib/torq-test-resident/{who.removeprefix('torq-agent-')} sh -c {shlex.quote(cmd)}"
         return machine.succeed(f"sh -c {shlex.quote(script)}")
 
     def ask(user, request, resident=False):
@@ -148,7 +159,7 @@ pkgs.testers.runNixOSTest {
         unit = "torq-agent@alice.service"
         machine.succeed(f"systemctl start {unit}")
         # The resident account outside its unit (as root's su makes it): tainted from its start, as any program.
-        out = machine.succeed("su -s /bin/sh torq-resident-alice -c 'cd /tmp && HOME=/var/lib/torq-agent-memory/alice/home torqcli agent session start'").strip()
+        out = machine.succeed("su -s /bin/sh torq-resident-alice -c 'cd /tmp && HOME=/var/lib/torq-test-resident/alice torqcli agent session start'").strip()
         rec = json.loads(machine.succeed(f"cat /var/lib/torq/state/sessions/{out}.json"))
         assert rec["tainted_by"] == ["not-the-resident-agent"] and rec["agent"] == "torq-agent-alice" and rec["resident"] is False, rec
         # The agent account inside the unit's control group (root moves it there): never resident.
