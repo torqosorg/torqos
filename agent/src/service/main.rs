@@ -330,24 +330,33 @@ impl Agent {
         Ok(input)
     }
 
-    /// Hear the engine started as `start` to its end: each line's steps taken as they come. When its output
-    /// ends, all of it goes (its group, and whatever else it left in this unit), and only then is the agent
-    /// free for another start; a question it left unanswered is ended, said.
-    fn hear(&self, mut child: Child, output: ChildStdout, start: u64) {
-        let mut hearing = Hearing::new(self.engine);
-        let mut r = BufReader::new(output);
-        loop {
-            match read_line(&mut r, ENGINE_LINE) {
-                Ok(Line::Text(l)) => hearing.line(&l).into_iter().for_each(|step| self.step(start, step)),
-                // Read to its end and thrown away: the engine goes on, and is never left blocked.
-                Ok(Line::Dropped) => eprintln!("torq-agent-service: {} wrote a line longer than {ENGINE_LINE} bytes, or not text: left out", self.engine.name()),
-                Ok(Line::End) | Err(_) => break,
+    /// Hear the engine started as `start` to its end: each line's steps taken as they come (a thread of their
+    /// own). This waits for the engine's process to end, not for its output to: a program it left running may
+    /// hold that open. Then all of it goes (its group, and whatever else it left in this unit), which closes
+    /// the output too, and only then is the agent free for another start; a question it left unanswered is
+    /// ended, said.
+    fn hear(self: Arc<Self>, mut child: Child, output: ChildStdout, start: u64) {
+        let (me, (heard, all_heard)) = (self.clone(), std::sync::mpsc::channel::<()>());
+        std::thread::spawn(move || {
+            let mut hearing = Hearing::new(me.engine);
+            let mut r = BufReader::new(output);
+            loop {
+                match read_line(&mut r, ENGINE_LINE) {
+                    Ok(Line::Text(l)) => hearing.line(&l).into_iter().for_each(|step| me.step(start, step)),
+                    // Read to its end and thrown away: the engine goes on, and is never left blocked.
+                    Ok(Line::Dropped) => eprintln!("torq-agent-service: {} wrote a line longer than {ENGINE_LINE} bytes, or not text: left out", me.engine.name()),
+                    Ok(Line::End) | Err(_) => break,
+                }
             }
-        }
-        // Its output closed: it is over, or of no use any more.
-        let _ = rustix::process::kill_process_group(rustix::process::Pid::from_child(&child), rustix::process::Signal::KILL);
+            // Whoever waits for this may have stopped waiting (below): nothing is left to tell.
+            let _ = heard.send(());
+        });
         let _ = child.wait();
+        let _ = rustix::process::kill_process_group(rustix::process::Pid::from_child(&child), rustix::process::Signal::KILL);
         self.sweep();
+        // What it wrote before it ended is taken first: its last lines may be its answer's end. Waited for a
+        // moment only: where what it left cannot be swept (outside a unit), its output may never end.
+        let _ = all_heard.recv_timeout(Duration::from_secs(2));
         let mut now = self.now();
         now.engine = None;
         let left = now.asking.take();
@@ -916,11 +925,13 @@ say "$(head -c 70000 /dev/zero | tr '\0' x)"; ok"#;
         std::thread::sleep(Duration::from_secs(300));
     }
 
-    /// What the engine starts for the tests below: a process in a session of its own and an undumpable one,
-    /// their pids noted, and listed with the engine's own as the unit's `cgroup.procs` would list them.
+    /// What the engine starts for the tests below: a process in a session of its own, holding the engine's
+    /// output open (as a program a tool started does: here as its descriptor 3, so that it writes nothing
+    /// into it), and an undumpable one, their pids noted, and listed with the engine's own as the unit's
+    /// `cgroup.procs` would list them.
     fn strays() -> String {
         format!(
-            r#"TORQ_TEST_HELPER=own-session {0} --exact tests::helper --ignored --test-threads=1 >/dev/null 2>&1 & echo $! > "$HOME/own-group"
+            r#"TORQ_TEST_HELPER=own-session {0} --exact tests::helper --ignored --test-threads=1 3>&1 >/dev/null 2>&1 & echo $! > "$HOME/own-group"
 TORQ_TEST_HELPER=undumpable {0} --exact tests::helper --ignored --test-threads=1 >/dev/null 2>&1 </dev/null & echo $! > "$HOME/undumpable"
 echo $$ $(cat "$HOME/own-group") $(cat "$HOME/undumpable") > "$HOME/procs""#,
             std::env::current_exe().unwrap().display()
