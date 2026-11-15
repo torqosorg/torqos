@@ -90,6 +90,19 @@ let
         && !(sc ? LoadCredential) && !(sc ? ExecStartPre) && !(sc ? Delegate) && !(sc ? RemoveIPC)
       then "the unit is the bridge, fenced"
       else throw "agent-assertions: the agent's unit is not as it should be: ${builtins.toJSON sc}")
+    # `claude` typed plainly (torq.agent.plainCommand): a command of TorqOS's on every person's PATH, there
+    # where Claude Code is installed for the agents and the setting is on (the default), and nowhere else. It
+    # is not Claude Code: that stays in the agents' own profiles.
+    (let
+      chosen = { torq.agent.tools = [ "claude-code" ]; torq.unfree.packages = [ "claude-code" ]; torq.agent.claudeCode = pkgs.hello; };
+      plain = c: lib.filter (p: lib.getName p == "claude") c.environment.systemPackages;
+      on = plain (configOf chosen);
+    in
+      if lib.length on == 1 && lib.hasInfix "/bin/torq agent run --share \"$PWD\" -- claude \"$@\"" (lib.head on).text
+        && plain (configOf { imports = [ chosen ]; torq.agent.plainCommand = false; }) == [ ]
+        && plain (configOf { }) == [ ] && plain (configOf { torq.agent.tools = [ "claude-code" ]; }) == [ ]
+      then "claude typed plainly: where it is installed and the setting is on"
+      else throw "agent-assertions: the plain claude command is not exactly where Claude Code is installed and the setting is on")
     # What the service's sandbox rests on besides: said, where the agent has a service.
     # Each the per-instance assertion's own message, which the template's check (below) does not share.
     (refuses "a delegated agent unit" (withEngine { systemd.services."torq-agent@dev".serviceConfig.Delegate = true; }) "systemd.services.\"torq-agent@dev\": no Delegate or DelegateSubgroup")

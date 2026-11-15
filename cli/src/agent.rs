@@ -93,11 +93,16 @@ pub(crate) fn checked_share(dir: &Path, home: &Path, uid: u32) -> Result<PathBuf
     if !m.is_dir() {
         bail!("{}: not a directory", dir.display());
     }
-    if dir == home || !dir.starts_with(&home) {
-        bail!("{}: share a directory inside your home ({}), not the home itself or anything outside it", dir.display(), home.display());
+    // Each refusal says what to do: `claude` typed in a terminal shares the folder the person is in, so this is
+    // what they read when they are in the wrong one.
+    if dir == home {
+        bail!("{} is your home itself, and your agent is never given all of it: go into a folder inside it first (a project's, for one: cd ~/<folder>), or name one with --share", dir.display());
+    }
+    if !dir.starts_with(&home) {
+        bail!("{} is not inside your home ({}): only a folder inside your home can be shared with your agent. Go into one first (cd ~/<folder>), or name one with --share", dir.display(), home.display());
     }
     if m.uid() != uid {
-        bail!("{}: not yours to share", dir.display());
+        bail!("{}: not yours to share (it belongs to another account): go into a folder of your own first", dir.display());
     }
     Ok(dir)
 }
@@ -203,7 +208,7 @@ pub(crate) fn run(args: &[String]) -> Result<i32> {
     let r = parse(args)?;
     let me = crate::me()?;
     if is_agent(&me) {
-        bail!("this is an agent already");
+        bail!("this is an agent's account already ({me}): only a person starts a program as their agent");
     }
     // Your own agent, and only yours: the launcher runs `torq-agent-<you>` (as sudo says who you are).
     let agent = agent_of(&me);
@@ -635,9 +640,14 @@ mod tests {
         std::fs::create_dir_all(&project).unwrap();
         let uid = std::fs::metadata(&home).unwrap().uid();
         assert_eq!(checked_share(&project, &home, uid).unwrap(), std::fs::canonicalize(&project).unwrap());
-        assert!(checked_share(&home, &home, uid).is_err(), "not the home itself");
-        assert!(checked_share(d.path(), &home, uid).is_err(), "not outside it");
-        assert!(checked_share(&project, &home, uid + 1).is_err(), "not someone else's");
+        // Each refusal says why, and what to do: go into a folder inside the home first.
+        let refused = |dir: &Path, uid: u32| checked_share(dir, &home, uid).unwrap_err().to_string();
+        let own = refused(&home, uid);
+        assert!(own.contains("is your home itself") && own.contains("go into a folder inside it first"), "{own}");
+        let outside = refused(d.path(), uid);
+        assert!(outside.contains("is not inside your home") && outside.contains("Go into one first"), "{outside}");
+        let anothers = refused(&project, uid + 1);
+        assert!(anothers.contains("not yours to share") && anothers.contains("go into a folder of your own first"), "{anothers}");
         std::fs::write(home.join("file"), "").unwrap();
         assert!(checked_share(&home.join("file"), &home, uid).is_err(), "not a file");
         // A link out of the home is where it leads, and refused there.

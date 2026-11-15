@@ -176,6 +176,14 @@ let
   claudeChosen = builtins.elem "claude-code" cfg.tools;
   claudeAllowed = config.torq.unfree.all || builtins.elem "claude-code" config.torq.unfree.packages;
   claudeCode = pkgs.claude-code.override { manifest = lib.importJSON ./claude-code-manifest.json; };
+  # `claude`, typed plainly (torq.agent.plainCommand): Claude Code as the person's agent, the folder they are in
+  # shared with it, every word after it passed on as it is. On every person's PATH, after their own profile
+  # (a Claude Code of their own is found first). Inside the sandbox the agent's own profile comes before the
+  # system's, so `claude` there is the real one; were it missing, this would be found again and `torq agent
+  # run` would refuse it ("an agent's account already"): it cannot start itself over and over.
+  plainClaude = pkgs.writeShellScriptBin "claude" ''
+    exec ${lib.getExe' config.torq.cli.package "torq"} agent run --share "$PWD" -- claude "$@"
+  '';
   # `torq agent run` (ADR-041, 5): a person starts a program as their own agent. This runs as root
   # (through sudo), hides every home and the people's runtime directories, gives a private /tmp,
   # binds in only the directory shared with it, and drops to the caller's agent for good.
@@ -250,6 +258,18 @@ in
       yours, and can only propose a change to the system, which you approve. Install it for the agents first
       (`set torq agent tools claude-code`), and sign in once: `torq agent run -- claude`, then /login. Not
       set, the default: the machine has no agent to ask.
+    '';
+  };
+
+  options.torq.agent.plainCommand = lib.mkOption {
+    type = lib.types.bool;
+    default = true;
+    description = ''
+      Typing `claude` in a terminal runs Claude Code as your agent, with the folder you are in shared with it:
+      the same as `torq agent run --share <that folder> -- claude`, and whatever you type after `claude` is
+      passed on to it unchanged. Off: `claude` is not a command; use `torq agent run`. Only where Claude Code
+      is one of `torq agent tools`. A Claude Code you installed in your own account is found first, and runs
+      as you, outside the agent's sandbox.
     '';
   };
 
@@ -375,6 +395,7 @@ in
     # running anything (modules/agent-run.sh). No password: administrators have root already, and the
     # program runs with less than they have.
     environment.systemPackages = [ agentRun pkgs.acl ]
+      ++ lib.optional (claudeChosen && claudeAllowed && cfg.plainCommand) plainClaude
       # torq-mcp, where a coding tool run as the agent finds it (/run/current-system/sw/bin/torq-mcp).
       ++ lib.optional (cfg.tools != [ ]) config.torq.agent.doctor.package;
     # The coding tools chosen (the launcher links TorqOS into them at each start; the Agent page shows them),

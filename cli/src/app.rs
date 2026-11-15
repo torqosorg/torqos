@@ -2023,6 +2023,9 @@ pub const AGENT_SETTINGS: &[Action] = &[
     draft("Allow Claude Code (unfree: nixpkgs' licence check)", "set torq unfree packages claude-code"),
     draft("Install Claude Code for the agents (allow it first)", "set torq agent tools claude-code"),
     draft("Remove the agents' coding tools", "delete torq agent tools"),
+    // Typing `claude` in a terminal (torq.agent.plainCommand, on by default where Claude Code is installed).
+    draft("Typing `claude` in a terminal: not a command any more (use torq agent run)", "set torq agent plainCommand false"),
+    draft("Typing `claude` in a terminal: Claude Code as your agent, in the folder you are in (the default)", "delete torq agent plainCommand"),
 ];
 
 pub static VIEWS: &[View] = &[
