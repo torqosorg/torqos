@@ -200,8 +200,8 @@ pkgs.testers.runNixOSTest {
         assert machine.succeed(engine).split() == epid, "the same process: one conversation"
         assert machine.succeed(f"stat -c %a:%U {mem} {mem}/conversation.json").split() == ["700:torq-agent-alice", "600:torq-agent-alice"]
         kept = json.loads(machine.succeed(f"cat {mem}/conversation.json"))
-        # Its name at the engine and its count: nothing of what was said.
-        assert sorted(kept) == ["questions", "session"] and kept["questions"] == 2 and re.fullmatch(r"[0-9a-f-]{36}", kept["session"]), kept
+        # Its name at the engine, its count, and a mark of the instructions it began with (none): nothing of what was said.
+        assert sorted(kept) == ["began", "questions", "session"] and kept["began"] is None and kept["questions"] == 2 and re.fullmatch(r"[0-9a-f-]{36}", kept["session"]), kept
         assert "hello" not in machine.succeed(f"cat {mem}/conversation.json")
         # A program run as the agent (torq agent run) does not see it.
         as_user("alice", f"torq agent run -- cat {mem}/conversation.json", ok=False)

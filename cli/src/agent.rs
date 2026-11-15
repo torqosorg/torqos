@@ -8,6 +8,11 @@
 //! settings and credentials are never the person's. What it changes in the system, it proposes —
 //! torqcli as the agent stops at the proposal — and a person applies (`request system apply`).
 //!
+//! `torq agent claude [<words> …]` is what `claude`, typed plainly, runs: Claude Code as the agent, the folder
+//! the person is in shared with it (nothing, where that folder is never shared), their standing instructions
+//! given to it. `torq agent instructions [edit | clear]` shows and changes those (`instructions`). `torq ask` is
+//! the terminal's way to the agent's service (`client`).
+//!
 //! Sharing a directory is the person's act, and visible: an ACL on what of it is theirs (and default
 //! ACLs, so that files either of them makes stay both of theirs). The agent gets no way into their
 //! home: torqcli opens the directory, as the person, and the launcher binds that open descriptor —

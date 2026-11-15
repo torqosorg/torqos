@@ -8,7 +8,10 @@
 //! says as torq-wire's `agent` events, then `done`. It decides nothing, holds no credential and runs no tool:
 //! the engine does, as the same account, inside the same sandbox. One question at a time. `stop` ends the
 //! engine's process, and everything it started; the next question starts it again, continuing the same
-//! conversation (the engine keeps it; this keeps only its name, kept.rs). `forget` ends it and starts anew.
+//! conversation (the engine keeps it; this keeps only its name, kept.rs). `forget` ends it, deletes the engine's
+//! own record of the conversation, and starts anew. The person's standing instructions for their agent come with
+//! each question (their own program read them from their own file): the engine is started with them, and
+//! started again, in the same conversation, when they are other ones.
 //! It answers only the person it serves, by the kernel's word (SO_PEERCRED), whoever else could reach the
 //! socket — root included.
 

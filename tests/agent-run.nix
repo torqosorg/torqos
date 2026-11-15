@@ -113,7 +113,7 @@ pkgs.testers.runNixOSTest {
         machine.succeed("su - dev -c 'torq agent run -- sleep 30' > /dev/null 2>&1 &")
         machine.wait_until_succeeds("pgrep -u torq-agent-dev sleep", timeout=20)
         out = as_dev("torq agent run --share /home/dev/src/project -- true", ok=False)
-        assert "running already" in out, out
+        assert "A program is already running as your agent" in out and "close or end that one first" in out, out
         machine.succeed("pkill -u torq-agent-dev sleep || true")
         machine.wait_until_fails("pgrep -u torq-agent-dev", timeout=20)
         # The share is nosuid and nodev; the hidden homes cannot be uncovered from the agent's own
