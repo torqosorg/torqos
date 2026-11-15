@@ -8,7 +8,10 @@ Open issues found while bringing up M1 (2026-10-30). Fix with a failing test fir
    `HEAD.lock`, `packed-refs.lock`) after power loss, and HEAD not descending from the recorded
    commit — both refuse loudly; inspect `/var/lib/torq/config`, fix, rerun `reconcile`. A
    process that inherits the broker lock and never exits blocks the broker until it is killed
-   (the error names it). Not yet: reconcile at boot; recording who triggered a reconcile beyond
+   (the error names it). Reconciled at boot too (corrected 2026-11-15; this said "not yet" long after
+   it was so): `torq-confirm-boot` runs `expire-confirm --reboot`, which reconciles first, so an apply
+   cut by power is reset, rebuilt and ledgered `interrupted` (`reconciled_by: broker`) at the next
+   start with nobody there (ADR-010, amended; `tests/nix-cache.nix`). Not yet: recording who triggered a reconcile beyond
    `reconciled_by`; edits made in the repo *during* a rebuild are still reset by a failed
    apply's restore (only reconcile snapshots them). The broker's git runs no hook and no fsmonitor of
    the repo (`core.hooksPath=/dev/null`, `core.fsmonitor=false`; second audit, M1: fixed).
@@ -312,6 +315,10 @@ Open issues found while bringing up M1 (2026-10-30). Fix with a failing test fir
    builds is told apart only by the links, and the module option says it must be safe to run twice. Not covered: a cache damaged so that Nix fails with none of those messages (a message not
    in Nix's or SQLite's text on hand is not guessed); damage in a person's own `~/.cache/nix` (their
    `nix`, not the broker's). (The store itself is safe from this since ADR-024: `fsync-store-paths`.)
+   On a machine (`tests/nix-cache.nix`, 2026-11-15): an apply that finds the cache damaged removes it and
+   builds again; and power cut after the removal, before the second build: the next start reconciles the
+   cut apply by itself (item 1), its rebuild running with the folder gone, and the same change, proposed
+   again, applies. The test's rebuild is `nix flake metadata` of the config repo, not a system build.
 6u. **Packages cannot be found by the command they install** (`rg` → ripgrep, `nvim` → neovim).
    `show packages <words>` searches names and descriptions (`nix search` on this machine's
    nixpkgs); which package holds a command needs an index that is not on the machine (nixpkgs'

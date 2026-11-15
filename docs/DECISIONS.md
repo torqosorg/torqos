@@ -84,6 +84,16 @@ Short ADRs. Newest at the bottom. Format: context → decision → consequences.
   `KNOWN-GAPS.md`): a broken ledger, a HEAD that does not descend from the recorded commit, or
   leftover git lock files other than `index.lock`. Until the boot-time hook lands, a machine that
   lost power mid-switch runs whatever generation it booted until the next broker command.
+- **Amended 2026-11-15 — the boot-time hook exists:** it landed with commit confirmed (ADR-016's
+  work, 2026-10-30) and this entry was not brought up to date. The unit `torq-confirm-boot` runs
+  `expire-confirm --reboot` at every start, and `expire-confirm`, like every operation that changes
+  the machine, reconciles first. An apply or revert cut by power is therefore mended at the next
+  start with nobody there: the config reset to the last ledgered commit, rebuilt, and ledgered
+  `interrupted` with `reconciled_by: broker` (the cut commit kept under `refs/torq/discarded/`).
+  It only restores the last ledgered state; nothing new is applied. Boot does not wait for it, and
+  the broker is busy while it runs. What it cannot settle (the states above that need a human) is
+  left as before: `status` says the operation was interrupted, `propose` refuses, and a person runs
+  `reconcile`. Tested for an apply cut inside the rebuild: `tests/nix-cache.nix`.
 
 ## ADR-011 — Installed software is data in the config repo, not Nix code
 - **Context:** Installing software is the most common change anyone makes, and the agent will make

@@ -645,8 +645,11 @@ The broker stays small; its additions for this model:
   waiting is not an error (a confirmed commit's timer still fires). It is its own pending operation
   (`op: expire`): an interrupted one is finished by the next operation, not undone. The boot-time
   unit `torq-confirm-boot` (`Type=exec`: boot does not wait for it) runs `expire-confirm
-  --reboot`, which acts only if the boot ID differs from the recorded one (a switch that first adds
-  the unit starts it too).
+  --reboot`, which rolls back only if the boot ID differs from the recorded one (a switch that first adds
+  the unit starts it too). Like every operation that changes the machine, `expire-confirm` reconciles
+  first: at boot that mends an apply or revert a power cut interrupted, with nobody there (reset to the
+  last ledgered commit, rebuilt, ledgered `interrupted` with `reconciled_by: broker`;
+  `tests/nix-cache.nix`).
 - While a confirmed commit is pending, `apply`, `revert` and `repair` are refused (reconciling is
   not).
 - The pending confirmation is derived from the ledger, never from a separate state file;

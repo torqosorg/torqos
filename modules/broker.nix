@@ -515,8 +515,12 @@ in
     # A commit confirmed still waiting at boot was not confirmed before the machine restarted: its
     # timer was transient and is gone, and the boot default was never changed, so this boot already
     # runs the system before it. Put the config back to match and ledger the rollback. Nothing
-    # waiting: nothing to do. A switch that first adds this unit starts it too; the broker only rolls
+    # waiting: no rollback. A switch that first adds this unit starts it too; the broker only rolls
     # back if the boot ID differs from the one recorded with the change, i.e. after a real restart.
+    # Before that, as every operation that changes the machine does, it reconciles: an apply or revert
+    # that a power cut interrupted is mended here, with nobody there (the config reset to the last
+    # ledgered commit and rebuilt, ledgered `interrupted`, `reconciled_by: broker`; ADR-010, amended
+    # 2026-11-15; `tests/nix-cache.nix`). It only restores what the ledger says; nothing new is applied.
     systemd.services.torq-confirm-boot = {
       description = "Roll back a TorqOS commit confirmed that was not confirmed before a restart";
       after = [ "torq-broker-init.service" ];
