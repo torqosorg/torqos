@@ -133,8 +133,9 @@ only history now. Nothing may be said to be released that is only on `main`.
 
 Being built on `work/harness` (ADR-055, 2026-11-15; `docs/HARNESS-AS-A-SYSTEM.md` is the plan and says what
 is done): the machine's agent is the person's coding tool, Claude Code first. Phase 1 is the bridge: `torq
-agent engine claude-code`, and the agent's service running that engine as `torq-agent-<person>`. TorqOS's own
-loop (`torq doctor`, `torq agent propose`, `torq agent doctor …`, the `torq-resident-<person>` accounts, the
+agent engine claude-code`, the agent's service running that engine as `torq-agent-<person>`, `claude` typed in a
+terminal (`torq agent claude`), and a person's standing instructions for their agent (`torq agent instructions`).
+TorqOS's own loop (`torq doctor`, `torq agent propose`, `torq agent doctor …`, the `torq-resident-<person>` accounts, the
 broker's resident rule and session trust) is still in the tree and is removed in phase 2.
 
 Milestones as built (`docs/ROADMAP.md`'s checkboxes are the most current record): M1, M1.5, M2 and M3
@@ -191,8 +192,8 @@ released (doctor mode, proposals, session trust); the resident agent and its des
   Claude Code instead (`torq agent engine`): the real Claude Code 2.1.316 was driven through it once, by
   hand, outside its unit, on the check host (2026-11-15); inside the unit only a stand-in has run.
 - **Tests.** Unit tests are `#[test]` functions: torqcli 473, broker 338 (+1 ignored, across its test
-  binaries), wire 23, secrets 15, agent 72 (+1 ignored) (run 2026-11-15; on `work/harness`: torqcli 471,
-  wire 22, agent 80 (+2 ignored), the others unchanged). The
+  binaries), wire 23, secrets 15, agent 72 (+1 ignored) (run 2026-11-15; on `work/harness`: torqcli 498,
+  wire 23, agent 87 (+2 ignored); the broker's and the secrets daemon's ran as their packages were built). The
   `settings/` crate has no tests of its own; it is type-checked with `nix develop .#torq-settings`.
   VM tests are `checks` in `flake.nix`, one file each in `tests/`. CI's `test` workflow runs on pull
   requests, by hand and inside each release, **not on pushes to `main`**, and GitHub does not run the

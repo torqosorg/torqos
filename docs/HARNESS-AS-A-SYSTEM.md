@@ -114,8 +114,11 @@ The person sets the engine, and the desktop's AI is Claude Code.
 - [x] `claude`, typed plainly in a terminal, is the fenced one: Claude Code as your agent with the folder
       you are in shared, every word after it passed on (`torq agent plainCommand`, on by default where
       Claude Code is installed for the agents; added by the owner, 2026-11-15).
-- [ ] Instructions for your agent: a text of the person's own that the engine is always given, in the
-      desktop's agent and at a terminal (added by the owner, 2026-11-15). Not started.
+- [x] Instructions for your agent: a text of the person's own that the engine is always given, in the
+      desktop's agent and at a terminal (added by the owner, 2026-11-15). Built 2026-11-15: the person's file
+      `~/.config/torq/agent-instructions.md`, `torq agent instructions [edit | clear]`, the Agent page's
+      section, sent with every question and given by `claude` typed plainly. (Unit-tested; the VM test
+      `agent-service` checks it with the stand-in; the Agent page is type-checked, not looked at.)
 - [x] The desktop's defaults reach a person who already has their own shortcuts or panel (the bug
       seen on the laptop: Super+Shift+A did nothing and the applet was missing). Done 2026-11-15: the key is in
       COSMIC's `defaults`; the applets by `torq-desktop-defaults` (KNOWN-GAPS 6zzt). Unit tests ran; VM test
@@ -252,6 +255,62 @@ Kimi); a person's own Claude Code outside the fence.
   (`agent-units` was not built). Not run: `nix flake check`; the VM tests `agent-mcp`,
   `agents-per-person`, `agent-proposals`, `doctor`, `secrets` and `agent-run` (the first three were
   edited and evaluate).
+- **The fix round and "instructions for your agent"** (2026-11-15, `work/harness`, after the independent
+  reader's and the controller's review of phase 1; not merged, no full check). What changed is under ADR-055
+  ("As built", 6 to 9) and KNOWN-GAPS 6zzt. In short: `torq ask` looks a proposal's number up before it shows
+  it; what the bridge keeps is read without following, waiting or reading on; the engine's process group is
+  never signalled once it is reaped; the unit has a /dev/shm of its own and no set-id wrappers on the engine's
+  PATH; `claude` typed plainly is `torq agent claude` and runs with nothing shared where the folder is never
+  shared; someone who is not an administrator is told so; Forget deletes the engine's record of the
+  conversation; the words a person reads were gone through; and a person's standing instructions reach the
+  engine.
+  - **The real Claude Code, by hand, for the instructions** (the check host, 2.1.316, signed in as the
+    machine's user; five short questions, in a scratch directory, not through the bridge):
+    1. `claude -p --append-system-prompt 'Always end your answer with the word TORQ.' 'say hi'` → "Hi! How
+       can I help you today?" and, on its own line, "TORQ". The option is honoured with `-p`.
+    2. The bridge's own way (`-p --input-format stream-json --output-format stream-json --verbose
+       --permission-mode bypassPermissions`), with the text as the bridge wraps it ("[Standing instructions
+       from the person this agent works for]" and the same sentence) and "say hi" on its input → the same
+       answer, ending "TORQ". Honoured there too.
+    3. A new process with `--resume <that session>` and the instructions changed to "…the word OTHER", asked
+       for its previous message and to say hi again → it quoted "say hi", and ended with **TORQ**, not OTHER.
+       The session's name stayed the same.
+    4. The same again, asked to quote the standing instructions it could see → "Always end your answer with
+       the word TORQ". The conversation's file had the first text and nowhere the second. Claude Code's own
+       help says why: `--system-prompt-snapshot on` (the default) records the prompt at a conversation's
+       first request and "every later request and resume sends the record as-is, even when a later launch
+       passes different text". So the design as it was written (end the engine, `--resume`, the new text)
+       could not work by itself.
+    5. The same with `--system-prompt-snapshot off` added → it quoted "Always end your answer with the word
+       OTHER." and ended "OTHER", in the same session. That is what the bridge now does, exactly when the
+       text is not the one the conversation began with.
+    - *Not tried with the real one:* the bridge itself with instructions (only its unit tests and the VM
+      test's stand-in); a conversation whose instructions were taken away (`--system-prompt-snapshot off`
+      with no text); going back to a recorded conversation after a start with the snapshot off; the plain
+      `claude` command giving the text at a terminal; anything inside the unit.
+    - *Also seen there, for Forget:* the layout of a conversation in an account that has used Claude Code
+      (`~/.claude/projects/<folder as a name>/<session>.jsonl`, for some a folder `<session>/` with
+      `subagents/` and `tool-results/`, and `~/.claude/file-history/<session>/`,
+      `~/.claude/session-env/<session>/`): what `engine.rs` deletes. The deleting itself was run only on
+      made directories (unit tests) and on the stand-in's (the VM test).
+  - **What was run for the fix round** (2026-11-15, the check host). Unit tests: agent 87 (+2 ignored),
+    torqcli 498, wire 23; the broker's and the secrets daemon's as their packages were built. Each new guard
+    was broken once and a test seen to fail (the commits say which). TorqOS Settings: type-checked, not
+    started. `agent-assertions`: builds (it only evaluates), and fails with the unit's /dev/shm taken out, with
+    `MemoryDenyWriteExecute` put in, and with the name's limit measured the old way. The VM test
+    `agent-service`: passed, 27 subtests, on its second run (the first stopped at an expectation of the
+    test's own: exactly two fields in what the service keeps, where there are now three). In it, with the
+    stand-in: the unit's exposure by `systemd-analyze security` is still 1.8; from inside the unit the
+    engine's PATH is its own profile and the system's, /dev/shm is empty and its own (a file another account
+    left in the machine's is not there), the state directory is writable to it, tracing its parent is refused
+    (errno 1) and so is opening its parent's memory, while its own child's opens; forget deletes the
+    stand-in's record; `claude` in the home, in /etc, in ~/.ssh and in ~/.config/x runs with nothing shared
+    and says the one line; a non-administrator is told so; a person's own `claude` is found first; a second
+    `claude` is told to close the first; the instructions reach the engine and a changed text restarts it
+    with `--resume` in the same conversation. The VM test `desktop-agent`: passed, 11 subtests, the first time, once the Settings package built (its dependency hash was out of date for its lock file, see the commit; COSMIC's text editor is on the machine). Evaluated only (their
+    derivations instantiate): `agent-mcp`, `agent-units`, `agents-per-person`, `agent-proposals`, `agent-run`.
+    Not run: `nix flake check`; every other VM test; `agent-units`' build; the VM-level guards were not broken
+    to see the VM test fail (the unit tests and `agent-assertions` were).
 - **Left for phase 2, still in the tree after phase 1:** `torq-doctor` and its commands (`torq doctor`,
   `torq agent propose`, and `torq-doctor --propose --task`, which nothing starts any more); the settings
   under `torq agent doctor` (`apiKeyFile` now has no use at all) and the local model's unit; the

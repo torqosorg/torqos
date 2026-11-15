@@ -1330,37 +1330,100 @@ Its §5 lists claims without a test.
    - **The real Claude Code has not run inside the unit.** It was driven through the service by hand, outside
      systemd (`docs/HARNESS-AS-A-SYSTEM.md`, "Where it stands"); the VM tests use a stand-in that speaks the
      same lines. Whether Claude Code runs under the unit's limits (its system-call filter, a read-only system,
-     no new namespaces, no user manager) is not known until it is tried on a machine. `MemoryDenyWriteExecute`
-     is off for it (its runtime writes the code it runs), and `RemoveIPC` (it would take away the IPC objects
-     of a `torq agent run` session of the same account).
-   - **A person who is not an administrator cannot sign their agent in.** The engine signs in in the agent's
-     account, with `torq agent run -- claude` and /login, and `torq agent run` is an administrator's (its sudo
-     rule is the wheel group's). Such a person is told to run a command they may not. An administrator can do
-     it for them only as root.
-   - **Forget does not erase what the engine wrote.** It ends the engine's process and begins a new
-     conversation; the earlier one's file stays in the agent's home (`~/.claude/projects`) until Claude Code's
-     own clean-up takes it. The person is told "forgotten".
+     no new namespaces, no user manager, a /dev/shm of its own) is not known until it is tried on a machine.
+     `MemoryDenyWriteExecute` is off on purpose: Claude Code 2.1.316 itself runs with it (the controller,
+     2026-11-15), Node 24 crashes with it, and the engine runs a developer's programs (node and the like) as
+     `torq agent run` does. `RemoveIPC` is off (it would take away the IPC objects of a `torq agent run`
+     session of the same account). Both decisions are held by `tests/agent-assertions.nix`.
+   - **The bridge and the engine are one account, in one unit** (the fix round of 2026-11-15, S6). What
+     follows from that, said plainly:
+     - *A program the engine runs can write lines the bridge takes for the engine's.* The bridge reads the
+       engine's output, and whatever the engine starts (a command, a tool) writes to the same output unless
+       the engine keeps it apart. So an answer, a step ("ran a command") or a proposal's number can be a
+       program's invention. What a person acts on is not taken on that word: a proposal's number is looked
+       up in the ledger before it is shown as one to apply, by the agent's window and (since this round) by
+       `torq ask`, and only a waiting proposal of the person's own agent is. The proposal itself, and what
+       Review shows, are the broker's. The answer's text is the agent's word, as it always was.
+     - *The engine can stop the bridge.* It has the bridge's uid and can send it SIGSTOP (or SIGKILL). A
+       stopped bridge answers nothing: Stop and Forget get no answer (the person's programs give up after
+       15 s and say so) until an administrator restarts the unit (`systemctl restart torq-agent@<person>`).
+       A killed one is started again by the socket at the next question. A watchdog was considered and not
+       added: the whole unit is frozen on purpose while a folder share is walked, and a watchdog would take
+       that for a hang.
+     - *The engine writes to the unit's journal under the bridge's identity.* Its standard error is the
+       unit's, so a line in `journalctl -u torq-agent@<person>` that reads as the bridge's
+       (`torq-agent-service: …`) may be the engine's. The journal there is for finding out why something
+       failed, not evidence of what the bridge did.
+     - *The engine can write where the bridge keeps the conversation's name* (the state directory: the same
+       uid; `tests/agent-service.nix` records it). The bridge trusts nothing it finds there: no link is
+       followed, nothing is waited for, a regular file of at most 4 KiB only, a session's name only if it is
+       shaped like one. A directory put in a file's place makes Forget fail, said (the engine can also
+       simply stop the bridge, above). It can also change the mark of the instructions a conversation began
+       with, which decides only whether its own prompt is made anew.
+     - *Its process group is never signalled once it is reaped* (S3): what is left of it then is ended
+       through the unit's control group, which only root can move a process out of.
+   - **A person who is not an administrator cannot start a program as their agent**, so cannot sign their
+     agent in or run `claude`: the launcher's sudo rule is the administrators' group's. They are told so in
+     one sentence, before sudo would ask for a password, and the sign-in message says it is an
+     administrator's command. An administrator can do it for them only as root. Their agent still answers
+     them (`torq ask`, the window) once it is signed in. Not changed in this round: who may run the launcher.
+   - **Forget deletes the engine's record, and only that** (fixed 2026-11-15; before, the record stayed in
+     the agent's home and the person was told "forgotten"). Deleted: Claude Code's file of the conversation
+     (`~/.claude/projects/*/<session>.jsonl`), its folder beside it (helpers' conversations, tools' long
+     results), and its `file-history` and `session-env` folders, as laid out by 2.1.316. Not deleted: what
+     the agent did (files it wrote, proposals it made), what Claude Code keeps that is not one conversation's
+     (its settings, its notes in `memory/`, the typed-line history of terminal sessions), earlier
+     conversations whose names the bridge never kept (those begun with `claude` at a terminal), and anything
+     at Anthropic. If the record cannot be deleted, Forget says so instead of "deleted". A later Claude Code
+     that keeps conversations elsewhere would leave them: `engine.rs` (`erase`) is where that is known.
    - **Stop ends the engine's process**, and what it had started. The conversation is continued at the next
      question (`--resume`), with whatever of the stopped answer the engine had written down. The engine's
      process otherwise stays between questions (its memory with it) until a stop, a forget or a restart.
+     Closing the window or the terminal that asked stops the answer too.
    - **The answer comes a message at a time**, not a word at a time: each part the engine finishes.
    - **A line of the engine's over 8 MiB is left out** (said in the unit's journal). Were it the line that
      ends a question, the question would not end by itself: the person stops it, or their program gives up
      after its silence (11 minutes).
    - **An engine that goes on by itself** (a task it left in the background finishing between questions) is
      heard by no one, and an end it writes just as a new question is asked could end that question early.
-   - **A proposal's number is the engine's word**: read from what TorqOS's own tool returned, as the engine
-     passes it on. The proposal itself, and what Review shows, are the broker's. The words for its taint in
-     the window and at a terminal ("this session read untrusted text (coding-tool)") are the old loop's.
    - **The service and a `torq agent run` session are the same account**, side by side. The engine in the
-     service sees that session's processes (the same uid) and could signal them; it cannot trace them (Yama).
+     service sees that session's processes (the same uid) and could signal them; it cannot trace them (Yama),
+     nor the bridge (`tests/agent-service.nix`: from inside the unit, the stand-in tries its parent).
      6zzl's note on `/proc/<pid>/root` stands. One session at a terminal at a time while a folder is shared,
-     as before: a second `claude` in another terminal is refused ("is running already"), saying so.
-   - **`claude` typed plainly shares the folder each time** (its walk of the folder, and the ACLs, stay), and
-     says so on standard error. A Claude Code in the person's own profile is found first and is not fenced.
+     as before: a second `claude` in another terminal is told "Claude Code is already open as your agent in
+     another terminal: close that one first." (told by a word of the other's command line; any other program
+     is "A program is already running as your agent…"). The unit's /dev/shm is its own; a `torq agent run`
+     session's is the machine's, as before.
+   - **`claude` typed plainly shares the folder each time** (its walk of the folder, and the ACLs, stay) and
+     says so the first time only. Where the folder is never shared (the home itself, outside it, a hidden
+     folder of it) it shares nothing and says that in one line. A hidden folder is told by its first name
+     under the home beginning with a dot: a folder of keys under another name is not known to be one. A
+     Claude Code in the person's own profile is found first and is not fenced (`tests/agent-service.nix`).
+   - **Instructions for your agent** (2026-11-15). What is not so:
+     - *They are advice to the engine, not a rule it is held to.* The engine is told; nothing checks that it
+       does.
+     - *A conversation continued at a terminal keeps the instructions it began with.* Claude Code records
+       its prompt at a conversation's first question. The bridge works round that for the desktop's agent
+       (`--system-prompt-snapshot off` when the text is another than the conversation began with); `claude
+       --continue` or `--resume` typed by the person does not.
+     - *A change costs the running engine.* The first question after the text changed ends the engine and
+       starts it again in the same conversation (a few seconds), and from then on that conversation's prompt
+       is made anew at every question, which may cost more of the person's plan than a conversation left as
+       it began. Forget starts one that is recorded again.
+     - *`--system-prompt-snapshot` is an option of Claude Code 2.1.316* described there as "for iterating on
+       prompt text". A later version without it would make a changed text fail the engine's start, said to
+       the person as an engine that ended early; the VM tests' stand-in would not notice.
+     - *`torq agent run -- claude` gives no instructions*; `claude` does.
+     - *The Agent page shows the text as it was when the page was opened*, and its **Edit…** opens COSMIC's
+       text editor (`cosmic-edit`); neither was looked at on a desktop.
+     - *The file is read by the person's programs*, so a program run as the person can change it; the agent
+       cannot (`tests/agent-service.nix`).
    - **Left of the old loop, unused on a machine:** `torq.agent.doctor.apiKeyFile` (nothing can use a key any
      more), the `torq-resident-<person>` accounts (made where doctor mode is on, for the broker's rule; nothing
-     runs as them), and the build log's words in `modules/agent-units-check.nix` ("the resident agent").
+     runs as them; a person's name may be 20 characters without doctor mode, 17 with it), the taint words of
+     the apply prompt and the Proposals page ("tainted", "not TorqOS's resident agent"), and
+     `modules/agent-units-check.nix`'s rule for a unit named `torq-agent-key@…` (nothing writes one; the name
+     stays refused, and `tests/agent-units.nix` is still written around it).
    - **Not run:** `tests/agent-units.nix`'s build, and the VM tests `agent-mcp`, `agents-per-person`,
      `agent-proposals`, `doctor` and `secrets` after their edits (they evaluate); the Agent page, the window
      and the applet are type-checked only.

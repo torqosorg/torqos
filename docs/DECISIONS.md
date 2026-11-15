@@ -3410,9 +3410,12 @@ content at the next), and a proposal must be judged on what it does, not on what
      bridge starts the engine as its own child, in a process group of its own. The sandbox is the unit's:
      every home and runtime directory out of reach, a private /tmp, no privilege, no capability, the system
      read-only but the agent's home and what the service keeps, nothing delegated. Against the old unit:
-     `MemoryDenyWriteExecute` is off (an engine's runtime writes the code it runs) and `RemoveIPC` is off (it
+     `MemoryDenyWriteExecute` is off (Claude Code 2.1.316 itself runs with it, tried 2026-11-15, but Node 24
+     crashes with it, and the engine runs a developer's programs) and `RemoveIPC` is off (it
      would take away the IPC objects of a `torq agent run` session of the same account); `torq agent run`
-     never had either. The broker takes whatever comes from this account for a coding tool's: tainted.
+     never had either. The unit has a /dev/shm of its own, and the engine's PATH has none of the set-id wrappers
+     (the fix round of 2026-11-15). The broker takes whatever comes from this account for a coding tool's:
+     tainted.
   2. *Stop ends the engine's process; the conversation is continued.* The engine's process group is killed
      and the unit swept, so nothing it started outlives it; the next question starts it again with `--resume
      <its session>`. Tried with Claude Code 2.1.316: a conversation killed in the middle of an answer was
@@ -3424,7 +3427,34 @@ content at the next), and a proposal must be judged on what it does, not on what
      of what `propose_change` returns; the bridge reads the number there, for a tool use it saw asked for
      (`agent/src/mcp.rs`, `proposals_told`, beside the code that writes it).
   5. *Not signed in* is the engine's own word (`"error":"authentication_failed"` on its answer, seen with an
-     empty home), said to the person as "not signed in: run `torq agent run -- claude`, type /login".
+     empty home), said to the person as "not signed in", with what to type (`claude`, then /login; `torq agent
+     run -- claude` where `claude` is not a command) and that it is an administrator's command.
   6. *`claude`, typed plainly, is the fenced one* (`torq.agent.plainCommand`, on by default where Claude Code
      is installed for the agents): `torq agent run --share <the folder you are in> -- claude …`. This amends
      ADR-051 5's "no short form".
+     Since the fix round of 2026-11-15 the command is `torq agent claude`, one a person could type: where the
+     folder is never shared (the home itself, outside it, a hidden folder of it) it shares nothing, says so
+     in one line, and runs Claude Code in the agent's own folder. `torq agent run --share` refuses a hidden
+     folder directly under the home, and anything inside one: keys and settings live there.
+  7. *Forget deletes the engine's record of the conversation* (the fix round of 2026-11-15). The bridge knows
+     the engine's name for the conversation; after ending the engine it deletes that conversation's files
+     from the agent's home (`engine.rs`, `erase`: Claude Code's layout as seen with 2.1.316), opening every
+     folder as a folder and never through a link. "Forgotten" was not true before: the record stayed.
+  8. *Instructions for your agent* (the owner, 2026-11-15; the controller's design). The text is the
+     person's, in the person's home (`~/.config/torq/agent-instructions.md`, at most 16 KiB), so the agent
+     cannot rewrite its own instructions. The person's programs read it and send it with each Ask (a field
+     of the socket's request); the bridge starts the engine with it and, when a question brings another text,
+     ends the engine and starts it again continuing the conversation. `claude`, typed plainly, gives the
+     same text. **One thing in the design could not work as written and was changed:** Claude Code records
+     its prompt at a conversation's first question and `--resume` sends that record whatever a later start
+     passes (seen by hand: a conversation begun with one text and continued with another still had the
+     first). `--system-prompt-snapshot off` makes it take the new text (seen by hand). So the bridge keeps a
+     mark of the text a conversation began with and gives that option exactly when the text is another; a
+     conversation whose text never changed is started as before. Rejected: always giving the option (it is
+     described as a developer's option, so its use is kept to where nothing else works, and the record is
+     what keeps a long conversation's prompt the same from question to question); telling the person to
+     Forget to make a change take effect (the conversation would be lost for a change of wording).
+  9. *What a person is shown of a proposal is checked* (the fix round, S1): the number is the engine's word,
+     and `torq ask` now looks it up in the ledger before printing the command to apply it, as the window
+     did. The broker's own words for a coding tool's taint are no longer shown; the person reads "Your
+     agent's proposals always wait for you to read and approve them."

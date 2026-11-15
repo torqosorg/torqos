@@ -25,17 +25,47 @@ the map names it and its uid is no person's.
   sessions started and kept) are counted per agent, so one person's agent cannot crowd out another's.
 - **`torq agent run`** runs the caller's own agent (the account of sudo's `SUDO_UID`, which the launcher's rule never
   lets a caller set), never one the caller
-  names; a person with none is told so. A restore from a backup into any agent's folder is
-  refused. With the agent's service running, `--share` holds it still (systemd's freezer) through the walk.
+  names; a person with none is told so, and so is someone who is not an administrator (the launcher's sudo
+  rule is the administrators' group's; torqcli says it in one sentence before sudo would). A restore from a
+  backup into any agent's folder is refused. With the agent's service running, `--share` holds it still
+  (systemd's freezer) through the walk. A folder shared is inside the person's home, never the home itself,
+  and never a hidden folder directly under it or anything inside one (`~/.ssh`, `~/.config`: keys, sign-ins
+  and settings live there).
+- **`claude`, typed plainly** (`torq agent claude`, which the command on people's PATH runs; `torq agent
+  plainCommand`): Claude Code as the person's agent, the folder they are in shared with it as `torq agent run
+  --share` would. Where that folder is never shared (the home itself, outside it, a hidden folder of it)
+  nothing is shared, one line says so, and Claude Code runs in the agent's own folder: `claude --version`
+  works anywhere. The long "Shared with your agent…" line is printed the first time a folder is shared only.
 - **Its service** (ADR-051 3; the bridge since ADR-055, 2026-11-15): `torq-agent@<person>.service`, reached only
   by that person (`torq ask "<question>"`, the agent's window and applet). It is there where an engine is chosen
-  (`torq agent engine claude-code`) and runs that engine, Claude Code, as one long-lived process for the
-  person's conversation, as `torq-agent-<person>`, in a sandbox at least as strict as `torq agent run`'s: its
-  own home and no other, no runtime directory, no privilege, the rest of the system read-only. It passes
-  questions and answers and decides nothing. Stop ends the engine's process and the next question continues
-  the conversation; forget begins a new one. The engine signs in by itself, once, in the agent's account
-  (`torq agent run -- claude`, then /login). What it proposes through TorqOS's tools (`torq-mcp`) is a coding
-  tool's at the broker: tainted, and waiting for the person, one by one.
+  (`torq agent engine claude-code`; the engine is the program that answers) and runs that engine, Claude Code,
+  as one long-lived process for the person's conversation, as `torq-agent-<person>`, in a sandbox at least as
+  strict as `torq agent run`'s: its own home and no other, no runtime directory, a /tmp and a /dev/shm of its
+  own, no privilege, the rest of the system read-only. It passes questions and answers and decides nothing.
+  Stop ends the engine's process and the next question continues the conversation; so does closing the
+  window or the terminal that asked. Forget deletes the conversation: the engine is ended, its own record of
+  the conversation is deleted from the agent's home (`agent/src/service/engine.rs`, `erase`), and the next
+  question starts a new one. The engine signs in by itself, once, in the agent's account (`claude` in a
+  terminal, then /login; an administrator's command). What it proposes through TorqOS's tools (`torq-mcp`)
+  is a coding tool's at the broker: marked tainted, which to the person means it always waits for them, one
+  by one. A proposal's number, as the engine's output names it, is looked up in the ledger before it is shown
+  as one to apply, by the window and by `torq ask`.
+- **Instructions for your agent** (the owner, 2026-11-15): a text of the person's own that their agent is
+  always given. It lives in the person's home, `~/.config/torq/agent-instructions.md` (at most 16 KiB of
+  plain text; `torq agent instructions [edit | clear]`, or the Agent page's **Edit…**). The agent cannot
+  write it (it has no way into the home, and a hidden folder of the home is never shared), so nothing it
+  read can rewrite what it is instructed. The person's own programs read it: torqcli's client sends it with
+  every question (`instructions`, a field of the Ask), and the bridge starts the engine with it (Claude Code:
+  `--append-system-prompt`, under the line "[Standing instructions from the person this agent works for]").
+  When a question brings another text than the running engine was started with, the bridge ends the engine
+  and starts it again, continuing the same conversation. Claude Code records its prompt at a conversation's
+  first question and keeps to that record when the conversation is continued, so the bridge keeps a mark of
+  the text a conversation began with (never the text) and, when the text is another, starts Claude Code with
+  `--system-prompt-snapshot off`, which makes it take the new one (both seen by hand with 2.1.316).
+  `claude`, typed plainly, gives Claude Code the same text before the person's own words; a conversation
+  continued there (`claude --continue`) keeps the instructions it began with. `torq agent run -- claude`
+  gives none: it runs what it is told. A file that is too long, not text, or a link is not used, and the
+  person is told so where the answer is shown.
 
 ## What it is for
 
@@ -57,7 +87,7 @@ owner's shell does not have; in a terminal it is torqcli's prompt, the same text
 | Component | Privilege | Language | Role |
 |---|---|---|---|
 | `torq-doctor` (`agent/`), as the person's `torq-agent-<person>` | unprivileged, sandboxed (`torq agent run`, or the agent service) | Rust | TorqOS's harness: talks to the model (OpenAI-compatible chat API), calls its read-only tools, *proposes* changes (ADR-042); one process per question or task |
-| `torq-agent@<person>.service` (`agent/`: `torq-agent-service`), as `torq-resident-<person>` (its own account, ADR-051 3 amended) | unprivileged, the launcher's sandbox and systemd's hardening; socket-activated, its socket the person's alone, SO_PEERCRED checked | Rust | The person's agent, resident (ADR-051 3, step 2): holds their conversation (its last turns), runs one task at a time as its own `torq-doctor --propose --task`, streams its events to `torq ask` (later the panel's window); `stop` ends a task |
+| `torq-agent@<person>.service` (`agent/`: `torq-agent-service`), as `torq-agent-<person>` (ADR-055) | unprivileged, the launcher's sandbox and systemd's hardening; socket-activated, its socket the person's alone, SO_PEERCRED checked | Rust | The bridge to the person's engine (ADR-055 3): runs Claude Code as one long-lived process for their conversation, hands it each question (with the person's standing instructions) and streams what it says to `torq ask`, the agent's window and the applet; `stop` ends the engine and everything it started, `forget` also deletes the engine's record of the conversation. It keeps the conversation's name, count and number, and nothing of what was said |
 | `torq-mcp` (`agent/`), as `torq-agent-<person>` under `torq agent run` | unprivileged, the launcher's sandbox | Rust | TorqOS's tools for a coding tool (ADR-051 7): an MCP server on standard input and output with the doctor's closed set of tools and `propose_change`; its session reported a coding tool's first, so what it proposes waits for a person |
 | `torq-broker` | privileged (root, minimal) | Rust | Only writer of the config repo; tiers, commits, rebuild, rollback, ledger |
 | Model runtime | unprivileged (DynamicUser) | llama.cpp (`llama-server`, a unix socket) | Local inference; or a remote endpoint as a setting (ADR-042) |
