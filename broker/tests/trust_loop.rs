@@ -3365,6 +3365,37 @@ fn after_a_restart_a_commit_at_is_armed_again_or_refused_if_its_time_passed() {
     assert!(t.s().run(timer).unwrap().is_none() && t.theme().contains("dark"));
 }
 
+/// The switch that first adds `torq-commit-at-boot` starts it while the apply holds the lock: it
+/// must not fail (that fails the switch, and the apply is undone). With a schedule from an earlier
+/// boot there is work, and that waits for the lock as everything does.
+#[test]
+fn resume_scheduled_does_not_wait_for_the_lock_when_nothing_is_from_an_earlier_boot() {
+    let t = At::new();
+    let state = t.m.dir.path().join("state");
+    let hold = || {
+        let f = fs::File::open(state.join("broker.lock")).unwrap();
+        f.try_lock().unwrap();
+        f
+    };
+    // Nothing scheduled, the lock held: done at once.
+    let held = hold();
+    assert!(t.s().resume().unwrap().is_empty());
+    drop(held);
+    // One scheduled in this boot, the lock held: still nothing to do.
+    let p = t.propose("theme", THEME);
+    t.s().schedule(p, "casey", &At::in_seconds(600)).unwrap();
+    let held = hold();
+    let before = t.m.b.ledger.read_all().unwrap().len();
+    assert!(t.s().resume().unwrap().is_empty());
+    // After a restart it is work: busy while the lock is held, nothing written, done once it is free.
+    fs::write(t.m.dir.path().join("boot_id"), "boot-2\n").unwrap();
+    let e = t.s().resume().unwrap_err();
+    assert!(e.downcast_ref::<torq_broker::Busy>().is_some(), "{e:#}");
+    assert_eq!(t.m.b.ledger.read_all().unwrap().len(), before);
+    drop(held);
+    assert!(t.s().resume().unwrap().is_empty());
+}
+
 #[test]
 fn the_scheduled_commits_are_listed_by_the_broker_binary() {
     let t = At::new();

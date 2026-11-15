@@ -432,10 +432,18 @@ impl<'a> Scheduler<'a> {
     /// the record, and the others go on. What it ledgered, if anything.
     pub fn resume(&self) -> Result<Vec<Entry>> {
         let b = self.b;
-        let lock = Lock::acquire(&b.state_dir)?;
         let boot = b.boot_id();
+        let earlier = |s: &Scheduled| s.boot_id.is_none() || s.boot_id != boot;
+        // The switch that first adds the boot unit starts it while the apply still holds the lock
+        // (an upgrade from before the unit existed): waiting would fail the unit, and with it the
+        // switch. Nothing from an earlier boot: nothing to do, lock or no lock. None can appear
+        // meanwhile, since a schedule made now carries this boot's ID. The ledger is only read here.
+        if !self.scheduled()?.iter().any(earlier) {
+            return Ok(Vec::new());
+        }
+        let lock = Lock::acquire(&b.state_dir)?;
         let mut out = Vec::new();
-        for s in self.scheduled()?.into_iter().filter(|s| s.boot_id.is_none() || s.boot_id != boot) {
+        for s in self.scheduled()?.into_iter().filter(earlier) {
             let why = match time_of(&s) {
                 Err(e) => format!("{e:#}"),
                 Ok(at) if at <= chrono::Utc::now() => "the machine was not running at its time".into(),
