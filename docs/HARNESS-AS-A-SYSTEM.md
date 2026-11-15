@@ -102,18 +102,25 @@ and message understandable to someone who is not a programmer), unit tests seen 
 ### Phase 1: the engine answers
 The person sets the engine, and the desktop's AI is Claude Code.
 
-- [ ] `torq agent engine claude-code` in the configuration tree (one engine per machine to begin with).
-- [ ] The agent's service becomes the bridge: it runs the engine as `torq-agent-<person>` in the same
+- [x] `torq agent engine claude-code` in the configuration tree (one engine per machine to begin with).
+- [x] The agent's service becomes the bridge: it runs the engine as `torq-agent-<person>` in the same
       sandbox `torq agent run` uses, as one long-lived session, and speaks the same socket protocol to
       the window, the applet and `torq ask` as today (ask, stop, status, forget).
-- [ ] What the person sees for each step: the answer as it is written, each tool by a plain name
-      ("ran a command", "read a file", "looked at the configuration"), a proposal with **Review**.
-- [ ] Not signed in, or Claude Code not installed: the window says so and says what to do.
-- [ ] Forget starts a new conversation. Stop interrupts the answer.
+- [x] What the person sees for each step: the answer as it is written (a message at a time), each tool
+      by a plain name ("ran a command", "read a file", "looked at the configuration"), a proposal with
+      **Review**. (Built and unit-tested; the window and the applet are type-checked, not looked at.)
+- [x] Not signed in, or Claude Code not installed: the window says so and says what to do.
+- [x] Forget starts a new conversation. Stop interrupts the answer.
+- [x] `claude`, typed plainly in a terminal, is the fenced one: Claude Code as your agent with the folder
+      you are in shared, every word after it passed on (`torq agent plainCommand`, on by default where
+      Claude Code is installed for the agents; added by the owner, 2026-11-15).
+- [ ] Instructions for your agent: a text of the person's own that the engine is always given, in the
+      desktop's agent and at a terminal (added by the owner, 2026-11-15). Not started.
 - [ ] The desktop's defaults reach a person who already has their own shortcuts or panel (the bug
       seen on the laptop: Super+Shift+A did nothing and the applet was missing).
-- [ ] Tests: a stand-in engine that speaks the same JSON, in unit tests and the VM tests; the real
-      Claude Code driven once by hand on the check host, and what was seen written down here.
+- [x] Tests: a stand-in engine that speaks the same JSON, in unit tests and the VM tests; the real
+      Claude Code driven once by hand on the check host, and what was seen written down here. (The VM
+      tests `agent-service` and `desktop-agent` were run; the others that changed only evaluate so far.)
 - [ ] One full check. Then the laptop, and the owner looks.
 
 ### Phase 2: TorqOS's own loop is removed
@@ -167,3 +174,66 @@ Kimi); a person's own Claude Code outside the fence.
 ## Where it stands
 
 - 2026-11-15: research done, the plan and ADR-055 written. Phase 1 started on `work/harness`.
+- 2026-11-15, phase 1, the bridge, built on `work/harness` (not merged, no full check yet). What is built:
+  `torq agent engine`; the agent's unit as `torq-agent-<person>` running `torq-agent-service <person>
+  claude-code`; the bridge (`agent/src/service/`: `engine.rs` is all that is Claude Code's own, so opencode
+  is another arm there); `claude` typed plainly. The choices are under ADR-055 ("As built, phase 1"); what
+  is open is KNOWN-GAPS 6zzt.
+- **The real Claude Code, by hand** (2026-11-15, the check host, Claude Code 2.1.316, signed in as the
+  machine's user with a subscription). Ten short questions in all.
+  - *Before the bridge was written*, the binary alone, to choose how to stop and how to tell "not signed
+    in". With an empty home, `claude -p --input-format stream-json --output-format stream-json --verbose
+    --permission-mode bypassPermissions` and one question on its input wrote an `assistant` line carrying
+    `"error":"authentication_failed"` with the text "Not logged in · Please run /login", then a `result`
+    with `"is_error":true` (its subtype still `success`), and ended with status 1: nothing was asked of a
+    model. Signed in: one question answered ("OK"), a second (a long list) killed with SIGKILL six seconds
+    in, then a new process with `--resume <the session the first one named>` and a third question, "which
+    word did I ask you to remember?", answered with that word: a conversation survives being killed in the
+    middle of an answer. `--resume` with a session that does not exist wrote a `result` with subtype
+    `error_during_execution` and `"errors":["No conversation found with session ID: …"]`, and ended.
+  - *Through the bridge*: the service's own code run outside systemd as the machine's user (the unit test
+    binary's `by_hand` entry, `TORQ_BY_HAND=<a scratch directory>` as the agent's home and working
+    directory, `TORQ_BY_HAND_ENGINE=/run/current-system/sw/bin/claude`; the sign-in reached by a link from
+    that directory's `.claude` to the user's own and a copy of `.claude.json`), asked over its socket with
+    `socat`. In order:
+    1. `{"type":"ask","text":"What is 17 times 3? Reply with only the number."}` → `say "51"`, `done 0`;
+       status then `turns 1, conversation 1`, and the session's name was in the state file.
+    2. "Add 4 to that. Reply with only the number." → `say "55"`, `done 0`: the same process, the
+       conversation kept.
+    3. "Run the shell command `echo torq-$((6*7))` and tell me exactly what it printed" → `called "ran a
+       command"`, `say "torq-42"`, `done 0`.
+    4. "Write the numbers from 1 to 800 in words…", and eight seconds later `status` (`running true`) and
+       `stop` from another connection → the asker got `done 137`, status `running false`, no engine
+       process left.
+    5. "What was the result of the very first calculation I asked you for?" → `say "51"`, `done 0`; the
+       engine's process now had `--resume <the same session>` on its command line.
+    6. `forget` → `forgotten`, status `turns 0, conversation 2`, no engine process; then "Have I asked
+       you anything before this message in this conversation?" → `say "no"`; a new session's name in the
+       state file, no `--resume` on the command line.
+    7. The service killed and started again → status `turns 1, conversation 2` before anything was asked;
+       "What exactly did I ask you in my previous message? Quote it." → it quoted question 6; the engine
+       had been started with `--resume <that session>`. (With the service killed, the engine it had left
+       ended by itself, its input closed.)
+  - *Not tried with the real one*: inside the unit and its sandbox, as an agent account; TorqOS's tools
+    (`torq-mcp` is not installed on the check host, so its entry in the settings pointed at nothing) and a
+    proposal; attached text; the window and the applet; `claude` typed plainly; signing in through `torq
+    agent run`. A client that sends its question and closes its side at once (`socat` with no input left)
+    is taken as gone, and its question stopped: that is the service's rule for an asker who leaves, seen
+    here first.
+- **What was run for phase 1** (2026-11-15, the check host). Unit tests: agent 80 (+2 ignored: the
+  tests' helper, and the by-hand entry), torqcli 471, wire 22; the broker's and the secrets daemon's ran
+  as part of building their packages for the VM test. TorqOS Settings: type-checked (`nix develop
+  .#torq-settings`), not started. The VM test `agent-service`: passed, after one failure that found a
+  real fault (a program the engine left in a session of its own held the engine's output open, so a stop
+  never ended and the program stayed: fixed, with a unit test that fails the old way). The agent unit's
+  exposure by `systemd-analyze security` there: 1.8. The VM test `desktop-agent`: passed, the first time
+  (COSMIC, the applet, the window opened by its key; the engine a stand-in). `agent-assertions` and `agent-units` evaluate
+  (`agent-units` was not built). Not run: `nix flake check`; the VM tests `agent-mcp`,
+  `agents-per-person`, `agent-proposals`, `doctor`, `secrets` and `agent-run` (the first three were
+  edited and evaluate).
+- **Left for phase 2, still in the tree after phase 1:** `torq-doctor` and its commands (`torq doctor`,
+  `torq agent propose`, and `torq-doctor --propose --task`, which nothing starts any more); the settings
+  under `torq agent doctor` (`apiKeyFile` now has no use at all) and the local model's unit; the
+  `torq-resident-<person>` accounts (made where doctor mode is on, nothing runs as them) with the broker's
+  resident rule and session trust; `Task` and `Turn` in `wire/src/agent.rs`; the taint words in torqcli
+  and the window ("coding-tool", "not-the-resident-agent"); the Agent page's lines for doctor mode.

@@ -3398,3 +3398,26 @@ content at the next), and a proposal must be judged on what it does, not on what
   agent) closes with it.
 - **Not decided here:** a person's own Claude Code, outside the fence; other engines; the larger desktop
   ideas listed at the end of the plan.
+- **As built, phase 1 (2026-11-15, `work/harness`):**
+  1. *The unit runs as the agent account.* `torq-agent@<person>.service` is `User=torq-agent-<person>`, and the
+     bridge starts the engine as its own child, in a process group of its own. The sandbox is the unit's:
+     every home and runtime directory out of reach, a private /tmp, no privilege, no capability, the system
+     read-only but the agent's home and what the service keeps, nothing delegated. Against the old unit:
+     `MemoryDenyWriteExecute` is off (an engine's runtime writes the code it runs) and `RemoveIPC` is off (it
+     would take away the IPC objects of a `torq agent run` session of the same account); `torq agent run`
+     never had either. The broker takes whatever comes from this account for a coding tool's: tainted.
+  2. *Stop ends the engine's process; the conversation is continued.* The engine's process group is killed
+     and the unit swept, so nothing it started outlives it; the next question starts it again with `--resume
+     <its session>`. Tried with Claude Code 2.1.316: a conversation killed in the middle of an answer was
+     continued, with what came before. The engine's own way to interrupt (a control request on its input) was
+     not chosen: it leaves whether everything stopped to the engine.
+  3. *A restart continues too.* The service keeps the engine's name for the conversation, its count and its
+     number, and nothing of what was said (`/var/lib/torq-agent-memory/<person>`).
+  4. *A proposal is recognised by TorqOS's own word.* `torq-mcp` writes "proposal #<n>" on the second line
+     of what `propose_change` returns; the bridge reads the number there, for a tool use it saw asked for
+     (`agent/src/mcp.rs`, `proposals_told`, beside the code that writes it).
+  5. *Not signed in* is the engine's own word (`"error":"authentication_failed"` on its answer, seen with an
+     empty home), said to the person as "not signed in: run `torq agent run -- claude`, type /login".
+  6. *`claude`, typed plainly, is the fenced one* (`torq.agent.plainCommand`, on by default where Claude Code
+     is installed for the agents): `torq agent run --share <the folder you are in> -- claude …`. This amends
+     ADR-051 5's "no short form".

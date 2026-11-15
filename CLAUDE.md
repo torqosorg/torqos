@@ -53,7 +53,7 @@ modules/               the distribution, as NixOS modules (torq.* options)
   dev.nix              development mode (ADR-009) — and the assertion that guards a path: source
   ai.nix               doctor mode and the model it asks: torq.agent.doctor, torq.agent.model (ADR-042)
   secrets.nix          torq-secrets: a program uses a secret and never reads it (ADR-052)
-  agent.nix            each person's agent account torq-agent-<person>, what it may propose, `torq agent run`, torq-agent@<person> as torq-resident-<person> (ADR-041, ADR-051 3)
+  agent.nix            each person's agent account torq-agent-<person>, what it may propose, `torq agent run`, the engine (`torq agent engine`) and torq-agent@<person>, the bridge to it (ADR-041, ADR-051 3, ADR-055)
 hosts/
   image/               the release image's own system (`.#image`, `.#image-vmdk`)
   installer/           the ISO installer's system and the image it carries (`.#iso`)
@@ -63,7 +63,7 @@ templates/config/      the per-machine config repo the broker manages
 broker/                Rust crate: torq-broker (ledger, policy, git, rebuild, rollback)
 cli/                   Rust crate: torqcli — the grammar, the candidate, the tree (ADR-025)
 agent/                 Rust crate: torq-doctor — the agent: doctor mode, propose mode, its session at the broker (ADR-042);
-                       torq-agent-service — each person's agent, resident, on its socket (ADR-051 3);
+                       torq-agent-service — each person's agent on its socket: the bridge to their engine, Claude Code (ADR-055);
                        torq-mcp — TorqOS's tools for a coding tool, an MCP server (ADR-051 7)
 wire/                  Rust crate: torq-wire — the socket's types and the ledger's words, shared by the three (ADR-044)
 tests/                 NixOS VM tests
@@ -131,6 +131,12 @@ panel applet's dialog, and the Secrets page in TorqOS Settings), and several pol
 (2026-11-12 to 2026-11-14). The old branch `work/agents` and its tag `park/agents-known-good` are
 only history now. Nothing may be said to be released that is only on `main`.
 
+Being built on `work/harness` (ADR-055, 2026-11-15; `docs/HARNESS-AS-A-SYSTEM.md` is the plan and says what
+is done): the machine's agent is the person's coding tool, Claude Code first. Phase 1 is the bridge: `torq
+agent engine claude-code`, and the agent's service running that engine as `torq-agent-<person>`. TorqOS's own
+loop (`torq doctor`, `torq agent propose`, `torq agent doctor …`, the `torq-resident-<person>` accounts, the
+broker's resident rule and session trust) is still in the tree and is removed in phase 2.
+
 Milestones as built (`docs/ROADMAP.md`'s checkboxes are the most current record): M1, M1.5, M2 and M3
 are done. M3.5 (the install on real hardware) is partly done: the offline first build, network-first
 setup and the laptop install are built; the console UI, the answers file, recipes and the
@@ -179,11 +185,14 @@ released (doctor mode, proposals, session trust); the resident agent and its des
   step 5 (the Secrets page in TorqOS Settings) are on `main`.
 - **The agent is experimental.** The `torq-agent-<person>` accounts, `torq agent run`, doctor mode,
   proposals, session trust, the resident agent (`torq-agent@<person>`, as `torq-resident-<person>`) and
-  `torq-mcp` exist on `main`. Doctor is off by default, no model ships, and no real model, and no real
-  Claude Code, has ever been tried (the tests use a scripted endpoint and a stand-in MCP client). The
-  default allow-list is the owner's own packages.
+  `torq-mcp` exist on `main`. Doctor is off by default, no model ships, and no real model has ever been
+  tried with TorqOS's own loop (the tests use a scripted endpoint and a stand-in MCP client). The
+  default allow-list is the owner's own packages. On `work/harness` the agent's service is the bridge to
+  Claude Code instead (`torq agent engine`): the real Claude Code 2.1.316 was driven through it once, by
+  hand, outside its unit, on the check host (2026-11-15); inside the unit only a stand-in has run.
 - **Tests.** Unit tests are `#[test]` functions: torqcli 473, broker 338 (+1 ignored, across its test
-  binaries), wire 23, secrets 15, agent 72 (+1 ignored) (run 2026-11-15). The
+  binaries), wire 23, secrets 15, agent 72 (+1 ignored) (run 2026-11-15; on `work/harness`: torqcli 471,
+  wire 22, agent 80 (+2 ignored), the others unchanged). The
   `settings/` crate has no tests of its own; it is type-checked with `nix develop .#torq-settings`.
   VM tests are `checks` in `flake.nix`, one file each in `tests/`. CI's `test` workflow runs on pull
   requests, by hand and inside each release, **not on pushes to `main`**, and GitHub does not run the
@@ -197,7 +206,7 @@ released (doctor mode, proposals, session trust); the resident agent and its des
   x86_64 ESXi VM with KVM. On the laptop use one job at a time. Session worktrees live beside
   `~/torq`; do not edit in another session's.
 - **Known limits** are in `docs/KNOWN-GAPS.md` (the desktop and launcher items 6zx and 6zy, and 6zz,
-  `torq agent run`'s set-id sweep, are fixed; the agents' own are 6zzk to 6zzo, the approval flow's 6zzs).
+  `torq agent run`'s set-id sweep, are fixed; the agents' own are 6zzk to 6zzo, the approval flow's 6zzs, the bridge's 6zzt).
 
 ## Working here
 

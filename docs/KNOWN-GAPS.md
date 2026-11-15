@@ -1320,6 +1320,51 @@ Its §5 lists claims without a test.
      in the ledger already; kept so on purpose (the review of the rebased branch, 2026-11-12). A session is
      reported into and cited only by its own agent account, and only by its own kind of caller (6zzs).
 
+6zzt. **The agent's service as the bridge to the engine (ADR-055, phase 1, built 2026-11-15 on `work/harness`,
+   `tests/agent-service.nix`).** The service no longer runs TorqOS's own loop: it runs the person's engine
+   (Claude Code) as their agent account. What 6zzl and 6zzo say of the service as the *resident agent* (its
+   own account `torq-resident-<person>`, its memory, the model's key as its credential, the word of a missing
+   key, an untainted session from its unit) is the old loop's, kept only as history until phase 2 removes the
+   loop and rewrites them; what they say of the socket, the freeze through a share's walk, the unit's files
+   and nothing delegated still holds. Open:
+   - **The real Claude Code has not run inside the unit.** It was driven through the service by hand, outside
+     systemd (`docs/HARNESS-AS-A-SYSTEM.md`, "Where it stands"); the VM tests use a stand-in that speaks the
+     same lines. Whether Claude Code runs under the unit's limits (its system-call filter, a read-only system,
+     no new namespaces, no user manager) is not known until it is tried on a machine. `MemoryDenyWriteExecute`
+     is off for it (its runtime writes the code it runs), and `RemoveIPC` (it would take away the IPC objects
+     of a `torq agent run` session of the same account).
+   - **A person who is not an administrator cannot sign their agent in.** The engine signs in in the agent's
+     account, with `torq agent run -- claude` and /login, and `torq agent run` is an administrator's (its sudo
+     rule is the wheel group's). Such a person is told to run a command they may not. An administrator can do
+     it for them only as root.
+   - **Forget does not erase what the engine wrote.** It ends the engine's process and begins a new
+     conversation; the earlier one's file stays in the agent's home (`~/.claude/projects`) until Claude Code's
+     own clean-up takes it. The person is told "forgotten".
+   - **Stop ends the engine's process**, and what it had started. The conversation is continued at the next
+     question (`--resume`), with whatever of the stopped answer the engine had written down. The engine's
+     process otherwise stays between questions (its memory with it) until a stop, a forget or a restart.
+   - **The answer comes a message at a time**, not a word at a time: each part the engine finishes.
+   - **A line of the engine's over 8 MiB is left out** (said in the unit's journal). Were it the line that
+     ends a question, the question would not end by itself: the person stops it, or their program gives up
+     after its silence (11 minutes).
+   - **An engine that goes on by itself** (a task it left in the background finishing between questions) is
+     heard by no one, and an end it writes just as a new question is asked could end that question early.
+   - **A proposal's number is the engine's word**: read from what TorqOS's own tool returned, as the engine
+     passes it on. The proposal itself, and what Review shows, are the broker's. The words for its taint in
+     the window and at a terminal ("this session read untrusted text (coding-tool)") are the old loop's.
+   - **The service and a `torq agent run` session are the same account**, side by side. The engine in the
+     service sees that session's processes (the same uid) and could signal them; it cannot trace them (Yama).
+     6zzl's note on `/proc/<pid>/root` stands. One session at a terminal at a time while a folder is shared,
+     as before: a second `claude` in another terminal is refused ("is running already"), saying so.
+   - **`claude` typed plainly shares the folder each time** (its walk of the folder, and the ACLs, stay), and
+     says so on standard error. A Claude Code in the person's own profile is found first and is not fenced.
+   - **Left of the old loop, unused on a machine:** `torq.agent.doctor.apiKeyFile` (nothing can use a key any
+     more), the `torq-resident-<person>` accounts (made where doctor mode is on, for the broker's rule; nothing
+     runs as them), and the build log's words in `modules/agent-units-check.nix` ("the resident agent").
+   - **Not run:** `tests/agent-units.nix`'s build, and the VM tests `agent-mcp`, `agents-per-person`,
+     `agent-proposals`, `doctor` and `secrets` after their edits (they evaluate); the Agent page, the window
+     and the applet are type-checked only.
+
 6zzl. **The agent service (ADR-051 3, step 2, built 2026-11-10, `tests/agent-service.nix`).** Open:
    - **A client that stops reading is given up** after 10 s on one event (the review of the rebased branch, B2):
      nothing more is written to it and its connection's writing side is closed, so the client, reading again, says it

@@ -1,6 +1,8 @@
 # AI layer
 
-**Status (2026-11-14): experimental. M5 (ADR-034) is built in part: the account (ADR-035, ADR-041), doctor mode, proposals and session trust (ADR-042) exist and are in v0.3.x. Doctor is off by default, no model ships, and no real model has ever been tried (the tests use a scripted endpoint). The resident agent, torq-mcp and ADR-051 are on main (steps 1 to 5, and approval of an agent's use of a secret, ADR-052 step 4) and not yet released.**
+**Status (2026-11-15): experimental, and being changed (ADR-055, `docs/HARNESS-AS-A-SYSTEM.md`). The machine's agent is now the person's coding tool, Claude Code first (`torq agent engine`), run by each person's agent service as a bridge; TorqOS's own loop (`torq doctor`, `torq agent propose`, the settings under `torq agent doctor`, the second account `torq-resident-<person>`, the broker's "resident agent" rule and session trust) is still here and is removed next (phase 2). Until this page is rewritten then, read what it says of doctor mode, the resident agent and session trust as the old loop's: nothing on a machine earns an untainted session any more, and every proposal from an agent waits for its person. Nothing of this is released; the real Claude Code has been driven through the bridge by hand, outside its unit, once.**
+
+**Status before that (2026-11-14): experimental. M5 (ADR-034) is built in part: the account (ADR-035, ADR-041), doctor mode, proposals and session trust (ADR-042) exist and are in v0.3.x. Doctor is off by default, no model ships, and no real model has ever been tried (the tests use a scripted endpoint). The resident agent, torq-mcp and ADR-051 are on main (steps 1 to 5, and approval of an agent's use of a secret, ADR-052 step 4) and not yet released.**
 Everything built so far (the broker as the only writer, actors, tiers, the ledger) was built so
 this could be added without a bypass. Each person's agent is an *account* of its own,
 `torq-agent-<person>` (ADR-051 3, amending ADR-041 1: `torq.agent.people`, the owner by default),
@@ -25,8 +27,15 @@ the map names it and its uid is no person's.
   lets a caller set), never one the caller
   names; a person with none is told so. A restore from a backup into any agent's folder is
   refused. With the agent's service running, `--share` holds it still (systemd's freezer) through the walk.
-- **Its service** (ADR-051 3, step 2): `torq-agent@<person>.service`, reached only by that person (`torq ask
-  "<question>"`), keeps their conversation in its own state directory. It runs as an account of its own, `torq-resident-<person>` (amended 2026-11-11): its state, its programs' home and its model key are that account's, out of reach of every program run as `torq-agent-<person>` (coding tools, `torq agent run`), in their sandbox or not. At the broker both accounts are the person's one agent.
+- **Its service** (ADR-051 3; the bridge since ADR-055, 2026-11-15): `torq-agent@<person>.service`, reached only
+  by that person (`torq ask "<question>"`, the agent's window and applet). It is there where an engine is chosen
+  (`torq agent engine claude-code`) and runs that engine, Claude Code, as one long-lived process for the
+  person's conversation, as `torq-agent-<person>`, in a sandbox at least as strict as `torq agent run`'s: its
+  own home and no other, no runtime directory, no privilege, the rest of the system read-only. It passes
+  questions and answers and decides nothing. Stop ends the engine's process and the next question continues
+  the conversation; forget begins a new one. The engine signs in by itself, once, in the agent's account
+  (`torq agent run -- claude`, then /login). What it proposes through TorqOS's tools (`torq-mcp`) is a coding
+  tool's at the broker: tainted, and waiting for the person, one by one.
 
 ## What it is for
 
