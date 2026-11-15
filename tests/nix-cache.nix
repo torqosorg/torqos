@@ -6,14 +6,21 @@
 # `nix flake metadata` of the config repo at the commit (a git fetch, which reads and writes the fetcher cache). It
 # stops, when told to, at the point after the broker has removed the damaged folder and before it runs again; that
 # stop is in the test's script, not in the broker.
+#
+# After the cut nobody mends the machine by hand: the unit torq-confirm-boot (`expire-confirm --reboot`) reconciles
+# first, as every operation that changes the machine does (ADR-010, amended 2026-11-15). It resets the config to the
+# last ledgered commit, runs the rebuild (on a cache folder that is gone) and ledgers `interrupted`. The cut change is
+# then proposed and applied again.
 { pkgs, self }:
 
 let
   rebuild = pkgs.writeShellScript "torq-test-rebuild" ''
     export PATH=${pkgs.git}/bin:$PATH
     echo run >> /var/lib/torq-test/runs
-    # The second run of a repair: the damaged folder is gone. Say so, and wait to be cut off.
-    if [ -e /var/lib/torq-test/hold ] && [ ! -e /root/.cache/nix ]; then
+    # The second run of a repair: the damaged folder is gone. Say so, and wait to be cut off. Once only (`held` is
+    # on the disk before the cut): the broker runs this command again at the next start, to mend the cut apply, and
+    # the folder is still gone then.
+    if [ -e /var/lib/torq-test/hold ] && [ ! -e /var/lib/torq-test/held ] && [ ! -e /root/.cache/nix ]; then
       touch /var/lib/torq-test/held
       sync
       sleep 3600
@@ -104,17 +111,29 @@ pkgs.testers.runNixOSTest {
         # The broker's door is up (the unit's text, not a property of it: `systemctl show -P` can print [unprintable]).
         machine.wait_for_unit("torq-broker.socket")
         assert "ListenStream=/run/torq/broker.sock" in machine.succeed("systemctl cat torq-broker.socket")
-        # The cut apply was not finished: the broker says so and refuses the next change until it is reconciled.
-        status, out = machine.execute("torq-broker status 2>&1")
-        assert "interrupted" in out, (status, out)
-        machine.fail(f"torq-broker apply {p} --approved-by tester")
-        # No stop this time.
-        machine.succeed("rm -f /var/lib/torq-test/hold /var/lib/torq-test/held")
-        r = broker("reconcile --approved-by tester")
-        assert r["reconciled"]["kind"] == "interrupted", r
-        # The same command that was cut now goes through, whatever state the cache came back in.
-        a = broker(f"apply {p} --approved-by tester")
+        # The cut apply is mended at this start, by the broker itself: torq-confirm-boot reconciles before it looks
+        # for a commit confirmed (it holds the broker's lock while it runs; boot does not wait for it).
+        machine.wait_until_succeeds("test \"$(systemctl show -P SubState torq-confirm-boot)\" = exited", timeout=120)
+        e = json.loads(machine.succeed("tail -n1 /var/lib/torq/state/ledger.jsonl"))
+        assert e["kind"] == "interrupted" and e["actor"] == "broker", e
+        d = e["data"]
+        assert d["op"] == "apply" and d["target"] == p and d["restored"] is True and d["reconciled_by"] == "broker", e
+        # Its restore went through the rebuild, once, with the cache folder gone and the stop still asked for: the
+        # two runs before the cut, and this one.
+        machine.succeed("test -e /var/lib/torq-test/hold -a -e /var/lib/torq-test/held")
+        assert runs() == 3, runs()
+        # Nothing is left to mend: the machine is as its ledger says, and the config is the one before the cut change
+        # (its commit kept aside, not lost).
+        machine.succeed("torq-broker status")
+        machine.succeed(f"grep -q 'nightLight = true' {repo}/desktop.nix")
+        assert d["commit"] == machine.succeed(f"git -C {repo} rev-parse HEAD").strip(), e
+        assert d["discarded_commit"], e
+        machine.succeed(f"git -C {repo} cat-file -e {d['discarded_commit']}^{{commit}}")
+        # The same change, proposed again, now goes through, on the cache the restore made anew.
+        p2 = broker("propose --diff /etc/torq-test/night-light-off.diff --reason 'Night light off'")["seq"]
+        a = broker(f"apply {p2} --approved-by tester")
         assert a["kind"] == "applied", a
+        assert runs() == 4, runs()
         machine.succeed(f"grep -q 'nightLight = false' {repo}/desktop.nix")
         machine.succeed("torq-broker verify")
   '';
