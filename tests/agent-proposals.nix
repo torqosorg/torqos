@@ -89,6 +89,9 @@ pkgs.testers.runNixOSTest {
             return machine.succeed(f"su -s /bin/sh {who} -c {shlex.quote(cmd)}")
         unit = f"torq-agent@{who.removeprefix('torq-agent-')}.service"
         machine.succeed(f"systemctl start {unit}")
+        # `systemctl start` comes back when the service is forked, before systemd has made its state directory and
+        # the service its home there: on a busy host the command below was run first and found them not its own yet.
+        machine.wait_until_succeeds(f"test \"$(stat -c %a:%U /var/lib/torq-agent-memory/{who.removeprefix('torq-agent-')}/home)\" = 700:{who.replace('torq-agent-', 'torq-resident-', 1)}", timeout=60)
         cg = machine.succeed(f"systemctl show -P ControlGroup {unit}").strip()
         procs = shlex.quote(f"/sys/fs/cgroup{cg}/cgroup.procs")
         # The resident agent's own account (ADR-051 3 amended 2026-11-11): the agent account is never resident.
