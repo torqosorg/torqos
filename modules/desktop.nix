@@ -36,6 +36,25 @@ let
   # COSMIC's own packages and what its modules take with them; the rest of the system stays the release's.
   fromCosmic = lib.filter (n: lib.hasPrefix "cosmic-" n) (lib.attrNames cosmicPkgs)
     ++ [ "xdg-desktop-portal-cosmic" "pop-launcher" "pop-icon-theme" ];
+  # TorqOS's own keys, added to COSMIC's default shortcuts (ADR-051 4). cosmic-comp reads the `defaults` key and
+  # the person's `custom` key and puts the second over the first (cosmic-settings-config, shortcuts(): one map
+  # extended by the other), and COSMIC Settings only ever writes `custom`. So a key here reaches a person
+  # whatever they have changed, and is theirs to rebind or remove: their `custom` wins. (A default in the
+  # `custom` key of the system does not: a person's own `custom` file replaces it whole, cosmic-config's
+  # Config::get.) It is COSMIC's own `defaults` file, from the cosmic-comp the system has, with ours added; it wins the
+  # collision in the system's profile over cosmic-comp's by its priority. The build stops if the file's shape or the key
+  # is not as expected.
+  shortcutDefaults = pkgs.runCommand "torq-cosmic-shortcuts" { meta.priority = 4; } ''
+    dir=share/cosmic/com.system76.CosmicSettings.Shortcuts/v1
+    from=${pkgs.cosmic-comp}/$dir/defaults
+    test "$(head -n 1 $from)" = "{" && test "$(tail -n 1 $from)" = "}"
+    ! grep -q '\[Super, Shift\], key: "a"' $from
+    mkdir -p $out/$dir
+    { head -n -1 $from
+      echo '    (modifiers: [Super, Shift], key: "a"): Spawn("/run/current-system/sw/bin/torq-agent-ui"),'
+      echo '}'; } > $out/$dir/defaults
+    grep -q 'torq-agent-ui' $out/$dir/defaults
+  '';
 in
 {
   options.torq.desktop = {
@@ -207,6 +226,23 @@ in
         RestartSec = "5s";
       };
     };
+    # TorqOS's applets in a panel a person already has their own list of. COSMIC reads the person's own list of
+    # applets instead of the system's, whole, so an applet TorqOS adds to its default later never reached someone
+    # who had moved one. Once per applet and person, in their own session, and an applet they then take out stays
+    # out (cli/src/cosmic_defaults.rs). The running panel takes the change at once (cosmic-panel watches its
+    # configuration and starts the applet). Failing is not failing the login: it says why in the journal and tries
+    # again at the next one.
+    systemd.user.services.torq-desktop-defaults = {
+      description = "Puts TorqOS's applets in your panel, once (TorqOS)";
+      wantedBy = [ "graphical-session.target" ];
+      partOf = [ "graphical-session.target" ];
+      after = [ "graphical-session.target" ];
+      environment.XDG_DATA_DIRS = "/run/current-system/sw/share";
+      serviceConfig = {
+        Type = "oneshot";
+        ExecStart = lib.getExe' config.torq.cli.package "torq-desktop-defaults";
+      };
+    };
     # COSMIC's launcher: `ask <question>` (pop-launcher reads the system's plugins from /etc/pop-launcher). The
     # program runs as the person, by absolute path (pop-launcher runs `bin.path` as written when it is one).
     environment.etc."pop-launcher/plugins/torq-agent/plugin.ron".text = ''
@@ -226,6 +262,8 @@ in
       pkgs.curl
       # TorqOS Settings (ADR-045 2): torqcli in a COSMIC window, the person's own, no privilege.
       cfg.settingsPackage
+      # Super+Shift+A (see shortcutDefaults).
+      shortcutDefaults
     ];
   };
 }

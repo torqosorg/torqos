@@ -40,15 +40,8 @@ rustPlatform.buildRustPackage {
     sed -i 's/"org.torqos.Applet", /&"org.torqos.Agent", /' $wings
     grep -q '"org.torqos.Applet", "org.torqos.Agent", "com.system76.CosmicAppletInputSources"' $wings
 
-    # Super+Shift+A opens the person's agent (ADR-051 4, step 4; the owner): a default of COSMIC's own custom shortcuts, read where
-    # the panel's default is; the person may change it in COSMIC Settings, which then writes their own. It
-    # leaves COSMIC's own keys alone: Super+Shift+A is free in cosmic-comp 1.11.0's data/keybindings.ron (its defaults),
-    # where Super+A is the App Library's.
-    install -Dm644 /dev/stdin $out/share/cosmic/com.system76.CosmicSettings.Shortcuts/v1/custom <<SHORTCUTS
-    {
-        (modifiers: [Super, Shift], key: "a"): Spawn("/run/current-system/sw/bin/torq-agent-ui"),
-    }
-    SHORTCUTS
+    # (Super+Shift+A, the person's agent, is not here: it is in COSMIC's shortcut `defaults`, modules/desktop.nix
+    # shortcutDefaults. A `custom` file here would be replaced whole by any person's own.)
 
     # A person's SSH tunnel (ADR-050 2), kept up by their own user manager while they are logged in. Started
     # from the tunnels applet; "Start at login" is `systemctl --user enable`, in the person's own home. A wrong
