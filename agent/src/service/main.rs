@@ -417,7 +417,7 @@ impl Agent {
                     if unsigned && first {
                         conversation.session = None;
                     } else if !unsigned {
-                        conversation.questions += 1;
+                        conversation.questions = conversation.questions.saturating_add(1);
                     }
                     self.keep(conversation);
                     say.extend(why.map(|w| Event::Error { text: shown(&w, 2000) }));

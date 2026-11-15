@@ -15,6 +15,29 @@ use std::path::{Path, PathBuf};
 /// The largest file read; anything larger is not this program's.
 const MAX_FILE: u64 = 4096;
 
+/// The most questions a conversation kept may say it has had: a count above it is not this program's.
+const MAX_QUESTIONS: u64 = 1_000_000;
+
+/// The text of `file`, if it is one this could have written: none if it is not there; an error if it is a
+/// link, not a regular file, larger than `MAX_FILE`, or not text. The engine has this program's uid and can
+/// write the state directory, so what is found there is never trusted to be a file: it is opened without
+/// following a link and without waiting (a FIFO put there would otherwise hold the service at its open for
+/// good), and read only if it is a regular file, and then no further than the bound (a link to an endless
+/// device would otherwise be read until the memory was gone).
+fn read_own(file: &Path) -> Result<Option<String>> {
+    use rustix::fs::OFlags;
+    use std::os::unix::fs::OpenOptionsExt;
+    let f = match std::fs::OpenOptions::new().read(true).custom_flags((OFlags::NOFOLLOW | OFlags::NONBLOCK).bits() as i32).open(file) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        f => f?,
+    };
+    anyhow::ensure!(f.metadata()?.is_file(), "not a regular file");
+    let mut text = String::new();
+    f.take(MAX_FILE + 1).read_to_string(&mut text)?;
+    anyhow::ensure!(text.len() as u64 <= MAX_FILE, "larger than {MAX_FILE} bytes");
+    Ok(Some(text))
+}
+
 /// The conversation as it stands.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Conversation {
@@ -44,22 +67,16 @@ impl Kept {
     /// The conversation kept: none (a new one) if nothing is kept, or it is not what this wrote.
     pub fn conversation(&self) -> Conversation {
         let read = || -> Result<Conversation> {
-            use std::os::unix::fs::OpenOptionsExt;
-            let f = match std::fs::OpenOptions::new().read(true).custom_flags(rustix::fs::OFlags::NOFOLLOW.bits() as i32).open(self.file()) {
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Conversation::default()),
-                f => f?,
-            };
-            let mut text = String::new();
-            f.take(MAX_FILE + 1).read_to_string(&mut text)?;
-            anyhow::ensure!(text.len() as u64 <= MAX_FILE, "larger than {MAX_FILE} bytes");
+            let Some(text) = read_own(&self.file())? else { return Ok(Conversation::default()) };
             let v: serde_json::Value = serde_json::from_str(&text)?;
             let session = match &v["session"] {
                 serde_json::Value::Null => None,
                 serde_json::Value::String(s) if session_ok(s) => Some(s.clone()),
                 _ => anyhow::bail!("its session is not a session's name"),
             };
-            let questions = v["questions"].as_u64().context("no count of its questions")? as usize;
-            Ok(Conversation { session, questions })
+            let questions = v["questions"].as_u64().context("no count of its questions")?;
+            anyhow::ensure!(questions <= MAX_QUESTIONS, "its count of questions is more than {MAX_QUESTIONS}");
+            Ok(Conversation { session, questions: questions as usize })
         };
         read().unwrap_or_else(|e| {
             eprintln!("torq-agent-service: {}: not read ({e:#}); the next question starts a new conversation", self.file().display());
@@ -75,7 +92,7 @@ impl Kept {
     /// Which conversation this is (never 0): it changes at every `forget`. A counter in its own file; a
     /// missing or unreadable one is the first.
     pub fn generation(&self) -> u64 {
-        std::fs::read_to_string(self.generation_file()).ok().and_then(|t| t.trim().parse::<u64>().ok()).filter(|&g| g > 0).unwrap_or(1)
+        read_own(&self.generation_file()).ok().flatten().and_then(|t| t.trim().parse::<u64>().ok()).filter(|&g| g > 0).unwrap_or(1)
     }
 
     /// Forget the conversation: the next question starts a new one, under a new number.
@@ -149,6 +166,49 @@ mod tests {
         std::fs::remove_file(&f).unwrap();
         std::fs::copy(&elsewhere, &f).unwrap();
         assert_eq!(k.conversation(), conversation(Some("planted"), 9));
+        // A count no conversation has: not its own. At the bound, it is.
+        std::fs::write(&f, format!(r#"{{"session":"abc","questions":{}}}"#, MAX_QUESTIONS + 1)).unwrap();
+        assert_eq!(k.conversation(), Conversation::default(), "a count above the bound");
+        std::fs::write(&f, r#"{"session":"abc","questions":18446744073709551615}"#).unwrap();
+        assert_eq!(k.conversation(), Conversation::default(), "the largest number there is");
+        std::fs::write(&f, format!(r#"{{"session":"abc","questions":{MAX_QUESTIONS}}}"#)).unwrap();
+        assert_eq!(k.conversation(), conversation(Some("abc"), MAX_QUESTIONS as usize), "the control: at the bound");
+        // What the engine (the same uid) could put in the state directory in place of either file: a FIFO no
+        // one writes to, a link to a device that never ends, a directory. None is waited for, none is read.
+        let g = d.path().join("generation");
+        let (done, over) = std::sync::mpsc::channel();
+        let dir = d.path().to_path_buf();
+        std::thread::spawn(move || {
+            let k = Kept::new(&dir);
+            let (f, g) = (dir.join("conversation.json"), dir.join("generation"));
+            let mut seen = Vec::new();
+            for planted in [&f, &g] {
+                let _ = std::fs::remove_file(planted);
+                rustix::fs::mknodat(rustix::fs::CWD, planted, rustix::fs::FileType::Fifo, rustix::fs::Mode::from_raw_mode(0o600), 0).unwrap();
+            }
+            let fifo = read_own(&f).unwrap_err().to_string();
+            seen.push((k.conversation(), k.generation()));
+            for planted in [&f, &g] {
+                std::fs::remove_file(planted).unwrap();
+                std::os::unix::fs::symlink("/dev/zero", planted).unwrap();
+            }
+            seen.push((k.conversation(), k.generation()));
+            for planted in [&f, &g] {
+                std::fs::remove_file(planted).unwrap();
+                std::fs::create_dir(planted).unwrap();
+            }
+            seen.push((k.conversation(), k.generation()));
+            let _ = done.send((seen, fifo));
+        });
+        let (seen, fifo) = over.recv_timeout(std::time::Duration::from_secs(10)).expect("a FIFO or an endless device in the state directory held the service");
+        assert_eq!(fifo, "not a regular file", "told by what it is, before anything of it is read");
+        assert_eq!(seen, vec![(Conversation::default(), 1); 3], "a FIFO, a link to /dev/zero, a directory: nothing kept, the first conversation");
+        // The control: a number in its own file is read.
+        std::fs::remove_dir(&g).unwrap();
+        std::fs::write(&g, "7\n").unwrap();
+        assert_eq!(k.generation(), 7);
+        std::fs::write(&g, "9".repeat(MAX_FILE as usize + 1)).unwrap();
+        assert_eq!(k.generation(), 1, "larger than its bound: not read");
     }
 
     /// The conversation's number changes at every forget and at nothing else.
