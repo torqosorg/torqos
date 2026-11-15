@@ -24,21 +24,22 @@
 #      the link's own text says whose it is. A package that brings a unit of the same name stays the unit (the
 #      configuration's becomes its `overrides.conf`), and an alias (`aliases`) replaces the link with another
 #      unit's name: neither link is then the expected one;
-#    - nothing else is named as the agent's units are (`torq-agent@…`, `torq-agent-key@…`: another instance,
-#      the template, a timer or a path unit of that name), but a mask (a link that ends at /dev/null: it can
-#      only keep a unit from starting);
+#    - nothing else is named as the agent's units are (`torq-agent@…`: another instance, the template, a timer
+#      or a path unit of that name; and `torq-agent-key@…`, the name the old loop's key unit had, which nothing
+#      writes any more and which stays refused, so that a unit so named is never taken for TorqOS's), but a mask
+#      (a link that ends at /dev/null: it can only keep a unit from starting);
 #    - no other name is a link to one of the agent's units (an alias of it: `other.service ->
 #      torq-agent@<person>.service`). systemd applies an alias's own drop-ins (`other.service.d`) to the unit
 #      it names, so an alias would be a way round the next line. The module gives its units no other name;
 #    - none of the agent's units has a drop-in directory, and none of the other directories systemd applies to
 #      them is there. The list is systemd's own search, read in the source of the systemd this flake builds
-#      (260.5, src/shared/dropin.c, unit_file_find_dirs), for `torq-agent@<person>.service`,
-#      `torq-agent-key@<person>.service` and the socket:
+#      (260.5, src/shared/dropin.c, unit_file_find_dirs), for `torq-agent@<person>.service` and the socket
+#      (and for a unit named `torq-agent-key@<person>.service`, the old loop's, refused as above):
 #        the unit's own                      torq-agent@<person>.service.d
 #        its template's                      torq-agent@.service.d
 #        the name cut at each dash of the part before the `@`, as a template and with the instance kept
 #                                            torq-.service.d, torq-@.service.d, torq-@<person>.service.d
-#                                            (and for the key's unit torq-agent-.service.d,
+#                                            (and for the old key unit's name torq-agent-.service.d,
 #                                            torq-agent-@.service.d, torq-agent-@<person>.service.d)
 #        every unit's of the type            service.d, socket.d
 #      A dash in the person's name cuts nothing: only the part before the `@` is cut. The module writes no
@@ -204,8 +205,8 @@ pkgs.runCommand "torq-agent-units-its-own"
 
   if [ -s "$foreign" ]; then
     {
-      echo "torq-agent: the agent's units are only what TorqOS's own module writes: each of torq-agent@<person>.service,"
-      echo "its socket and torq-agent-key@<person>.service the one file this configuration makes, with no drop-in and"
+      echo "torq-agent: the agent's units are only what TorqOS's own module writes: each of torq-agent@<person>.service"
+      echo "and its socket is the one file this configuration makes, with no drop-in and"
       echo "no other unit of those names, whoever brings it (a package in systemd.packages, an alias, a unit asked for"
       echo "as a drop-in). Any of them could change who the agent runs as, what it runs, its credentials or its"
       echo "sandbox. Found in the units as built:"
@@ -231,9 +232,9 @@ pkgs.runCommand "torq-agent-units-its-own"
   if [ -s "$bad" ]; then
     {
       echo "torq-agent: no Delegate or DelegateSubgroup in any torq-agent@ unit, whoever brings it: a unit file or a"
-      echo "drop-in from a package (systemd.packages) counts as this configuration's own does. The broker takes the"
-      echo "unit's control group for the resident agent, which only root may move a process into (a second line"
-      echo "behind the resident account's uid). Found in the units as built:"
+      echo "drop-in from a package (systemd.packages) counts as this configuration's own does. The agent's service ends"
+      echo "everything the engine started by ending every process in the unit's control group, which only root may"
+      echo "move a process into or out of. Found in the units as built:"
       cat "$bad"
     } >&2
   fi

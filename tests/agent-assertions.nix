@@ -40,14 +40,19 @@ let
   cases = [
     (let ms = ours (failing { }); in if ms == [ ] then "plain" else throw "agent-assertions: a plain configuration fails: ${builtins.toJSON ms}")
     (refuses "not a person" { torq.agent.people = [ "ghost" ]; } "ghost is not a person on this machine")
-    (refuses "too long" { torq.agent.people = [ "dev" "abcdefghijklmnopqrstu" ]; users.users.abcdefghijklmnopqrstu.isNormalUser = true; } "is longer than an account's and its group's name may be")
     (refuses "twice" { torq.agent.people = [ "dev" "dev" ]; } "a person is named twice")
     (refuses "a key in the endpoint's query" { torq.agent.doctor.endpoint = "https://api.example.org/v1?key=secret"; } "no query (?) or fragment (#)")
     (refuses "a fragment in the endpoint" { torq.agent.doctor.endpoint = "https://api.example.org/v1#secret"; } "no query (?) or fragment (#)")
     (refuses "a person in people named as an agent" { torq.agent.people = [ "torq-agent-x" ]; users.users.torq-agent-x.isNormalUser = true; } "torq-agent-x is named as an agent account is")
     (refuses "any person named as an agent" { users.users.torq-agent-y.isNormalUser = true; } "torq-agent-y is a person named as an agent account is")
     (refuses "a person named as a resident agent" { users.users.torq-resident-y.isNormalUser = true; } "torq-resident-y is a person named as an agent account is")
-    (refuses "too long for a resident account" { torq.agent.people = [ "dev" "abcdefghijklmnopqr" ]; users.users.abcdefghijklmnopqr.isNormalUser = true; } "at most 17 characters")
+    # The name's limit is measured against the longest account made for the person: `torq-agent-<name>` (20
+    # characters of name), and only where doctor mode is on the old loop's `torq-resident-<name>` (17).
+    (refuses "too long for an agent account" { torq.agent.people = [ "dev" "abcdefghijklmnopqrstu" ]; users.users.abcdefghijklmnopqrstu.isNormalUser = true; } "torq-agent-abcdefghijklmnopqrstu (the account made for abcdefghijklmnopqrstu's agent) is longer than an account's and its group's name may be (31 characters on NixOS): abcdefghijklmnopqrstu is too long a name for an agent of its own (at most 20 characters)")
+    (let ms = ours (failing { torq.agent.people = [ "dev" "abcdefghijklmnopqrst" ]; users.users.abcdefghijklmnopqrst.isNormalUser = true; }); in
+      if ms == [ ] then "20 characters fit an agent account" else throw "agent-assertions: a name of 20 characters is refused with no doctor mode: ${builtins.toJSON ms}")
+    (refuses "too long for a resident account, where doctor mode is on" { torq.agent.doctor = doctorOn; torq.agent.people = [ "dev" "abcdefghijklmnopqr" ]; users.users.abcdefghijklmnopqr.isNormalUser = true; } "torq-resident-abcdefghijklmnopqr (the account made for abcdefghijklmnopqr's agent) is longer")
+    (refuses "too long for a resident account, said" { torq.agent.doctor = doctorOn; torq.agent.people = [ "dev" "abcdefghijklmnopqr" ]; users.users.abcdefghijklmnopqr.isNormalUser = true; } "at most 17 characters")
     (refuses "SETENV on the launcher's rule" ({ config, ... }: {
       security.sudo.extraRules = [{ groups = [ "wheel" ]; commands = [{ command = "${config.torq.agent.launcher}/bin/torq-agent-run"; options = [ "NOPASSWD" "SETENV" ]; }]; }];
     }) "a rule for torq-agent-run with SETENV")
@@ -73,8 +78,8 @@ let
     (let plain = configOf { }; doctor = configOf { torq.agent.doctor = doctorOn; }; engine = configOf (withEngine { }); has = c: c.systemd.services ? "torq-agent@dev" || c.systemd.sockets ? "torq-agent@dev"; in
       if !(has plain) && !(has doctor) && has engine
         && !(plain.users.users ? torq-resident-dev) && doctor.users.users ? torq-resident-dev && !(engine.users.users ? torq-resident-dev)
-        && (builtins.fromJSON engine.environment.etc."torq/agent-tools.json".text) == { tools = [ "claude-code" ]; engine = "claude-code"; }
-        && (builtins.fromJSON plain.environment.etc."torq/agent-tools.json".text) == { tools = [ ]; engine = null; }
+        && (builtins.fromJSON engine.environment.etc."torq/agent-tools.json".text) == { tools = [ "claude-code" ]; engine = "claude-code"; plainCommand = true; }
+        && (builtins.fromJSON plain.environment.etc."torq/agent-tools.json".text) == { tools = [ ]; engine = null; plainCommand = false; }
       then "the service is where an engine is"
       else throw "agent-assertions: the agent's service is not exactly where an engine is chosen")
     # The old switch for the service is gone, and says what took its place.
@@ -88,6 +93,10 @@ let
         && sc.ProtectSystem == "strict" && sc.ReadWritePaths == [ "/var/lib/torq-agent-dev" ] && sc.InaccessiblePaths == [ "-/run/credentials" ]
         && sc.StateDirectory == "torq-agent-memory/dev" && sc.RestrictNamespaces && sc.ProtectControlGroups
         && !(sc ? LoadCredential) && !(sc ? ExecStartPre) && !(sc ? Delegate) && !(sc ? RemoveIPC)
+        # Decided, not forgotten (2026-11-15): no MemoryDenyWriteExecute. Claude Code 2.1.316 itself runs with it,
+        # Node 24 crashes with it; the engine runs a developer's programs (node and the like), as `torq agent run`
+        # does, so it stays off. And a /dev/shm of the unit's own.
+        && !(sc ? MemoryDenyWriteExecute) && sc.TemporaryFileSystem == [ "/dev/shm:mode=1777,nosuid,nodev" ]
       then "the unit is the bridge, fenced"
       else throw "agent-assertions: the agent's unit is not as it should be: ${builtins.toJSON sc}")
     # `claude` typed plainly (torq.agent.plainCommand): a command of TorqOS's on every person's PATH, there
@@ -98,7 +107,7 @@ let
       plain = c: lib.filter (p: lib.getName p == "claude") c.environment.systemPackages;
       on = plain (configOf chosen);
     in
-      if lib.length on == 1 && lib.hasInfix "/bin/torq agent run --share \"$PWD\" -- claude \"$@\"" (lib.head on).text
+      if lib.length on == 1 && lib.hasInfix "/bin/torq agent claude \"$@\"" (lib.head on).text
         && plain (configOf { imports = [ chosen ]; torq.agent.plainCommand = false; }) == [ ]
         && plain (configOf { }) == [ ] && plain (configOf { torq.agent.tools = [ "claude-code" ]; }) == [ ]
       then "claude typed plainly: where it is installed and the setting is on"

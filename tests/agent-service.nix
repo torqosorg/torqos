@@ -71,6 +71,8 @@ pkgs.testers.runNixOSTest {
     users.users.alice.hashedPasswordFile = lib.mkForce null;
     users.users.alice.hashedPassword = hash;
     users.users.bob = { isNormalUser = true; hashedPasswordFile = lib.mkForce null; hashedPassword = hash; };
+    # carol has no agent, and a Claude Code of her own in her own profile (a stand-in that says so).
+    users.users.carol = { isNormalUser = true; hashedPasswordFile = lib.mkForce null; hashedPassword = hash; packages = [ (pkgs.writeShellScriptBin "claude" "echo \"carol's own, as $(id -un)\"") ]; };
     torq.agent.people = [ "alice" "bob" ];
     torq.broker.rebuildCommand = "true";
     # The engine: Claude Code chosen, allowed, installed for the agents, and standing in. No doctor mode.
@@ -120,7 +122,7 @@ pkgs.testers.runNixOSTest {
         found = [e for e in schema["settings"] if e.get("loc") == ["torq", "agent", "engine"]]
         assert len(found) == 1 and found[0]["type"]["name"] == "nullOr" and found[0]["type"]["elem"]["values"] == ["claude-code"], found
         assert not [e for e in schema["settings"] if e.get("loc") == ["torq", "agent", "service", "enable"]], "the old switch is gone"
-        assert json.loads(machine.succeed("cat /etc/torq/agent-tools.json")) == {"tools": ["claude-code"], "engine": "claude-code"}
+        assert json.loads(machine.succeed("cat /etc/torq/agent-tools.json")) == {"tools": ["claude-code"], "engine": "claude-code", "plainCommand": True}
         machine.fail("test -e /etc/torq/agent.json")
         machine.fail("getent passwd torq-resident-alice")
 
@@ -156,13 +158,15 @@ pkgs.testers.runNixOSTest {
 
     with subtest("not signed in: said, with what to do; signed in as the person would, it answers"):
         code, out = machine.execute("su - alice -c 'torq ask hello' 2>&1")
-        assert code != 0 and "Claude Code is not signed in for your agent" in out and "`torq agent run -- claude`" in out and "/login" in out, out
+        assert code != 0 and "Claude Code is not signed in for your agent. Sign it in once, in a terminal: type `claude`, then type /login" in out, out
+        assert "(Starting it is an administrator's command: if you are not one, ask one.)" in out, out
         assert "Not logged in" not in out and "Hello" not in out, out
         # The engine that was not signed in is ended: the next question is asked of one that sees the sign-in.
         machine.wait_until_fails(engine, timeout=30)
         assert raw("alice", {"type": "status"}) == status(False, 0, 1)
-        # As the message says: the tool, as her agent, at a terminal (the stand-in's own word for /login).
-        assert as_user("alice", "torq agent run -- claude --stand-in-login").strip() == "signed in"
+        # As the message says: `claude`, typed at a terminal (here in her home: nothing is shared, and it runs as her
+        # agent all the same), then the stand-in's own word for /login.
+        assert as_user("alice", "claude --stand-in-login").strip() == "signed in"
         assert machine.succeed(f"stat -c %U {home}/.stand-in/signed-in").strip() == "torq-agent-alice"
 
     with subtest("torq ask: alice's agent answers her; the service and the engine run as her agent"):
@@ -185,7 +189,7 @@ pkgs.testers.runNixOSTest {
         assert machine.succeed(f"readlink {home}/.claude/skills/torqos").strip() == "/etc/torq/skills/torqos"
         assert machine.succeed(f"stat -c %U {home}/.claude.json").strip() == "torq-agent-alice"
 
-    with subtest("the conversation is the engine's, one process for it; what the service keeps, only it writes; erasable"):
+    with subtest("the conversation is the engine's, one process for it; what the service keeps is its name and a count, out of reach of torq agent run; deleted by forget"):
         out = as_user("alice", "torq ask 'remember?'")
         assert out.strip() == "You said hello.", out
         assert machine.succeed(engine).split() == epid, "the same process: one conversation"
@@ -198,9 +202,15 @@ pkgs.testers.runNixOSTest {
         as_user("alice", f"torq agent run -- cat {mem}/conversation.json", ok=False)
         assert as_user("alice", "torq agent run -- ls -A /var/lib/torq-agent-memory").strip() == ""
         assert raw("alice", {"type": "status"}) == status(False, 2, 1)
+        # The engine's own record of the conversation, where it keeps it in the agent's home, with what was said.
+        record = machine.succeed(f"find {home}/.claude/projects -name {kept['session']}.jsonl").strip()
+        assert record.startswith(f"{home}/.claude/projects/") and "hello" in machine.succeed(f"cat {record}"), record
         out = as_user("alice", "torq ask --forget")
         assert out.strip() == "The conversation is deleted. Your next question starts a new one.", out
         machine.fail(f"test -e {mem}/conversation.json")
+        # Forget is true: the engine's record is deleted too, and no other conversation's is left of this agent.
+        machine.fail(f"test -e {record}")
+        assert machine.succeed(f"find {home}/.claude/projects -name '*.jsonl'").strip() == "", "a conversation's record is left after forget"
         # Forget ends the engine's process; the next question starts another, with nothing to continue.
         machine.fail(engine)
         assert as_user("alice", "torq ask 'remember?'").strip() == "I remember nothing."
@@ -213,8 +223,9 @@ pkgs.testers.runNixOSTest {
     with subtest("what the engine sees and may do, from inside: its own home and nothing of anyone else's, no privilege"):
         machine.succeed("chmod 755 /home/alice && echo open > /home/alice/open && chmod 644 /home/alice/open && echo outside > /tmp/outside && chmod 644 /tmp/outside")
         machine.succeed("install -d -m 1777 /srv/open")
+        machine.succeed("echo left-by-another > /dev/shm/outside && chmod 644 /dev/shm/outside")
         # The control: the agent account, outside the service, reads both, and writes where anyone may.
-        machine.succeed("setpriv --reuid torq-agent-alice --regid torq-agent-alice --clear-groups cat /home/alice/open /tmp/outside")
+        machine.succeed("setpriv --reuid torq-agent-alice --regid torq-agent-alice --clear-groups cat /home/alice/open /tmp/outside /dev/shm/outside")
         machine.succeed("setpriv --reuid torq-agent-alice --regid torq-agent-alice --clear-groups sh -c 'touch /srv/open/x && rm /srv/open/x'")
         out = as_user("alice", "torq ask look 2>/tmp/err")
         seen = json.loads(out)
@@ -234,6 +245,20 @@ pkgs.testers.runNixOSTest {
         assert seen["write /srv/open"] == "OSError", seen
         # No capability, and none to gain.
         assert seen["caps"] == ["0000000000000000"] * 3 and seen["no new privs"] == ["1"], seen
+        # /dev/shm is the unit's own: what another account left in the machine's is not there (the control,
+        # above: the same account outside the service reads it), and what the engine writes there is.
+        assert seen["/dev/shm/outside"] == "FileNotFoundError" and seen["/dev/shm"] == [] and seen["write /dev/shm"] == "written", seen
+        assert "TemporaryFileSystem=/dev/shm:mode=1777,nosuid,nodev\n" in machine.succeed(f"systemctl cat {unit}")
+        # What is so, recorded: the engine has the service's uid, and can write where the service keeps the
+        # conversation's name (so the service trusts nothing it finds there: agent/src/service/kept.rs).
+        assert seen["write state"] == "written", seen
+        # Its PATH: its own profile, then the system's; none of the set-id wrappers.
+        assert seen["path"] == "/etc/profiles/per-user/torq-agent-alice/bin:/run/current-system/sw/bin", seen
+        # It cannot trace the bridge that started it, nor open its memory (the same uid, not its descendant:
+        # refused, or not there for it at all); a child of its own, it can (the control for the memory).
+        assert seen["trace parent"] in ("errno 1", "errno 3"), seen
+        assert seen["parent's memory"] in ("PermissionError", "FileNotFoundError"), seen
+        assert seen["child's memory"] == "opened", seen
         machine.succeed("chmod 700 /home/alice")
         # The same, of the service's own view of the machine (its mount namespace, as the agent).
         inside = f"nsenter -t {prop('MainPID')} -m -- setpriv --reuid torq-agent-alice --regid torq-agent-alice --clear-groups"
@@ -294,10 +319,10 @@ pkgs.testers.runNixOSTest {
         # The engine itself, the agent's account, cannot reach its own person's socket either.
         machine.fail(f"su -s /bin/sh torq-agent-alice -c 'socat -t 5 - UNIX-CONNECT:{sock} </dev/null'")
         # bob's own agent is his, and runs as his agent account, in his agent's home. He is no administrator, so
-        # he cannot run `torq agent run` to sign in (KNOWN-GAPS): he is told he is not signed in; signed in for
+        # he cannot start `claude` to sign in (KNOWN-GAPS): he is told he is not signed in, and to ask one; signed in for
         # him here as root would have to, it answers him.
         code, out = machine.execute("su - bob -c 'torq ask hello' 2>&1")
-        assert code != 0 and "Claude Code is not signed in for your agent" in out, out
+        assert code != 0 and "Claude Code is not signed in for your agent" in out and "if you are not one, ask one" in out, out
         machine.succeed("setpriv --reuid torq-agent-bob --regid torq-agent-bob --clear-groups env HOME=/var/lib/torq-agent-bob /etc/profiles/per-user/torq-agent-bob/bin/claude --stand-in-login")
         assert as_user("bob", "torq ask hello").strip() == "Hello alice."
         assert machine.succeed("ps -o user= -p $(systemctl show -P MainPID torq-agent@bob.service)").strip() == "torq-agent-bob"
@@ -405,38 +430,98 @@ pkgs.testers.runNixOSTest {
         assert machine.succeed(engine).strip() == epid
 
     with subtest("claude typed plainly: Claude Code as her agent, in the folder she is in, every word passed on"):
-        # TorqOS's own command, on her PATH; the tool itself is in her agent's profile and not in hers.
+        # TorqOS's own command, on her PATH: `torq agent claude`, which she could type herself. The tool itself
+        # is in her agent's profile and not in hers.
         assert as_user("alice", "command -v claude").strip() == "/run/current-system/sw/bin/claude"
         machine.fail("test -e /etc/profiles/per-user/alice/bin/claude")
-        machine.succeed("grep -q 'agent run --share \"$PWD\" -- claude \"$@\"' /run/current-system/sw/bin/claude")
+        machine.succeed("grep -q 'bin/torq agent claude \"$@\"' /run/current-system/sw/bin/claude")
         as_user("alice", "mkdir -p ~/work")
         words = ["--dangerously-skip-permissions", "--model", "a b", "it's \"quoted\" $HOME *", "--continue", "--", "-x"]
         out = json.loads(as_user("alice", "cd ~/work && " + shlex.join(["claude"] + words) + " 2>/tmp/err").strip().splitlines()[-1])
         # As her agent, in that folder, with every word as she typed it.
         assert out == {"args": words, "user": "torq-agent-alice", "cwd": "/home/alice/work"}, out
-        assert "Shared with your agent (torq-agent-alice): /home/alice/work" in machine.succeed("cat /tmp/err")
+        # The first time the folder is shared, it is said, with how to take it back; after that, nothing.
+        err = machine.succeed("cat /tmp/err")
+        assert "Shared with your agent (torq-agent-alice): /home/alice/work" in err and "To take that back: setfacl -R -P -x u:torq-agent-alice,d:u:torq-agent-alice -- /home/alice/work" in err, err
+        out = json.loads(as_user("alice", "cd ~/work && claude --again 2>/tmp/err").strip().splitlines()[-1])
+        assert out["cwd"] == "/home/alice/work" and machine.succeed("cat /tmp/err") == "", machine.succeed("cat /tmp/err")
+        # Typed out in full, it is the same command.
+        out = json.loads(as_user("alice", "cd ~/work && torq agent claude --typed-out 2>/dev/null").strip().splitlines()[-1])
+        assert out == {"args": ["--typed-out"], "user": "torq-agent-alice", "cwd": "/home/alice/work"}, out
         # From a script and another shell, its input passed on, and its exit status hers to read.
         out = json.loads(as_user("alice", "cd ~/work && printf 'from a pipe' | sh -c 'claude --stand-in-stdin' 2>/dev/null").strip().splitlines()[-1])
         assert out["stdin"] == "from a pipe" and out["cwd"] == "/home/alice/work", out
         code, _ = machine.execute("su - alice -c 'cd ~/work && claude --stand-in-exit 7' 2>/dev/null")
         assert code == 7, code
-        # In a folder that cannot be shared, it says why and what to do; nothing is run.
+
+    with subtest("claude where the folder is never shared: it runs all the same, with nothing shared, and says so in one line"):
+        as_user("alice", "mkdir -p ~/.ssh ~/.config/x && echo key > ~/.ssh/id")
+        nothing = "Nothing is shared with your agent here ({}): it works in its own folder. To let it work on a project, go into that project's folder first (cd ~/<folder>)\n"
+        for where, why in [
+            ("~", "this is your home folder itself"),
+            ("/etc", "this folder is outside your home"),
+            ("~/.ssh", "this is a hidden folder of your home, where keys and settings live"),
+            ("~/.config/x", "this is a hidden folder of your home, where keys and settings live"),
+        ]:
+            out = json.loads(as_user("alice", f"cd {where} && claude --version 2>/tmp/err").strip().splitlines()[-1])
+            # It ran, as her agent, in the agent's own folder: nothing of hers bound in.
+            assert out == {"args": ["--version"], "user": "torq-agent-alice", "cwd": home}, (where, out)
+            err = machine.succeed("cat /tmp/err")
+            assert err == nothing.format(why), (where, err)
+            assert "--share" not in err, err
+        # Nothing of those folders was given to the agent.
+        for kept in ["/home/alice", "/home/alice/.ssh", "/home/alice/.ssh/id", "/home/alice/.config/x"]:
+            assert "torq-agent-alice" not in machine.succeed(f"getfacl -p {kept}"), kept
+        # Words passed on from anywhere, as the real one's `claude -p "hi"` would be (the stand-in only says how it was started).
+        out = json.loads(as_user("alice", "cd ~ && claude --stand-in-plain -x hi 2>/dev/null").strip().splitlines()[-1])
+        assert out["args"] == ["--stand-in-plain", "-x", "hi"] and out["cwd"] == home, out
+        # Naming a hidden folder herself is refused, with why; nothing runs, nothing is shared.
         before = len(starts())
-        out = machine.fail("su - alice -c claude 2>&1")
-        assert "is your home itself" in out and "go into a folder inside it first" in out, out
-        out = machine.fail("su - alice -c 'cd /etc && claude' 2>&1")
-        assert "is not inside your home" in out and "Go into one first" in out, out
-        # Someone with no agent, and an agent's own account: each told so.
+        out = machine.fail("su - alice -c 'torq agent run --share ~/.ssh -- true' 2>&1")
+        assert "/home/alice/.ssh is a hidden folder of your home" in out and "Your keys, sign-ins and settings live there" in out and "share a folder of your own work instead" in out, out
+        out = machine.fail("su - alice -c 'torq agent run --share ~ -- true' 2>&1")
+        assert "is your home folder itself" in out and "or name one with --share" not in out, out
+        assert "torq-agent-alice" not in machine.succeed("getfacl -p /home/alice/.ssh")
+        assert len(starts()) == before
+
+    with subtest("who cannot: someone with no agent, an agent's own account, someone who is not an administrator, each told why"):
+        before = len(starts())
         out = machine.fail("cd /root && claude 2>&1")
         assert "you have no agent account on this machine" in out, out
         out = machine.fail("su -s /bin/sh torq-agent-alice -c 'cd /var/lib/torq-agent-alice && /run/current-system/sw/bin/claude' 2>&1")
         assert "an agent's account already" in out, out
-        # bob has an agent and is no administrator: `torq agent run` is not his to start (sudo's rule, as it was).
+        # bob has an agent and is no administrator: starting a program as it is not his today. He is told so in
+        # one sentence, before sudo would ask him for a password it then refuses; who may is sudo's rule, as it was.
         machine.succeed("su - bob -c 'mkdir -p ~/work'")
-        machine.fail("su - bob -c 'cd ~/work && claude --version </dev/null'")
+        for cmd in ["cd ~/work && claude --version", "claude --version", "torq agent run -- true", "torq agent run --share ~/work -- true"]:
+            out = machine.fail(f"su - bob -c {shlex.quote(cmd)} 2>&1 </dev/null")
+            assert "Only an administrator of this machine can start a program as their agent today, and you are not one: ask an administrator." in out, (cmd, out)
+            assert "password" not in out.lower() and "Nothing is shared" not in out, (cmd, out)
+        assert "torq-agent-bob" not in machine.succeed("getfacl -p /home/bob/work")
+        # The control, that it is sudo's rule and not only torqcli's word: the launcher itself, through sudo, is refused him.
+        launcher = machine.succeed("readlink -f /run/current-system/sw/bin/torq-agent-run").strip()
+        machine.fail(f"su - bob -c 'sudo -n {launcher} -- true' </dev/null")
+        machine.succeed(f"su - alice -c 'sudo -n {launcher} -- true' </dev/null")
         assert len(starts()) == before, "none of them ran the tool"
-        # Inside the sandbox, `claude` is the tool itself (the agent's own profile first), not this command again.
+
+    with subtest("a Claude Code of a person's own is found before TorqOS's command, and runs as them"):
+        # carol installed one in her own profile (a stand-in): her PATH has her profile before the system's.
+        assert as_user("carol", "command -v claude").strip() == "/etc/profiles/per-user/carol/bin/claude"
+        assert as_user("carol", "claude").strip() == "carol's own, as carol"
+        # The control: alice has none of her own, and gets TorqOS's (above).
+        assert as_user("alice", "command -v claude").strip() == "/run/current-system/sw/bin/claude"
+        # Inside the sandbox, `claude` is the tool itself (the agent's own profile first), not TorqOS's command again.
         assert as_user("alice", "torq agent run -- sh -c 'command -v claude'").strip() == "/etc/profiles/per-user/torq-agent-alice/bin/claude"
+
+    with subtest("a second claude in another terminal: told to close the first, in plain words"):
+        machine.succeed("su - alice -c \"tmux new-session -d -s c 'cd ~/work && claude --stand-in-sleep 600'\"")
+        machine.wait_until_succeeds("pgrep -u torq-agent-alice -f 'bin/claude --stand-in-sleep 600'", timeout=30)
+        out = machine.fail("su - alice -c 'cd ~/work && claude --version' 2>&1")
+        assert "Claude Code is already open as your agent in another terminal: close that one first." in out, out
+        assert "nothing was shared and nothing was started (the line above says why)" in out, out
+        assert prop("FreezerState") == "running"
+        machine.succeed("su - alice -c 'tmux kill-session -t c'")
+        machine.wait_until_fails("pgrep -u torq-agent-alice -f 'stand-in-sleep'", timeout=30)
         # And the service answers after all of it.
         assert as_user("alice", "torq ask hello").strip() == "Hello alice."
 
@@ -455,7 +540,7 @@ pkgs.testers.runNixOSTest {
         hidden = machine.succeed("pgrep -n -u torq-agent-alice -f 'undumpable 604'").strip()
         assert machine.succeed(f"stat -c %u /proc/{hidden}/status").strip() == "0", "its /proc files are root's"
         out = machine.fail("su - alice -c 'torq agent run --share ~/project -- true' 2>&1")
-        assert "is running already" in out, out
+        assert "A program is already running as your agent, in another terminal or left from earlier: close or end that one first." in out, out
         assert prop("FreezerState") == "running"
         machine.succeed("su - alice -c 'tmux kill-session -t u'")
         machine.wait_until_fails("pgrep -u torq-agent-alice -f 'undumpable 604'", timeout=30)
@@ -465,7 +550,7 @@ pkgs.testers.runNixOSTest {
         machine.wait_until_succeeds("pgrep -u torq-agent-alice -x sleep", timeout=30)
         machine.succeed("rm -f /tmp/freezer-seen")
         out = machine.fail("su - alice -c 'torq agent run --share ~/project -- true' 2>&1")
-        assert "is running already" in out, out
+        assert "A program is already running as your agent" in out and "close or end that one first" in out, out
         machine.fail("test -s /tmp/freezer-seen")
         assert prop("FreezerState") == "running"
         # And the service answers while that session runs: the two together.

@@ -6,7 +6,8 @@
 #
 # Like the real one: it must be signed in (here `claude --stand-in-login`, which the test runs as the person
 # would run `claude` and type /login: under `torq agent run`), and says so in the real one's words when it is
-# not; it keeps its conversations in the account's home, named by a session, and continues one with `--resume`
+# not; it keeps its conversations in the account's home where the real one does (`~/.claude/projects/<folder>/
+# <session>.jsonl`, so forgetting one is the same code as for the real one), and continues one with `--resume`
 # (an unknown one fails as the real one's does); it reads `~/.claude.json` and starts the MCP server TorqOS
 # linked there, which is how it looks at the machine and proposes a change.
 #
@@ -14,7 +15,7 @@
 #   hello          "Hello alice."
 #   remember?      whether `hello` was asked earlier in this conversation
 #   attached?      whether the question came with something the person attached
-#   look           what this account can see and write from where it runs (said as a command run)
+#   look           what this account can see, write and trace from where it runs (said as a command run)
 #   alarms         TorqOS's `show_alarms`, through torq-mcp
 #   install htop   TorqOS's `propose_change`, through torq-mcp
 #   slow           starts programs that go where a tool's may (a session of their own, out of sight), then waits
@@ -29,7 +30,7 @@ pkgs.writeScriptBin "claude" ''
 
   home = os.environ["HOME"]
   state = os.path.join(home, ".stand-in")
-  os.makedirs(os.path.join(state, "sessions"), exist_ok=True)
+  os.makedirs(state, exist_ok=True)
   args = sys.argv[1:]
   signed_in = os.path.join(state, "signed-in")
 
@@ -43,11 +44,15 @@ pkgs.writeScriptBin "claude" ''
 
   if "-p" not in args:
       # At a terminal (`torq agent run -- claude …`, or `claude` typed plainly): it says how it was started —
-      # with `--stand-in-stdin`, what its input held too — and ends, with the status after `--stand-in-exit`.
+      # with `--stand-in-stdin`, what its input held too — and ends (after `--stand-in-sleep <seconds>`, if
+      # given: a session left open), with the status after `--stand-in-exit`.
       said = {"args": args, "user": os.environ.get("USER"), "cwd": os.getcwd()}
       if "--stand-in-stdin" in args:
           said["stdin"] = sys.stdin.read()
       print(json.dumps(said))
+      if "--stand-in-sleep" in args:
+          sys.stdout.flush()
+          time.sleep(int(args[args.index("--stand-in-sleep") + 1]))
       sys.exit(int(args[args.index("--stand-in-exit") + 1]) if "--stand-in-exit" in args else 0)
 
   def out(o):
@@ -56,7 +61,9 @@ pkgs.writeScriptBin "claude" ''
 
   resume = args[args.index("--resume") + 1] if "--resume" in args else None
   session = resume or str(uuid.uuid4())
-  kept = os.path.join(state, "sessions", session + ".json")
+  # Where the real one keeps a conversation: ~/.claude/projects/<the folder it runs in, as a name>/<session>.jsonl.
+  kept = os.path.join(home, ".claude", "projects", os.getcwd().replace("/", "-"), session + ".jsonl")
+  os.makedirs(os.path.dirname(kept), exist_ok=True)
   asked = json.load(open(kept)) if os.path.exists(kept) else []
   lost = resume is not None and not os.path.exists(kept)
 
@@ -106,6 +113,26 @@ pkgs.writeScriptBin "claude" ''
       except Exception as e:
           return type(e).__name__
 
+  def trace(pid):
+      """ptrace(PTRACE_SEIZE) on `pid`, from a process that ends at once (so a trace that was taken ends with it): what came of it."""
+      code = "import ctypes, sys; c = ctypes.CDLL(None, use_errno=True); c.ptrace.argtypes = [ctypes.c_long, ctypes.c_long, ctypes.c_void_p, ctypes.c_void_p]; c.ptrace.restype = ctypes.c_long; r = c.ptrace(0x4206, int(sys.argv[1]), None, None); print('traced' if r == 0 else 'errno %d' % ctypes.get_errno())"
+      return subprocess.run([sys.executable, "-c", code, str(pid)], capture_output=True, text=True).stdout.strip()
+
+  def memory(pid):
+      """/proc/<pid>/mem opened to read and write: the kernel asks the same leave as for a trace."""
+      def opened():
+          os.close(os.open(f"/proc/{pid}/mem", os.O_RDWR))
+          return "opened"
+      return attempt(opened)
+
+  def childs_memory():
+      child = subprocess.Popen(["${pkgs.coreutils}/bin/sleep", "30"])
+      try:
+          return memory(child.pid)
+      finally:
+          child.kill()
+          child.wait()
+
   def look():
       """What this account sees and may write from here."""
       def write(path):
@@ -126,6 +153,19 @@ pkgs.writeScriptBin "claude" ''
           "write /srv/open": attempt(lambda: write("/srv/open/planted")),
           "caps": [l.split()[1] for l in open("/proc/self/status") if l.startswith(("CapEff", "CapBnd", "CapAmb"))],
           "no new privs": [l.split()[1] for l in open("/proc/self/status") if l.startswith("NoNewPrivs")],
+          # Its PATH, as the service made it.
+          "path": os.environ.get("PATH"),
+          # /dev/shm: the unit's own, so nothing another account left in the machine's is there; writable.
+          "/dev/shm": attempt(lambda: sorted(os.listdir("/dev/shm"))),
+          "/dev/shm/outside": attempt(lambda: open("/dev/shm/outside").read().strip()),
+          "write /dev/shm": attempt(lambda: write("/dev/shm/mine")),
+          # What the service keeps (its state directory): the engine has the service's uid, and can write it.
+          "write state": attempt(lambda: write(os.path.join("/var/lib/torq-agent-memory", (os.environ.get("USER") or "").removeprefix("torq-agent-"), "planted"))),
+          # The bridge that started it (its parent, the same uid): traced, and its memory opened.
+          "trace parent": trace(os.getppid()),
+          "parent's memory": memory(os.getppid()),
+          # The control for the memory: a child of its own, which it may open.
+          "child's memory": childs_memory(),
       }
 
   n = 0

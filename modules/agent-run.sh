@@ -61,7 +61,7 @@ fi
 # end (torqcli done with the walk, or gone however it went), then thaws — on every way out.
 if [ "${1-}" = --hold-frozen ]; then
   unit="torq-agent@$person.service"
-  frozen="" cgroup=""
+  frozen="" cgroup="" other="" claude=""
   # Thawed on every way out: tried three times; failing that, stopped — it is started by its socket,
   # so it comes back at the person's next ask, never left frozen for good. The exit code stays the
   # first thing that went wrong. (Run by the trap below.)
@@ -113,9 +113,23 @@ if [ "${1-}" = --hold-frozen ]; then
     if [ -n "$cgroup" ] && { [ "$cg" = "$cgroup" ] || [ "${cg#"$cgroup"/}" != "$cg" ]; }; then
       continue
     fi
-    echo "torq agent run: your agent ($agent) is running already (process ${p#/proc/}): one session at a time, and none while a directory is shared" >&2
-    exit 2
+    # One of the agent's, outside its service: noted (the first found), and whether any of them is Claude Code
+    # (told by a word of its command line: `claude`, or a path that ends so).
+    [ -n "$other" ] || other=${p#/proc/}
+    if [ -n "$({ tr '\0' '\n' < "$p/cmdline"; } 2>/dev/null | sed -n -e '/^claude$/p' -e '/\/claude$/p')" ]; then
+      claude=1
+    fi
   done
+  if [ -n "$other" ]; then
+    # Said for the person first (the usual one is Claude Code left open in another terminal); the detail after.
+    detail="(Its process is $other, as $agent. One program at a time runs as your agent while a folder is shared with it.)"
+    if [ -n "$claude" ]; then
+      echo "Claude Code is already open as your agent in another terminal: close that one first. $detail" >&2
+    else
+      echo "A program is already running as your agent, in another terminal or left from earlier: close or end that one first. $detail" >&2
+    fi
+    exit 2
+  fi
   echo frozen
   cat >/dev/null || true
   exit 0
@@ -175,7 +189,8 @@ exec unshare --mount --propagation private -- bash -euo pipefail -c '
     mount --move "$stage" "$share"
   fi
   # What the agent services keep (which conversation each person has, /var/lib/torq-agent-memory/<person>):
-  # written by each service alone, hidden from every program run here (ADR-051 3, step 2) — made first, as
+  # written by the service and, since it has the same uid, writable by the engine it runs (so the service trusts
+  # nothing it finds there); hidden from every program run here (ADR-051 3, step 2) — made first, as
   # root, so that it is there to hide.
   mkdir -p -m 0755 /var/lib/torq-agent-memory
   # The credentials systemd gives units: hidden as well, made first so that it is there to hide.

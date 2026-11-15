@@ -151,7 +151,7 @@ pkgs.testers.runNixOSTest {
         machine.fail("su - bob -c 'command -v claude'")
         assert as_alice("torq agent run -- sh -c 'command -v claude'").strip() == "/etc/profiles/per-user/torq-agent-alice/bin/claude"
         machine.succeed("test -x /run/current-system/sw/bin/torq-mcp")
-        assert json.loads(machine.succeed("cat /etc/torq/agent-tools.json")) == {"tools": ["claude-code"], "engine": "claude-code"}
+        assert json.loads(machine.succeed("cat /etc/torq/agent-tools.json")) == {"tools": ["claude-code"], "engine": "claude-code", "plainCommand": False}
 
     with subtest("the launcher links TorqOS into its settings, as the agent, keeping what was there"):
         # What the tool (or the person, through it) had set: kept.

@@ -89,12 +89,12 @@ pkgs.testers.runNixOSTest {
         out = in_session("torq-agent-ui --check")
         assert out.splitlines()[0] == "Idle · no conversation yet", out
         # What answers is said: the engine, and that what it reads leaves the machine.
-        assert "Claude Code · REMOTE: what it reads goes to its own service" in out, out
+        assert "Claude Code · what it reads goes to Anthropic" in out, out
         assert machine.succeed(f"ps -o user= -p $(systemctl show -P MainPID {unit})").strip() == "torq-agent-alice"
         # Not signed in yet: the same client says so, with what to do; alice does it, at a terminal.
         code, out = machine.execute("su - alice -c 'torq ask hello' 2>&1")
-        assert code != 0 and "Claude Code is not signed in for your agent" in out and "torq agent run -- claude" in out, out
-        assert machine.succeed("su - alice -c 'torq agent run -- claude --stand-in-login'").strip() == "signed in"
+        assert code != 0 and "Claude Code is not signed in for your agent" in out and "type `claude`, then type /login" in out, out
+        assert machine.succeed("su - alice -c 'claude --stand-in-login'").strip() == "signed in"
         assert in_session("torq ask hello").strip() == "Hello alice."
         assert in_session("torq-agent-ui --check").splitlines()[0] == "Idle · a conversation of 1 question"
         # The Agent page's Forget is a torqcli line: through her own socket, and the count says so.

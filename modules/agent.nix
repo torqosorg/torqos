@@ -1,9 +1,16 @@
-# The agents' accounts (ADR-041, ADR-051 3): one per person, `torq-agent-<person>` — the only accounts
+# The agents' accounts (ADR-041, ADR-051 3, ADR-055): one per person, `torq-agent-<person>` — the only accounts
 # whatever arrives from is an agent (ADR-040: the broker names its caller from the kernel's uid, and
 # its map, /etc/torq/broker.json, says which person each agent serves). An agent proposes, and only
-# what `torq.agent.mayPropose` lists and its own person's packages; a person applies. Each is made for
-# TorqOS's own agent (M5) and for the AI tools people already use — Claude Code first — run as it
-# rather than as the person.
+# what `torq.agent.mayPropose` lists and its own person's packages; a person applies.
+#
+# What runs as the account is the person's coding tool (ADR-055): Claude Code, the one TorqOS knows so far.
+# Three ways, one fence:
+# - the agent's service (`torq-agent@<person>`, where `torq.agent.engine` names an engine): the bridge that
+#   runs the engine for the desktop's AI and `torq ask`;
+# - `torq agent run [--share <folder>] -- <program>`: any program at a terminal, as the agent;
+# - `claude`, typed plainly (`torq.agent.plainCommand`): Claude Code as the agent, in the folder the person is in.
+# TorqOS's own loop (doctor mode, modules/ai.nix) is still in the tree and goes in phase 2
+# (docs/HARNESS-AS-A-SYSTEM.md).
 { config, lib, pkgs, utils, ... }:
 
 let
@@ -15,7 +22,11 @@ let
   # (ADR-055: the agent's service runs the person's engine, as the agent account); it is still made where doctor
   # mode is on, for the broker's rule about it, and goes with both (docs/HARNESS-AS-A-SYSTEM.md, phase 2).
   residentOf = person: "torq-resident-${person}";
-  fits = p: lib.stringLength (residentOf p) <= 31;
+  # The longest account made for a person must fit (31 characters, as NixOS takes a group's): the agent's, and
+  # where doctor mode is on the old loop's `torq-resident-<person>`, which is three longer.
+  longestOf = p: if resident then residentOf p else agentOf p;
+  nameLimit = if resident then 17 else 20;
+  fits = p: lib.stringLength (longestOf p) <= 31;
   # The launcher's sudo rules that would let its caller set the environment (SETENV), as text or as rules.
   isLauncher = c: lib.hasInfix "torq-agent-run" (if builtins.isString c then c else c.command);
   launcherSetenv = lib.filter (c: isLauncher c && !(builtins.isString c) && builtins.elem "SETENV" c.options) (lib.concatMap (r: r.commands) config.security.sudo.extraRules)
@@ -152,12 +163,18 @@ let
       RestrictRealtime = true;
       RestrictSUIDSGID = true;
       LockPersonality = true;
-      # Not MemoryDenyWriteExecute: an engine is a JavaScript program (Claude Code), whose runtime writes the
-      # code it then runs; with it the engine does not start. `torq agent run` never had it.
+      # Not MemoryDenyWriteExecute. Claude Code 2.1.316 itself runs with it (tried by hand, 2026-11-15); Node 24
+      # does not (it crashes at its start: its runtime writes the code it then runs). It stays off because the
+      # engine runs a developer's programs (node and the like), which must work here as they do under `torq
+      # agent run`, which never had it. (tests/agent-assertions.nix holds the decision.)
       # Its own IPC namespace: what the engine makes there goes with the unit. Not RemoveIPC: that takes away
       # the account's objects on the whole machine when this unit stops, and the account is also the one a
       # `torq agent run` session at a terminal runs as.
       PrivateIPC = true;
+      # And a /dev/shm of its own, empty at each start and gone with the unit: the machine's is one every
+      # account can write to and read from, so a file another account left there is not the engine's to find,
+      # and what the engine leaves there is no one else's (PrivateIPC covers the message queues, not this).
+      TemporaryFileSystem = [ "/dev/shm:mode=1777,nosuid,nodev" ];
       KeyringMode = "private";
       UMask = "0077";
       # Unix sockets (the broker), the network (the engine's own service), and netlink (a program reads the
@@ -176,13 +193,14 @@ let
   claudeChosen = builtins.elem "claude-code" cfg.tools;
   claudeAllowed = config.torq.unfree.all || builtins.elem "claude-code" config.torq.unfree.packages;
   claudeCode = pkgs.claude-code.override { manifest = lib.importJSON ./claude-code-manifest.json; };
-  # `claude`, typed plainly (torq.agent.plainCommand): Claude Code as the person's agent, the folder they are in
+  # `claude`, typed plainly (torq.agent.plainCommand): `torq agent claude` (cli/src/agent.rs), a command a person
+  # could type themselves. Claude Code as the person's agent, the folder they are in
   # shared with it, every word after it passed on as it is. On every person's PATH, after their own profile
   # (a Claude Code of their own is found first). Inside the sandbox the agent's own profile comes before the
   # system's, so `claude` there is the real one; were it missing, this would be found again and `torq agent
   # run` would refuse it ("an agent's account already"): it cannot start itself over and over.
   plainClaude = pkgs.writeShellScriptBin "claude" ''
-    exec ${lib.getExe' config.torq.cli.package "torq"} agent run --share "$PWD" -- claude "$@"
+    exec ${lib.getExe' config.torq.cli.package "torq"} agent claude "$@"
   '';
   # `torq agent run` (ADR-041, 5): a person starts a program as their own agent. This runs as root
   # (through sudo), hides every home and the people's runtime directories, gives a private /tmp,
@@ -224,12 +242,13 @@ in
     defaultText = lib.literalExpression "[ config.torq.user ]";
     example = [ "alice" "bob" ];
     description = ''
-      The people who each get an agent account of their own, `torq-agent-<name>` (ADR-051 3): no
-      password, no login, no group but its own, its home /var/lib/torq-agent-<name> its own. Each
-      person's agent proposes packages only for that person (`users <name> packages`), and settings
-      only as `mayPropose.settings` allows; that person's trust covers it and no other. The owner, by
-      default. Each must be a person of this machine (a normal user), with a name of at most 17
-      characters (NixOS takes an account's and a group's name of at most 31).
+      The people who each get an agent of their own: an account `torq-agent-<name>` (ADR-051 3) with no
+      password, no login, no group but its own, and a home of its own (/var/lib/torq-agent-<name>). The
+      coding tool chosen as the engine (`torq agent engine`) runs as it: for the desktop's AI and `torq ask`,
+      for `claude` typed in a terminal, and for `torq agent run`. Each person's agent proposes packages only
+      for that person (`users <name> packages`), and settings only as `mayPropose.settings` allows. The
+      owner, by default. Each must be a person of this machine (a normal user), with a name of at most 20
+      characters (17 where doctor mode is on): NixOS takes an account's and a group's name of at most 31.
     '';
   };
 
@@ -238,11 +257,14 @@ in
     default = [ ];
     example = [ "claude-code" ];
     description = ''
-      The coding tools installed for each person's agent account (ADR-051 5): `claude-code`, Claude Code — in
-      the agent accounts' own profiles, on no person's PATH. It runs as the person's agent, never as the person:
-      `torq agent run --share <folder> -- claude`, its sign-in (a subscription's too) kept in the agent's home.
-      At each start the launcher links TorqOS's MCP server (torq-mcp) and skill into its settings there; what it
-      proposes is tainted and waits for the person (ADR-051 7). Claude Code is unfree: allow it first
+      The coding tools installed for each person's agent account (ADR-051 5): `claude-code`, Claude Code. The
+      program itself is in the agent accounts' own profiles, and it runs as the person's agent, never as the
+      person. What people get on their PATH is a command `claude` (`torq agent plainCommand`, on by default):
+      typed in a terminal, it runs Claude Code as their agent with the folder they are in shared with it;
+      `torq agent run --share <folder> -- claude` is the same, spelled out. Its sign-in (a subscription's too)
+      is kept in the agent's home. At each start TorqOS's tools (torq-mcp) and skill are linked into its
+      settings there; what it proposes always waits for the person (ADR-051 7). Claude Code is unfree
+      (its licence is not an open-source one, and nothing of that kind is installed unasked): allow it first
       (`set torq unfree packages claude-code`).
     '';
   };
@@ -252,12 +274,14 @@ in
     default = null;
     example = "claude-code";
     description = ''
-      The coding tool that is this machine's agent: `claude-code`, Claude Code. Every place in TorqOS that
-      offers AI (the agent's window and panel applet, `torq ask` at a terminal) then reaches it. It runs as
-      each person's own agent account, in the same sandbox as `torq agent run`: it sees its own home, not
-      yours, and can only propose a change to the system, which you approve. Install it for the agents first
-      (`set torq agent tools claude-code`), and sign in once: `torq agent run -- claude`, then /login. Not
-      set, the default: the machine has no agent to ask.
+      The engine: the program that answers when you ask your agent. `claude-code` is Claude Code. Every place
+      in TorqOS that offers AI (the agent's window and panel applet, `torq ask` at a terminal) then reaches
+      it. It runs as each person's own agent account, in the same sandbox as `torq agent run`: it sees its
+      own home, not yours, and can only propose a change to the system, which you approve. Install it for the
+      agents first (`set torq agent tools claude-code`), and sign in once, in a terminal: `claude`, then type
+      /login (`torq agent run -- claude` where `torq agent plainCommand` is off). Starting a program as the
+      agent is an administrator's command today: someone who is not one asks an administrator. Not set, the
+      default: the machine has no agent to ask.
     '';
   };
 
@@ -265,11 +289,14 @@ in
     type = lib.types.bool;
     default = true;
     description = ''
-      Typing `claude` in a terminal runs Claude Code as your agent, with the folder you are in shared with it:
-      the same as `torq agent run --share <that folder> -- claude`, and whatever you type after `claude` is
-      passed on to it unchanged. Off: `claude` is not a command; use `torq agent run`. Only where Claude Code
-      is one of `torq agent tools`. A Claude Code you installed in your own account is found first, and runs
-      as you, outside the agent's sandbox.
+      Typing `claude` in a terminal runs Claude Code as your agent (`torq agent claude`, which the command
+      is): the folder you are in is shared with it, as `torq agent run --share <that folder> -- claude` does,
+      and whatever you type after `claude` is passed on to it unchanged. In your home folder itself, outside
+      your home, or in a hidden folder of your home (~/.ssh, ~/.config: keys and settings live there) nothing
+      is shared: it says so in one line and works in the agent's own folder. Your instructions for your agent
+      (`torq agent instructions`) are given to it. Off: `claude` is not a command; use `torq agent run`. Only
+      where Claude Code is one of `torq agent tools`. A Claude Code you installed in your own account is
+      found first, and runs as you, outside the agent's sandbox.
     '';
   };
 
@@ -336,7 +363,7 @@ in
       }
       {
         assertion = fits p;
-        message = "torq.agent.people: ${residentOf p} (its resident agent's account) is longer than an account's and its group's name may be (31 characters on NixOS): ${p} is too long a name for an agent of its own (at most 17 characters).";
+        message = "torq.agent.people: ${longestOf p} (the account made for ${p}'s agent) is longer than an account's and its group's name may be (31 characters on NixOS): ${p} is too long a name for an agent of its own (at most ${toString nameLimit} characters).";
       }
       {
         assertion = !(lib.hasPrefix "torq-agent" p);
@@ -401,7 +428,8 @@ in
     # The coding tools chosen (the launcher links TorqOS into them at each start; the Agent page shows them),
     # and TorqOS's skill, linked into each (ADR-051 7): advice, which the tool may rewrite.
     # And the engine among them, if one is chosen (ADR-055 1): what the person's programs say answers them.
-    environment.etc."torq/agent-tools.json".text = builtins.toJSON { inherit (cfg) tools engine; };
+    # And whether `claude`, typed plainly, is a command here (what a person is told to type to sign in).
+    environment.etc."torq/agent-tools.json".text = builtins.toJSON { inherit (cfg) tools engine; plainCommand = claudeChosen && claudeAllowed && cfg.plainCommand; };
     environment.etc."torq/skills/torqos/SKILL.md".source = ./agent-skill.md;
     # Where the launcher binds a shared directory first, as root, before checking it (root's alone).
     systemd.tmpfiles.settings."10-torq-agent"."/run/torq-agent-stage".d = { mode = "0700"; user = "root"; group = "root"; };
