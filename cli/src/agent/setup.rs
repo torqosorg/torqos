@@ -126,6 +126,8 @@ pub struct Setup {
     pub tools: Vec<CodingTool>,
     /// Whether `claude`, typed plainly, is a command on this machine: what the person is told to type.
     pub plain: bool,
+    /// The person's standing instructions for their agent, as they stood when this was read.
+    pub instructions: super::instructions::Instructions,
 }
 
 /// A coding tool the agents may run (ADR-051 5): what it is, and whether this person's agent has it.
@@ -181,7 +183,7 @@ pub fn setup() -> anyhow::Result<Setup> {
     let service = std::path::Path::new(&torq_wire::agent::socket(&me)).exists();
     let written = std::fs::read_to_string(TOOLS_JSON).unwrap_or_default();
     let tools = tools_of(&written, agent.as_deref(), |p| p.exists());
-    Ok(Setup { me, agent, service, brain: brain()?, tools, plain: plain_command_of(&written) })
+    Ok(Setup { me, agent, service, brain: brain()?, tools, plain: plain_command_of(&written), instructions: super::instructions::mine() })
 }
 
 /// How long systemd has to say whether the service runs: a look is never held longer.

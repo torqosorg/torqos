@@ -75,6 +75,8 @@ enum Message {
     Ask,
     Heard(Event),
     Lost(String),
+    /// Something said beside the answer (the person's instructions could not be used: why).
+    Noted(String),
     Stop,
     Stopped(Result<Status, String>),
     Open,
@@ -259,7 +261,7 @@ impl cosmic::Application for Applet {
                 self.question.clear();
                 self.note = None;
                 self.talk.asked(&q);
-                return agentkit::ask(client, q, None, Message::Heard, Message::Lost);
+                return agentkit::ask(client, q, None, Message::Heard, Message::Lost, Message::Noted);
             }
             Message::Heard(e) => {
                 let over = matches!(e, Event::Done { .. });
@@ -268,6 +270,7 @@ impl cosmic::Application for Applet {
                     return self.update(Message::Look);
                 }
             }
+            Message::Noted(text) => self.note = Some(text),
             Message::Lost(why) => {
                 self.talk.lost(&why);
                 return self.update(Message::Look);

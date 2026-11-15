@@ -316,6 +316,8 @@ pub enum Message {
     // Agent:
     AgentLoaded(Result<AgentLook, String>),
     OpenAgent,
+    /// The person's instructions for their agent, opened in the desktop's text editor.
+    EditInstructions,
     /// Open the agent's window about something (ADR-051 4): a question, that thing attached.
     AskAgent(Handoff),
     /// The same about the failure beside it, or the draft's changes: built when pressed, not at every frame (a
@@ -1106,6 +1108,7 @@ impl Settings {
             }
             Message::AgentLoaded(r) => self.agent = r.into(),
             Message::OpenAgent => self.said_if_not(app::open_agent()),
+            Message::EditInstructions => self.said_if_not(app::edit_instructions()),
             // Off the window's thread (step 5's second review): systemd-run is waited for, bounded.
             Message::AskAgent(h) => return cosmic::task::future(async move { Message::AskedAgent(blocking(move || handoff::open_window(&h, None)).await) }),
             Message::AskAgentFailure => {
@@ -2079,6 +2082,22 @@ impl Settings {
             );
         }
         page = page.push(brain);
+        // Instructions for your agent: the person's own standing text, in their own home (their agent cannot
+        // write it). Shown as it stood when the page was opened; edited in the desktop's text editor.
+        let (text, trouble) = app::agent_instructions(&s.instructions);
+        let shown = widget::text::body(text).width(Length::Fill);
+        let shown = if trouble {
+            let theme = cosmic::theme::active();
+            shown.class(cosmic::theme::Text::Color(theme.cosmic().destructive_color().into()))
+        } else {
+            shown
+        };
+        page = page.push(
+            settings::section()
+                .title("Instructions for your agent")
+                .add(settings::item::builder("What your agent is always told").description(format!("{} Below is the text as it was when this page was opened.", torq::agent::instructions::WHAT_FOR)).control(widget::button::standard("Edit…").on_press(Message::EditInstructions)))
+                .add(settings::item_row(vec![shown.into()])),
+        );
         if let Some((kept, idle)) = app::agent_memory(look.status.as_ref(), s.agent.is_some() && s.service) {
             let forget = widget::button::destructive("Forget…").on_press_maybe((self.busy.is_none() && idle).then_some(Message::Forget));
             page = page.push(

@@ -120,6 +120,8 @@ enum Message {
     Ask,
     Heard(Event),
     Lost(String),
+    /// Something said beside the answer (the person's instructions could not be used: why).
+    Noted(String),
     Stop,
     Stopped(Result<Status, String>),
     Forget,
@@ -306,7 +308,7 @@ impl cosmic::Application for Window {
                 self.note = None;
                 self.talk.asked(&q);
                 // What was attached goes with it, once: untrusted text, it taints the session (the service says so).
-                return agentkit::ask(client, q, self.attached.take(), Message::Heard, Message::Lost);
+                return agentkit::ask(client, q, self.attached.take(), Message::Heard, Message::Lost, Message::Noted);
             }
             Message::Heard(e) => {
                 let over = matches!(e, Event::Done { .. });
@@ -315,6 +317,7 @@ impl cosmic::Application for Window {
                     return self.update(Message::Look);
                 }
             }
+            Message::Noted(text) => self.note = Some((text, false)),
             Message::Lost(why) => {
                 self.talk.lost(&why);
                 return self.update(Message::Look);

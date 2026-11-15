@@ -92,6 +92,9 @@ pub struct Client {
     uid: u32,
     quick: Duration,
     quiet: Duration,
+    /// The person's standing instructions for their agent: the file they are read from at each question
+    /// (none: a client that sends none — a test's).
+    instructions: Option<PathBuf>,
 }
 
 fn has_account(passwd: &str, name: &str) -> bool {
@@ -112,7 +115,7 @@ impl Client {
         if !has_account(&passwd, &agent) {
             return Err(Unreachable::NoAgent(agent));
         }
-        Ok(Client::at(Path::new(&socket(&me)), uid))
+        Ok(Client { instructions: super::instructions::path(), ..Client::at(Path::new(&socket(&me)), uid) })
     }
 
     /// The agent on `path`, which must be `uid`'s socket.
@@ -128,7 +131,7 @@ impl Client {
     }
 
     pub fn at(path: &Path, uid: u32) -> Client {
-        Client { path: path.to_path_buf(), uid, quick: QUICK, quiet: QUIET }
+        Client { path: path.to_path_buf(), uid, quick: QUICK, quiet: QUIET, instructions: None }
     }
 
     /// The same, with other bounds (a test's).
@@ -218,15 +221,23 @@ impl Client {
         }
     }
 
+    /// The same, reading the person's standing instructions from `file` (a test's; `mine` names the person's own).
+    pub fn with_instructions(self, file: &Path) -> Client {
+        Client { instructions: Some(file.to_path_buf()), ..self }
+    }
+
     /// Ask: the answer's events, as they come, `done` last. Dropping it before then ends the task (the
-    /// service stops what no one hears).
+    /// service stops what no one hears). The person's standing instructions for their agent go with the
+    /// question, read now from their own file; if there are some and they cannot be used, the question is asked
+    /// without them and the answer says so (`Answer::note`).
     pub fn ask(&self, text: &str, context: Option<String>) -> Result<Answer, Unreachable> {
-        let mut lines = self.send(&Request::Ask { text: text.to_string(), context })?;
+        let standing = self.instructions.as_deref().map_or(super::instructions::Instructions::None, super::instructions::read);
+        let mut lines = self.send(&Request::Ask { text: text.to_string(), context, instructions: standing.text().map(String::from) })?;
         // Each of an answer's events comes within `quiet` of the one before, and the whole of it within ANSWER_MAX: a
         // service that keeps it coming never holds the asker for ever.
         lines.deadline = Some(Instant::now() + ANSWER_MAX);
         lines.quiet = Some(self.quiet);
-        Ok(Answer { lines, over: false })
+        Ok(Answer { lines, over: false, note: standing.unusable().map(String::from) })
     }
 }
 
@@ -284,6 +295,16 @@ impl Lines {
 pub struct Answer {
     lines: Lines,
     over: bool,
+    /// Something the person is told with the answer, not part of it: their instructions for their agent could
+    /// not be used, and why. Said once, by whoever shows the answer.
+    note: Option<String>,
+}
+
+impl Answer {
+    /// What the person is told beside the answer (their instructions could not be used: why), once.
+    pub fn note(&mut self) -> Option<String> {
+        self.note.take()
+    }
 }
 
 impl Iterator for Answer {
@@ -370,6 +391,33 @@ mod tests {
         assert_eq!(asked.recv().unwrap(), r#"{"type":"ask","text":"why?"}"#);
     }
 
+
+    /// The person's standing instructions go with each question, read from their file when it is asked; none
+    /// written, none sent; a file that cannot be used is not sent, and the answer carries a note saying why, once.
+    #[test]
+    fn standing_instructions_are_sent_with_the_question() {
+        let (d, path, asked) = service(|_| vec![r#"{"type":"done","exit":0}"#.into()]);
+        let file = d.path().join("agent-instructions.md");
+        let c = quick(&path).with_instructions(&file);
+        let ask = |c: &Client| {
+            let mut a = c.ask("why?", None).unwrap();
+            let note = a.note();
+            assert_eq!(a.note(), None, "said once");
+            assert_eq!(a.collect::<Result<Vec<_>, _>>().unwrap(), [Event::Done { exit: 0 }]);
+            (asked.recv().unwrap(), note)
+        };
+        assert_eq!(ask(&c), (r#"{"type":"ask","text":"why?"}"#.to_string(), None), "no file: none sent");
+        std::fs::write(&file, "Always answer in German.\n").unwrap();
+        assert_eq!(ask(&c), (r#"{"type":"ask","text":"why?","instructions":"Always answer in German.\n"}"#.to_string(), None));
+        std::fs::write(&file, "Explain commands.").unwrap();
+        assert_eq!(ask(&c).0, r#"{"type":"ask","text":"why?","instructions":"Explain commands."}"#, "read again at each question");
+        std::fs::write(&file, "x".repeat(torq_wire::agent::MAX_INSTRUCTIONS + 1)).unwrap();
+        let (sent, note) = ask(&c);
+        assert_eq!(sent, r#"{"type":"ask","text":"why?"}"#, "too long: asked without them");
+        assert!(note.is_some_and(|n| n.starts_with("Your instructions for your agent are not used: they are longer than 16 KiB")));
+        // A client with no file named (a test's own) sends none, whatever the person has.
+        assert_eq!(ask(&quick(&path)), (r#"{"type":"ask","text":"why?"}"#.to_string(), None));
+    }
     #[test]
     fn status_stop_and_forget() {
         let (_d, path, asked) = service(|req| match req {

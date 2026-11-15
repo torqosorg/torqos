@@ -77,6 +77,8 @@ pkgs.testers.runNixOSTest {
         entry = machine.succeed("cat /run/current-system/sw/share/applications/org.torqos.AgentWindow.desktop")
         assert "Name=TorqOS Agent" in entry and "Exec=torq-agent-ui" in entry and "NoDisplay" not in entry, entry
         machine.succeed("test -x /run/current-system/sw/bin/torq-agent-ui")
+        # The desktop's text editor, which the Agent page opens a person's instructions for their agent in.
+        machine.succeed("test -x /run/current-system/sw/bin/cosmic-edit")
 
     with subtest("the applet's looking does not start the agent: only asking does"):
         # It has looked (every 10 s) for well over a minute of the session by now: it runs, so it has had its looks

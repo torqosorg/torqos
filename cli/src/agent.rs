@@ -19,6 +19,7 @@ pub mod client;
 pub mod conversation;
 pub mod crash;
 pub mod handoff;
+pub mod instructions;
 pub mod launcher;
 pub mod setup;
 /// What the agent says, as its service streams it (torq-wire's, for the programs built on this library).
@@ -63,7 +64,7 @@ pub(crate) struct Run {
 
 /// `run [--share <dir>] [--] [<command> …]`, after `agent`.
 pub(crate) fn parse(args: &[String]) -> Result<Run> {
-    let usage = "usage: torq agent run [--share <folder>] [--] [<command> …] — a program as your agent. Also: torq agent claude [<words for Claude Code> …] — Claude Code as your agent, in the folder you are in";
+    let usage = "usage: torq agent run [--share <folder>] [--] [<command> …] — a program as your agent. Also: torq agent claude [<words for Claude Code> …] — Claude Code as your agent, in the folder you are in; torq agent instructions [edit | clear] — what your agent is always told";
     let mut it = args.iter();
     if it.next().map(String::as_str) != Some("run") {
         bail!("{usage}");
@@ -321,9 +322,63 @@ pub(crate) fn plain(args: &[String]) -> Result<i32> {
     let home = PathBuf::from(std::env::var_os("HOME").context("HOME is not set: no home to share from")?);
     let here = std::env::current_dir().map_err(|_| NotShared::Gone).and_then(|d| shareable(&d, &home, rustix::process::getuid().as_raw()));
     let share = here.map_err(|why| eprintln!("{}", nothing_shared(why))).ok();
+    let standing = instructions::mine();
+    if let Some(why) = standing.unusable() {
+        eprintln!("{why}");
+    }
+    launch(&who, Run { share, command: plain_command(standing.text(), args) })
+}
+
+/// What `claude`, typed plainly, runs as the agent: Claude Code, given the person's standing instructions
+/// (`--append-system-prompt`, under a line that says whose words they are) before the person's own words, which
+/// follow unchanged. Before them, so that an `--append-system-prompt` of the person's own, later on the line,
+/// is the one Claude Code takes. (`torq agent run -- claude` gives no instructions: it runs what it is told.)
+pub(crate) fn plain_command(instructions: Option<&str>, args: &[String]) -> Vec<String> {
     let mut command = vec!["claude".to_string()];
+    if let Some(text) = instructions {
+        command.extend(["--append-system-prompt".to_string(), torq_wire::agent::standing(text)]);
+    }
     command.extend(args.iter().cloned());
-    launch(&who, Run { share, command })
+    command
+}
+
+/// `torq agent instructions [edit | clear]`: the person's standing instructions for their agent
+/// (`instructions`): where they are and what they say; `edit` opens them in the person's editor (`$VISUAL`,
+/// `$EDITOR`, else nano, else vi), making the file first; `clear` removes them.
+pub(crate) fn instructions(args: &[String]) -> Result<i32> {
+    use std::io::IsTerminal;
+    const USAGE: &str = "usage: torq agent instructions (shows them) | torq agent instructions edit | torq agent instructions clear";
+    if is_agent(&crate::me()?) {
+        bail!("this is an agent's account: a person's instructions for their agent are that person's to write, in their own home");
+    }
+    let file = instructions::path().context("HOME is not set: no home to keep your instructions in")?;
+    match args.iter().map(String::as_str).collect::<Vec<_>>().as_slice() {
+        [] => print!("{}", instructions::shown(&file, &instructions::read(&file))),
+        ["clear"] => {
+            let was = instructions::clear(&file).with_context(|| format!("removing {}", file.display()))?;
+            println!("{}", if was { "Your instructions for your agent are removed. It is told nothing of them from your next question on." } else { "There were no instructions for your agent to remove." });
+        }
+        ["edit"] => {
+            if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
+                bail!("torq agent instructions edit opens your editor: at a terminal. The file is {} (plain text: any editor will do)", file.display());
+            }
+            instructions::create(&file).with_context(|| format!("making {}", file.display()))?;
+            let editor = ["VISUAL", "EDITOR"].iter().find_map(|v| std::env::var(v).ok().filter(|e| !e.trim().is_empty()));
+            let editor = editor.unwrap_or_else(|| if crate::shell::which("nano") { "nano".into() } else { "vi".into() });
+            // As the shell would run $EDITOR (it may carry options: `code --wait`).
+            let status = Command::new("sh").arg("-c").arg(format!("{editor} \"$1\"")).arg("sh").arg(&file).status().with_context(|| format!("starting your editor ({editor})"))?;
+            if !status.success() {
+                bail!("the editor ({editor}) ended with an error; the file is {}", file.display());
+            }
+            match instructions::read(&file) {
+                instructions::Instructions::None => println!("No instructions for your agent (the file is empty)."),
+                instructions::Instructions::Text(_) => println!("Saved. Your agent is given them from your next question on, and when you next type `claude`."),
+                instructions::Instructions::Unusable(why) => bail!("{why}"),
+            }
+        }
+        _ => bail!("{USAGE}"),
+    }
+    Ok(0)
 }
 
 /// Run it: share the directory (ACLs, and the directory itself, open), then become the agent,
@@ -682,7 +737,11 @@ pub(crate) fn ask(args: &[String]) -> Result<i32> {
     // request each within the client's QUICK (15 s).
     use std::io::IsTerminal;
     let signals = std::io::stdin().is_terminal().then(Signals::hold).flatten();
-    let answer = agent.ask(&text, None)?;
+    let mut answer = agent.ask(&text, None)?;
+    // Instructions of the person's that could not be used: said once, beside the answer (it was asked without them).
+    if let Some(note) = answer.note() {
+        eprintln!("agent: {note}");
+    }
     let keys = if std::io::stdin().is_terminal() { Keys::watch(agent.clone(), signals) } else { None };
     // Stopped by the person (Ctrl-C): 130, as when they leave, whatever the task's own end.
     let stopped = || keys.as_ref().is_some_and(|k| k.stopped.load(std::sync::atomic::Ordering::Relaxed));
@@ -856,6 +915,22 @@ mod tests {
         }
         assert!(nothing_shared(NotShared::Hidden).contains("a hidden folder of your home, where keys and settings live"));
         assert!(nothing_shared(NotShared::Outside).contains("outside your home"));
+    }
+
+    /// `claude`, typed plainly: Claude Code, given the person's standing instructions before their own words,
+    /// which follow as they typed them.
+    #[test]
+    fn the_plain_command_gives_the_instructions_before_the_persons_words() {
+        let words = a("--model opus -p hi");
+        assert_eq!(plain_command(None, &words), a("claude --model opus -p hi"), "none written: Claude Code and the person's words");
+        let with = plain_command(Some("Always answer in German.\n"), &words);
+        assert_eq!(with[..3], ["claude".to_string(), "--append-system-prompt".into(), "[Standing instructions from the person this agent works for]\nAlways answer in German.".into()]);
+        assert_eq!(with[3..], words[..], "then every word as typed");
+        // The person's own, later on the line, stays after TorqOS's.
+        let own = plain_command(Some("x"), &a("--append-system-prompt mine"));
+        assert_eq!(own.iter().filter(|w| *w == "--append-system-prompt").count(), 2);
+        assert_eq!(own.last().map(String::as_str), Some("mine"));
+        assert_eq!(plain_command(Some("x"), &[]).len(), 3);
     }
 
     /// Who is an administrator, as sudo's rule for the launcher sees it: a member of wheel, listed or by

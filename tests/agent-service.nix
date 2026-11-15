@@ -16,6 +16,11 @@
 #   tainted as a coding tool's: it waits for alice;
 # - Ctrl-C stops the answer, all of it (a program in a session of its own, one out of sight), and the service
 #   stays; an engine that dies is said;
+# - a person's standing instructions (their own file) are given to the engine, in the service and by `claude`
+#   typed plainly; a changed text restarts the engine in the same conversation; forget deletes the engine's
+#   own record of the conversation;
+# - `claude` typed plainly runs Claude Code as the person's agent in the folder they are in, and with nothing
+#   shared where that folder is never shared; someone who is not an administrator is told so;
 # - sharing a folder works while the service and its engine run, both frozen through the walk and thawed after
 #   (a walk that fails, or is killed, included); `torq agent run` works beside a running service; a
 #   `torq agent run` session already running still makes a share refuse.
@@ -524,6 +529,64 @@ pkgs.testers.runNixOSTest {
         machine.wait_until_fails("pgrep -u torq-agent-alice -f 'stand-in-sleep'", timeout=30)
         # And the service answers after all of it.
         assert as_user("alice", "torq ask hello").strip() == "Hello alice."
+
+    with subtest("instructions for your agent: her own file, given to the engine; a changed text restarts it in the same conversation"):
+        instr = "/home/alice/.config/torq/agent-instructions.md"
+        want = "[Standing instructions from the person this agent works for]\nAlways answer in German."
+        out = as_user("alice", "torq agent instructions")
+        assert f"Instructions for your agent: {instr}" in out and "None yet. `torq agent instructions edit`" in out, out
+        # With none written, the engine is given none.
+        as_user("alice", "torq ask hello")
+        before = raw("alice", {"type": "status"})[0]
+        epid = machine.succeed(engine).strip()
+        assert "--append-system-prompt" not in starts()[-1]["args"], starts()[-1]
+        session = json.loads(machine.succeed(f"cat {mem}/conversation.json"))["session"]
+        # She writes some. The file is hers, in a hidden folder of her home: her agent cannot write it, from its
+        # account or from inside its sandbox.
+        as_user("alice", f"mkdir -p ~/.config/torq && printf 'Always answer in German.\\n' > {instr}")
+        assert "They are:\n  Always answer in German.\n" in as_user("alice", "torq agent instructions")
+        machine.fail(f"setpriv --reuid torq-agent-alice --regid torq-agent-alice --clear-groups sh -c 'echo planted >> {instr}'")
+        as_user("alice", f"torq agent run -- sh -c 'echo planted >> {instr}'", ok=False)
+        assert machine.succeed(f"cat {instr}") == "Always answer in German.\n"
+        # The next question brings them: the engine is ended and started again with them, continuing the same
+        # conversation, and told to set aside its record of what the conversation began with (nothing).
+        assert as_user("alice", "torq ask 'remember?'").strip() == "You said hello."
+        last = starts()[-1]["args"]
+        assert last[-6:] == ["--resume", session, "--append-system-prompt", want, "--system-prompt-snapshot", "off"], last
+        german = machine.succeed(engine).strip()
+        assert german != epid, "another process"
+        assert raw("alice", {"type": "status"}) == status(False, before["turns"] + 1, before["conversation"])
+        # The same instructions again: the same process.
+        as_user("alice", "torq ask hello")
+        assert machine.succeed(engine).strip() == german
+        # Instructions that cannot be used (here too long): the question is asked without them, and that is said.
+        as_user("alice", f"head -c 20000 /dev/zero | tr '\\0' x > {instr}")
+        code, out = machine.execute("su - alice -c 'torq ask hello' 2>&1")
+        assert code == 0 and "Hello alice." in out and "agent: Your instructions for your agent are not used: they are longer than 16 KiB: make them shorter" in out, out
+        last = starts()[-1]["args"]
+        # (The conversation began with none, so its own record is right again: continued, and nothing to set aside.)
+        assert "--append-system-prompt" not in last and last[-2:] == ["--resume", session], last
+        assert "are not used: they are longer than 16 KiB" in as_user("alice", "torq agent instructions")
+        # `claude`, typed plainly, gives them to Claude Code before her own words; `torq agent run -- claude` does not.
+        as_user("alice", f"printf 'Always answer in German.\\n' > {instr}")
+        out = json.loads(as_user("alice", "cd ~/work && claude --model x 2>/dev/null").strip().splitlines()[-1])
+        assert out["args"] == ["--append-system-prompt", want, "--model", "x"] and out["cwd"] == "/home/alice/work", out
+        out = json.loads(as_user("alice", "cd ~ && claude --version 2>/dev/null").strip().splitlines()[-1])
+        assert out["args"] == ["--append-system-prompt", want, "--version"], out
+        out = json.loads(as_user("alice", "torq agent run -- claude --version").strip().splitlines()[-1])
+        assert out["args"] == ["--version"], out
+        # Put back, the service's engine is given them again; removed, the conversation is continued as it began.
+        as_user("alice", "torq ask hello")
+        assert starts()[-1]["args"][-6:] == ["--resume", session, "--append-system-prompt", want, "--system-prompt-snapshot", "off"], starts()[-1]
+        assert "are removed" in as_user("alice", "torq agent instructions clear")
+        machine.fail(f"test -e {instr}")
+        assert "None yet" in as_user("alice", "torq agent instructions")
+        as_user("alice", "torq ask hello")
+        last = starts()[-1]["args"]
+        assert last[-2:] == ["--resume", session] and "--append-system-prompt" not in last, last
+        # An agent's own account has none to write.
+        out = machine.fail("su -s /bin/sh torq-agent-alice -c 'cd /var/lib/torq-agent-alice && /run/current-system/sw/bin/torq agent instructions' 2>&1")
+        assert "this is an agent's account" in out, out
 
     with subtest("torqcli killed in the middle of the walk: the agent is thawed all the same"):
         machine.succeed("touch /tmp/hang-setfacl")

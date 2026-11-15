@@ -40,8 +40,9 @@ pub fn mark(mood: Mood) -> icon::Handle {
 /// Ask `question`, with what is attached (`context`: untrusted text, it taints the session): each event of
 /// the answer as `heard(e)`, or why there is none as `lost(why)`; on a thread of its own. If the program stops
 /// listening, the thread ends the ask (and so the task) when the next event finds no one to hear it: within the
-/// client's QUIET of the last one at most, not at once.
-pub fn ask<M: Send + 'static>(client: Client, question: String, context: Option<String>, heard: fn(Event) -> M, lost: fn(String) -> M) -> Task<cosmic::Action<M>> {
+/// client's QUIET of the last one at most, not at once. `noted(text)`: something the person is told beside the
+/// answer (their standing instructions for their agent could not be used, and why).
+pub fn ask<M: Send + 'static>(client: Client, question: String, context: Option<String>, heard: fn(Event) -> M, lost: fn(String) -> M, noted: fn(String) -> M) -> Task<cosmic::Action<M>> {
     Task::stream(cosmic::iced::stream::channel(16, async move |out: Sender<M>| {
         let (done, over) = cosmic::iced::futures::channel::oneshot::channel::<()>();
         std::thread::spawn(move || {
@@ -51,7 +52,11 @@ pub fn ask<M: Send + 'static>(client: Client, question: String, context: Option<
                 Err(e) => {
                     tell(lost(torq::app::said(&e.into())));
                 }
-                Ok(answer) => {
+                Ok(mut answer) => {
+                    // The person's instructions for their agent could not be used: said beside the answer, once.
+                    if let Some(note) = answer.note() {
+                        tell(noted(note));
+                    }
                     for e in answer {
                         let listening = match e {
                             Ok(e) => tell(heard(e)),

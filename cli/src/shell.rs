@@ -1614,6 +1614,10 @@ fn run_shell(args: &[String]) -> Result<i32> {
     if args.first().map(String::as_str) == Some("agent") && args.get(1).map(String::as_str) == Some("claude") {
         return crate::agent::plain(&args[2..]);
     }
+    // A person's standing instructions for their agent (ADR-055): shown, edited, removed.
+    if args.first().map(String::as_str) == Some("agent") && args.get(1).map(String::as_str) == Some("instructions") {
+        return crate::agent::instructions(&args[2..]);
+    }
     // A program run as the agent's account (ADR-041): its own entry, not a command of the shell.
     if args.first().map(String::as_str) == Some("agent") {
         return crate::agent::run(&args[1..]);
@@ -2275,7 +2279,7 @@ fn configurations_are_the_ledger_entries_that_made_one() {
 }
 
 /// Whether `prog` is a program on PATH.
-fn which(prog: &str) -> bool {
+pub(crate) fn which(prog: &str) -> bool {
     std::env::var_os("PATH").is_some_and(|p| std::env::split_paths(&p).any(|d| d.join(prog).is_file()))
 }
 

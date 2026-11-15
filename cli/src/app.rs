@@ -2703,6 +2703,29 @@ pub fn sign_in_line(plain: bool) -> String {
     )
 }
 
+/// The Agent page's "Instructions for your agent" section: the text as it is shown ("None" where there is
+/// none; why, where a file is there and cannot be used) and whether that is a trouble to mark.
+pub fn agent_instructions(now: &crate::agent::instructions::Instructions) -> (String, bool) {
+    use crate::agent::instructions::Instructions;
+    match now {
+        Instructions::None => ("None".to_string(), false),
+        Instructions::Text(text) => (crate::agent::conversation::shown(text.trim_end(), 2000), false),
+        Instructions::Unusable(why) => (why.clone(), true),
+    }
+}
+
+/// The desktop's text editor (COSMIC's own).
+const TEXT_EDITOR: &str = "cosmic-edit";
+
+/// The person's instructions for their agent opened in the desktop's text editor: the file made first, empty,
+/// if it is not there. The editor is the person's own program, on their own file.
+pub fn edit_instructions() -> Result<()> {
+    use anyhow::Context as _;
+    let file = crate::agent::instructions::path().context("HOME is not set: no home to keep your instructions in")?;
+    crate::agent::instructions::create(&file).with_context(|| format!("making {}", file.display()))?;
+    spawn(TEXT_EDITOR, &[&file.to_string_lossy()])
+}
+
 /// The Agent page's section for the conversation: how many questions it has had, and whether Forget can be pressed
 /// (not while it works). None: no section (no agent, or its service is not here).
 pub fn agent_memory(status: Option<&Result<crate::agent::client::Status, String>>, has_service: bool) -> Option<(String, bool)> {
@@ -4417,6 +4440,14 @@ mod moved_decisions {
         assert!(agent_model(Some(&e), false).1.contains("in a terminal: `torq agent run -- claude`, then type /login"), "where `claude` is not a command");
         let b = crate::agent::setup::Brain { place: crate::agent::setup::Place::Local, model: "m".into(), endpoint: "http://x".into(), key: true };
         assert_eq!(agent_model(Some(&b), true), (b.line(), "http://x".to_string(), Some("Yes")));
+        // Instructions for your agent, as the page shows them: none, the text (cleaned), or why they are not used.
+        use crate::agent::instructions::Instructions;
+        assert_eq!(agent_instructions(&Instructions::None), ("None".to_string(), false));
+        assert_eq!(agent_instructions(&Instructions::Text("Always answer in German.\n\u{1b}[2J\n".into())).1, false);
+        let (text, _) = agent_instructions(&Instructions::Text("Always answer in German.\nExplain commands.\n\n".into()));
+        assert_eq!(text, "Always answer in German.\nExplain commands.");
+        assert!(!agent_instructions(&Instructions::Text("a\u{1b}[2Jb".into())).0.contains('\u{1b}'));
+        assert_eq!(agent_instructions(&Instructions::Unusable("not used: too long".into())), ("not used: too long".to_string(), true));
         assert_eq!(agent_memory(Some(&idle), false), Some(("A new conversation: nothing asked yet".into(), true)));
         assert_eq!(agent_memory(Some(&busy), true), Some(("Your conversation has had 1 question".into(), false)));
         assert_eq!(agent_memory(Some(&Ok(Status { running: false, turns: 4, conversation: 0 })), true).unwrap().0, "Your conversation has had 4 questions");
