@@ -208,6 +208,8 @@
         desktop = import ./tests/desktop.nix { inherit pkgs self; };
         # The person's agent on the desktop: its applet in the default panel, its window, its client (ADR-051 4).
         desktop-agent = import ./tests/desktop-agent.nix { inherit pkgs self; };
+        # A person who already has their own shortcuts and panel still gets TorqOS's defaults, once (cli/src/cosmic_defaults.rs).
+        desktop-defaults = import ./tests/desktop-defaults.nix { inherit pkgs self; };
         tunnels = import ./tests/tunnels.nix { inherit pkgs self; };
         secrets = import ./tests/secrets.nix { inherit pkgs self; };
         image = import ./tests/image.nix { inherit pkgs self; };

@@ -160,12 +160,13 @@ pkgs.testers.runNixOSTest {
         assert in_session("torq-agent-ui --check").splitlines()[0] == before
 
     with subtest("step 4: Super+Shift+A opens the agent's window, a default of COSMIC's shortcuts; Super+A stays the App Library's"):
-        custom = machine.succeed("cat /run/current-system/sw/share/cosmic/com.system76.CosmicSettings.Shortcuts/v1/custom")
-        assert '(modifiers: [Super, Shift], key: "a"): Spawn("/run/current-system/sw/bin/torq-agent-ui")' in custom, custom
-        assert '[Super], key: "a"' not in custom, custom
+        # In COSMIC's `defaults` key, which cosmic-comp merges under a person's own `custom` (tests/desktop-defaults.nix
+        # has a person with one); not in the system's `custom`, which a person's own file replaces whole.
+        machine.fail("test -e /run/current-system/sw/share/cosmic/com.system76.CosmicSettings.Shortcuts/v1/custom")
         defaults = machine.succeed("cat /run/current-system/sw/share/cosmic/com.system76.CosmicSettings.Shortcuts/v1/defaults")
+        assert '(modifiers: [Super, Shift], key: "a"): Spawn("/run/current-system/sw/bin/torq-agent-ui")' in defaults, defaults
         assert '(modifiers: [Super], key: "a"): System(AppLibrary)' in defaults
-        assert '[Super, Shift], key: "a"' not in defaults, "Super+Shift+A must be free in COSMIC's own defaults"
+        assert defaults.count('[Super, Shift], key: "a"') == 1, "Super+Shift+A was free in COSMIC's own defaults: ours is the only one"
         machine.send_key("meta_l-shift-a")
         machine.wait_until_succeeds("pgrep -u alice -f 'bin/torq-agent-ui$'", timeout=60)
         machine.sleep(5)
