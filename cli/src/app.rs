@@ -1992,7 +1992,7 @@ const fn draft(label: &'static str, command: &'static str) -> Action {
 /// What the agent may do without asking, and every button on the Proposals page besides each proposal's own.
 pub const AGENT: &[Action] = &[op("Trust the agent for a while…", "request system agent trust "), run("End that trust now", "request system agent trust revoke")];
 
-/// The Agent page's Forget (asked first): the person's own agent's memory erased, through its own socket.
+/// The Agent page's Forget (asked first): the person's conversation with their agent deleted, through its own socket.
 pub const AGENT_FORGET: &str = "request system agent forget";
 
 /// Every **Decline** (the Proposals page, the agent's applet and window): turn a waiting proposal down, as
@@ -2001,31 +2001,31 @@ pub fn decline_line(seq: u64) -> String {
     format!("request system decline {seq}")
 }
 
-/// The Agent page's buttons (ADR-051 2 and 5): the agent's model, who has one, and its coding tools, each a line of the tree, into the draft
-/// and committed as every other change is. Its API key is not one: a file outside the repository, entered with
-/// TorqOS's secrets (ADR-052), not here.
+/// The Agent page's buttons (ADR-051 2 and 5, ADR-055), in the order the steps are done: allow Claude Code,
+/// install it, make it the agent; then how to have none; `claude` typed in a terminal; who has an agent;
+/// and last what is left of TorqOS's own `torq doctor`. Each is a line of the tree, into the draft and
+/// committed as every other change is.
 pub const AGENT_SETTINGS: &[Action] = &[
-    // The engine (ADR-055): the coding tool that is the agent, everywhere the desktop offers one. It must be
-    // installed for the agents first (below).
-    draft("Make Claude Code the agent (install it for the agents first)", "set torq agent engine claude-code"),
-    draft("No agent: choose no engine", "delete torq agent engine"),
-    // TorqOS's own small helper, at a terminal only (`torq doctor`), and its model: going (ADR-055).
-    draft("Turn on `torq doctor`, TorqOS's own helper at a terminal (it is being replaced by the engine)", "set torq agent doctor enable true"),
-    cf("Use a remote model: its endpoint…", "set torq agent doctor endpoint "),
-    cf("The remote model's name…", "set torq agent doctor model "),
-    draft("Use the local model again", "delete torq agent doctor endpoint"),
-    cf("The local model's file (its URL)…", "set torq agent model url "),
-    cf("…and its hash", "set torq agent model hash "),
+    // Claude Code is unfree in nixpkgs, and nothing unfree is installed unasked (ADR-039): what that means, said.
+    draft("1. Allow Claude Code to be installed (it is not open-source software, and none of that kind is installed until you allow it)", "set torq unfree packages claude-code"),
+    draft("2. Install Claude Code for the agents", "set torq agent tools claude-code"),
+    // The engine (ADR-055): the program that answers, everywhere the desktop offers the agent.
+    draft("3. Make Claude Code the agent: the program that answers when you ask", "set torq agent engine claude-code"),
+    draft("No agent: nothing answers when you ask", "delete torq agent engine"),
+    draft("Uninstall Claude Code for the agents", "delete torq agent tools"),
+    // Typing `claude` in a terminal (on by default where Claude Code is installed).
+    draft("Typing `claude` in a terminal starts Claude Code as your agent, in the folder you are in (this is how it is unless changed)", "delete torq agent plainCommand"),
+    draft("Typing `claude` in a terminal does nothing (start it with `torq agent run -- claude` instead)", "set torq agent plainCommand false"),
     // `set` adds to the list in the configuration; but until the list is written, its default (the owner) is the
     // module's, and the first `set` replaces it: the label says so.
-    cf("Give someone an agent of their own… (the first time, name yourself too: the list replaces its default)", "set torq agent people "),
-    // Coding tools for the agents (ADR-051 5): Claude Code is unfree, so allowed first, said so.
-    draft("Allow Claude Code (unfree: nixpkgs' licence check)", "set torq unfree packages claude-code"),
-    draft("Install Claude Code for the agents (allow it first)", "set torq agent tools claude-code"),
-    draft("Remove the agents' coding tools", "delete torq agent tools"),
-    // Typing `claude` in a terminal (torq.agent.plainCommand, on by default where Claude Code is installed).
-    draft("Typing `claude` in a terminal: not a command any more (use torq agent run)", "set torq agent plainCommand false"),
-    draft("Typing `claude` in a terminal: Claude Code as your agent, in the folder you are in (the default)", "delete torq agent plainCommand"),
+    cf("Give another person an agent of their own… (the first time, name yourself too: the list replaces its default)", "set torq agent people "),
+    // TorqOS's own small helper, at a terminal only (`torq doctor`), and its model: going (ADR-055).
+    draft("Turn on `torq doctor`, TorqOS's own small helper at a terminal (it is being replaced by the agent above)", "set torq agent doctor enable true"),
+    cf("`torq doctor`: use a model on another machine: its address…", "set torq agent doctor endpoint "),
+    cf("`torq doctor`: that model's name…", "set torq agent doctor model "),
+    draft("`torq doctor`: use the model on this machine again", "delete torq agent doctor endpoint"),
+    cf("`torq doctor`: the file of the model on this machine (its address to download from)…", "set torq agent model url "),
+    cf("`torq doctor`: …and that file's checksum", "set torq agent model hash "),
 ];
 
 pub static VIEWS: &[View] = &[
@@ -2097,7 +2097,8 @@ mod page_tests {
         assert_eq!(s(&["read_journal", "show_ledger"]), "made after reading untrusted content (read_journal, show_ledger)");
         assert_eq!(s(&[]), "made after reading untrusted content");
         let n = s(&["not-the-resident-agent", "coding-tool", "show_alarms"]);
-        assert!(n.starts_with("made by a coding tool (your agent's engine") && n.contains("(not-the-resident-agent, coding-tool)") && n.ends_with("untrusted content (show_alarms)"), "{n}");
+        assert!(n.starts_with("proposed by your agent (Claude Code, or another program run as your agent): TorqOS cannot see what it had read") && n.ends_with("untrusted content (show_alarms)"), "{n}");
+        assert!(!n.contains("not-the-resident-agent") && !n.contains("coding-tool"), "the broker's own words are not shown: {n}");
         let m = s(&["local-tcp-model"]);
         assert!(m.starts_with("its model could have been stood in for") && !m.contains("untrusted content"), "{m}");
     }
@@ -2196,7 +2197,8 @@ pub fn taint_line(sources: &[String]) -> String {
     let names = |v: &[&String]| v.iter().map(|s| history::one_line(s, 40)).collect::<Vec<_>>().join(", ");
     let mut said = Vec::new();
     if !unseen.is_empty() {
-        said.push(format!("made by a coding tool (your agent's engine, torq agent run or torq doctor), so the broker cannot see what it read ({})", names(&unseen)));
+        // The broker's own words for it (`coding-tool`, `not-the-resident-agent`) are not a person's to read.
+        said.push("proposed by your agent (Claude Code, or another program run as your agent): TorqOS cannot see what it had read, so read the change itself before you approve it".to_string());
     }
     if !model.is_empty() {
         said.push(format!("its model could have been stood in for by another program on this machine ({})", names(&model)));
@@ -2673,7 +2675,7 @@ pub fn desktop_to_apply(n: usize) -> Option<String> {
 pub fn agent_service_line(agent: Option<&str>, service: bool, status: Option<&Result<crate::agent::client::Status, String>>) -> String {
     match (agent, service, status) {
         (None, _, _) => "Not set up for you: `torq agent people` names who has one (an administrator's change)".to_string(),
-        (_, false, _) => "Not on this machine: no engine is chosen for the agents (`torq agent engine`, an administrator's change)".to_string(),
+        (_, false, _) => "Not on this machine yet: no program is chosen to answer (steps 1 to 3 below; an administrator's change)".to_string(),
         (_, true, Some(Ok(st))) if st.running => "Working on a question".to_string(),
         (_, true, Some(Ok(_))) => "Set up, and idle".to_string(),
         (_, true, Some(Err(e))) => format!("Set up, but it did not answer: {e}"),
@@ -2681,17 +2683,27 @@ pub fn agent_service_line(agent: Option<&str>, service: bool, status: Option<&Re
     }
 }
 
-/// The Agent page's model section: what answers, in a line; where (the model's endpoint, or for an engine how
-/// the person signs it in); whether a key is configured.
-pub fn agent_model(brain: Option<&crate::agent::setup::Brain>) -> (String, String, &'static str) {
+/// The Agent page's "What answers" section: what answers, in a line; under it, for an engine how the person
+/// signs it in (`plain`: whether `claude`, typed plainly, is a command here), else the model's endpoint; and
+/// whether a key is configured, which is only the old `torq doctor`'s to say (none: no such row for an engine,
+/// which signs in by itself and takes no key).
+pub fn agent_model(brain: Option<&crate::agent::setup::Brain>, plain: bool) -> (String, String, Option<&'static str>) {
     match brain {
-        None => ("None: no engine is chosen".to_string(), String::new(), "No"),
-        Some(b) if matches!(b.place, crate::agent::setup::Place::Engine(_)) => (b.line(), "It signs in by itself, as your agent. Once, in a terminal: `torq agent run -- claude`, then /login".to_string(), "No: it needs none"),
-        Some(b) => (b.line(), b.endpoint.clone(), if b.key { "Yes" } else { "No" }),
+        None => ("Nothing yet: no program is chosen to answer (steps 1 to 3, below)".to_string(), String::new(), None),
+        Some(b) if matches!(b.place, crate::agent::setup::Place::Engine(_)) => (b.line(), sign_in_line(plain), None),
+        Some(b) => (b.line(), b.endpoint.clone(), Some(if b.key { "Yes" } else { "No" })),
     }
 }
 
-/// The Agent page's memory section: what it says of how much the agent remembers, and whether Forget can be pressed
+/// How the person signs the engine in, as the Agent page says it.
+pub fn sign_in_line(plain: bool) -> String {
+    format!(
+        "You sign it in once, in a terminal: `{}`, then type /login (an administrator's command: if you are not one, ask one)",
+        if plain { "claude" } else { "torq agent run -- claude" }
+    )
+}
+
+/// The Agent page's section for the conversation: how many questions it has had, and whether Forget can be pressed
 /// (not while it works). None: no section (no agent, or its service is not here).
 pub fn agent_memory(status: Option<&Result<crate::agent::client::Status, String>>, has_service: bool) -> Option<(String, bool)> {
     match (status, has_service) {
@@ -4396,12 +4408,15 @@ mod moved_decisions {
         assert_eq!(agent_service_line(Some("a"), true, Some(&idle)), "Set up, and idle");
         assert_eq!(agent_service_line(Some("a"), true, Some(&Err("no".into()))), "Set up, but it did not answer: no");
         assert_eq!(agent_service_line(Some("a"), true, None), "Set up");
-        assert_eq!(agent_model(None), ("None: no engine is chosen".to_string(), String::new(), "No"));
+        assert_eq!(agent_model(None, true), ("Nothing yet: no program is chosen to answer (steps 1 to 3, below)".to_string(), String::new(), None));
         let e = crate::agent::setup::Brain { place: crate::agent::setup::Place::Engine("Claude Code"), model: "Claude Code".into(), endpoint: String::new(), key: false };
-        let (line, how, key) = agent_model(Some(&e));
-        assert!(line.starts_with("Claude Code") && how.contains("`torq agent run -- claude`, then /login") && key == "No: it needs none", "{line} / {how} / {key}");
+        let (line, how, key) = agent_model(Some(&e), true);
+        assert_eq!(line, "Claude Code · what it reads goes to Anthropic");
+        assert_eq!(how, "You sign it in once, in a terminal: `claude`, then type /login (an administrator's command: if you are not one, ask one)");
+        assert_eq!(key, None, "an engine takes no key: no row says one is or is not configured");
+        assert!(agent_model(Some(&e), false).1.contains("in a terminal: `torq agent run -- claude`, then type /login"), "where `claude` is not a command");
         let b = crate::agent::setup::Brain { place: crate::agent::setup::Place::Local, model: "m".into(), endpoint: "http://x".into(), key: true };
-        assert_eq!(agent_model(Some(&b)), (b.line(), "http://x".to_string(), "Yes"));
+        assert_eq!(agent_model(Some(&b), true), (b.line(), "http://x".to_string(), Some("Yes")));
         assert_eq!(agent_memory(Some(&idle), false), Some(("A new conversation: nothing asked yet".into(), true)));
         assert_eq!(agent_memory(Some(&busy), true), Some(("Your conversation has had 1 question".into(), false)));
         assert_eq!(agent_memory(Some(&Ok(Status { running: false, turns: 4, conversation: 0 })), true).unwrap().0, "Your conversation has had 4 questions");

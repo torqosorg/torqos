@@ -52,6 +52,7 @@ pub(crate) fn is_agent(name: &str) -> bool {
 const SUDO: &str = "/run/wrappers/bin/sudo";
 const LAUNCHER: &str = "/run/current-system/sw/bin/torq-agent-run";
 const SETFACL: &str = "/run/current-system/sw/bin/setfacl";
+const GETFACL: &str = "/run/current-system/sw/bin/getfacl";
 
 /// What `torq agent run` was asked: the directory to share, and the program (none: a shell).
 #[derive(Debug, PartialEq)]
@@ -62,7 +63,7 @@ pub(crate) struct Run {
 
 /// `run [--share <dir>] [--] [<command> …]`, after `agent`.
 pub(crate) fn parse(args: &[String]) -> Result<Run> {
-    let usage = "usage: torq agent run [--share <dir>] [--] [<command> …]";
+    let usage = "usage: torq agent run [--share <folder>] [--] [<command> …] — a program as your agent. Also: torq agent claude [<words for Claude Code> …] — Claude Code as your agent, in the folder you are in";
     let mut it = args.iter();
     if it.next().map(String::as_str) != Some("run") {
         bail!("{usage}");
@@ -83,30 +84,75 @@ pub(crate) fn parse(args: &[String]) -> Result<Run> {
     Ok(Run { share, command: rest.iter().map(|s| s.to_string()).collect() })
 }
 
+/// Why a folder is not one to share with the agent.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) enum NotShared {
+    /// It is not there (or cannot be read).
+    Gone,
+    NotADirectory,
+    /// The person's home itself.
+    Home,
+    /// Not inside the person's home.
+    Outside,
+    /// A hidden folder directly under the home (`~/.ssh`, `~/.config`), or inside one: keys and settings live there.
+    Hidden,
+    /// It belongs to another account.
+    NotYours,
+}
+
+impl NotShared {
+    /// Why, as `claude` typed plainly says it of the folder the person is in.
+    fn here(self) -> &'static str {
+        match self {
+            NotShared::Gone => "this folder is not there any more",
+            NotShared::NotADirectory => "this is not a folder",
+            NotShared::Home => "this is your home folder itself",
+            NotShared::Outside => "this folder is outside your home",
+            NotShared::Hidden => "this is a hidden folder of your home, where keys and settings live",
+            NotShared::NotYours => "this folder belongs to another account",
+        }
+    }
+}
+
 /// The directory to share, checked: it exists, it is a directory, it is the person's own, and it is
-/// inside their home but not the home itself — named as it is, every link resolved.
-pub(crate) fn checked_share(dir: &Path, home: &Path, uid: u32) -> Result<PathBuf> {
+/// inside their home but not the home itself, nor a hidden folder directly under the home (or anything
+/// inside one) — named as it is, every link resolved.
+pub(crate) fn shareable(dir: &Path, home: &Path, uid: u32) -> Result<PathBuf, NotShared> {
     use std::os::unix::fs::MetadataExt;
-    let dir = std::fs::canonicalize(dir).with_context(|| format!("{}: no such directory", dir.display()))?;
-    let home = std::fs::canonicalize(home).with_context(|| format!("{}: your home", home.display()))?;
-    let m = std::fs::metadata(&dir)?;
+    let dir = std::fs::canonicalize(dir).map_err(|_| NotShared::Gone)?;
+    let home = std::fs::canonicalize(home).map_err(|_| NotShared::Outside)?;
+    let m = std::fs::metadata(&dir).map_err(|_| NotShared::Gone)?;
     if !m.is_dir() {
-        bail!("{}: not a directory", dir.display());
+        return Err(NotShared::NotADirectory);
     }
-    // Each refusal says what to do: `claude` typed in a terminal shares the folder the person is in, so this is
-    // what they read when they are in the wrong one.
     if dir == home {
-        bail!("{} is your home itself, and your agent is never given all of it: go into a folder inside it first (a project's, for one: cd ~/<folder>), or name one with --share", dir.display());
+        return Err(NotShared::Home);
     }
-    if !dir.starts_with(&home) {
-        bail!("{} is not inside your home ({}): only a folder inside your home can be shared with your agent. Go into one first (cd ~/<folder>), or name one with --share", dir.display(), home.display());
+    let Ok(inside) = dir.strip_prefix(&home) else { return Err(NotShared::Outside) };
+    // ~/.ssh, ~/.config, ~/.gnupg, ~/.local …: the person's keys, sign-ins and settings. Only the first name
+    // under the home is looked at: a hidden folder inside a project (its .git) is the project's.
+    if inside.components().next().is_some_and(|c| c.as_os_str().as_encoded_bytes().starts_with(b".")) {
+        return Err(NotShared::Hidden);
     }
     if m.uid() != uid {
-        bail!("{}: not yours to share (it belongs to another account): go into a folder of your own first", dir.display());
+        return Err(NotShared::NotYours);
     }
     Ok(dir)
 }
 
+/// The same, for `torq agent run --share <dir>`: each refusal says why, in words for the person who named it.
+pub(crate) fn checked_share(dir: &Path, home: &Path, uid: u32) -> Result<PathBuf> {
+    let shown = std::fs::canonicalize(dir).unwrap_or_else(|_| dir.to_path_buf());
+    let shown = shown.display();
+    shareable(dir, home, uid).map_err(|why| match why {
+        NotShared::Gone => anyhow::anyhow!("{}: no such folder", dir.display()),
+        NotShared::NotADirectory => anyhow::anyhow!("{shown}: not a folder"),
+        NotShared::Home => anyhow::anyhow!("{shown} is your home folder itself, and your agent is never given all of it: share a folder inside it (a project's, for one)"),
+        NotShared::Outside => anyhow::anyhow!("{shown} is not inside your home ({}): only a folder inside your home can be shared with your agent", home.display()),
+        NotShared::Hidden => anyhow::anyhow!("{shown} is a hidden folder of your home, or inside one (its name begins with a dot, like ~/.ssh or ~/.config). Your keys, sign-ins and settings live there, so it is never shared with your agent: share a folder of your own work instead"),
+        NotShared::NotYours => anyhow::anyhow!("{shown}: not yours to share (it belongs to another account)"),
+    })
+}
 
 /// Everything under `dir` (itself included) that `uid` owns — its directories, and its other files —
 /// walked without following a link (a link is not shared; what it points to is not walked).
@@ -159,7 +205,7 @@ impl Frozen {
         if read.is_err() || said.trim() != "frozen" {
             drop(child.stdin.take());
             let _ = child.wait();
-            bail!("nothing shared: your agent could not be held still while the directory is shared (the launcher said why)");
+            bail!("nothing was shared and nothing was started (the line above says why)");
         }
         Ok(Frozen(child))
     }
@@ -201,11 +247,28 @@ fn share_acls(dir: &Path, uid: u32, agent: &str, me: &str) -> Result<()> {
     Ok(())
 }
 
-/// Run it: share the directory (ACLs, and the directory itself, open), then become the agent,
-/// through the launcher. Does not return on success: the program takes this process's place.
-pub(crate) fn run(args: &[String]) -> Result<i32> {
-    use std::os::fd::AsRawFd;
-    let r = parse(args)?;
+/// Whether `me` is an administrator, as sudo will see it: in the group `wheel`, by /etc/group's list of its
+/// members or as their own first group in /etc/passwd. The launcher's sudo rule is that group's
+/// (modules/agent.nix): this only says so before sudo would, in words; who may is sudo's to decide.
+pub(crate) fn administrator(group: &str, passwd: &str, me: &str) -> bool {
+    let Some(wheel) = group.lines().map(|l| l.split(':').collect::<Vec<_>>()).find(|f| f.first() == Some(&"wheel")) else { return false };
+    let listed = wheel.get(3).is_some_and(|members| members.split(',').any(|m| m == me));
+    let first = passwd.lines().map(|l| l.split(':').collect::<Vec<_>>()).find(|f| f.first() == Some(&me)).and_then(|f| f.get(3).copied());
+    listed || (first.is_some() && first == wheel.get(2).copied())
+}
+
+/// What someone who is not an administrator is told, before sudo would ask them for a password it then refuses.
+pub(crate) const NOT_AN_ADMINISTRATOR: &str = "Only an administrator of this machine can start a program as their agent today, and you are not one: ask an administrator.";
+
+/// Who starts a program as their agent: the person, their agent account, and the launcher. Refused, each
+/// in words, for an agent's own account, someone with no agent, and someone who is not an administrator.
+struct Caller {
+    me: String,
+    agent: String,
+    launcher: String,
+}
+
+fn caller() -> Result<Caller> {
     let me = crate::me()?;
     if is_agent(&me) {
         bail!("this is an agent's account already ({me}): only a person starts a program as their agent");
@@ -213,25 +276,79 @@ pub(crate) fn run(args: &[String]) -> Result<i32> {
     // Your own agent, and only yours: the launcher runs `torq-agent-<you>` (as sudo says who you are).
     let agent = agent_of(&me);
     has_agent(&agent)?;
+    let group = std::fs::read_to_string("/etc/group").context("reading /etc/group")?;
+    let passwd = std::fs::read_to_string("/etc/passwd").context("reading /etc/passwd")?;
+    if !administrator(&group, &passwd, &me) {
+        bail!("{NOT_AN_ADMINISTRATOR}");
+    }
     // The launcher by its own path in the store, as the sudo rule names it (sudo does not take a link
     // to it for it).
     let launcher = std::fs::canonicalize(LAUNCHER).with_context(|| format!("{LAUNCHER}: the agent's launcher is not installed"))?;
-    let launcher = launcher.to_string_lossy().into_owned();
+    Ok(Caller { me, agent, launcher: launcher.to_string_lossy().into_owned() })
+}
+
+/// Whether `acl` (what `getfacl` prints of a folder) has an entry for `agent`: the folder was shared with it before.
+pub(crate) fn has_entry(acl: &str, agent: &str) -> bool {
+    !agent.is_empty() && acl.lines().any(|l| l.strip_prefix("user:").and_then(|r| r.split(':').next()) == Some(agent))
+}
+
+/// Whether `dir` itself already has an entry for `agent` (asked of `getfacl`, the folder's own entries only).
+/// Not known (getfacl could not be run): taken as not shared before, so the sharing is said.
+fn shared_before(dir: &Path, agent: &str) -> bool {
+    let mut c = Command::new(GETFACL);
+    c.args(["-p", "-c", "--"]).arg(dir);
+    setup::output_within(c, std::time::Duration::from_secs(10)).is_some_and(|acl| has_entry(&acl, agent))
+}
+
+/// `torq agent run …`: what was asked, then `launch`.
+pub(crate) fn run(args: &[String]) -> Result<i32> {
+    let r = parse(args)?;
+    launch(&caller()?, r)
+}
+
+/// What `claude`, typed plainly, says where the folder the person is in is not shared.
+pub(crate) fn nothing_shared(why: NotShared) -> String {
+    format!("Nothing is shared with your agent here ({}): it works in its own folder. To let it work on a project, go into that project's folder first (cd ~/<folder>)", why.here())
+}
+
+/// `torq agent claude [<anything Claude Code takes> …]`, which is what `claude` typed plainly runs
+/// (`torq agent plainCommand`): Claude Code as the person's agent, every word after it passed on unchanged.
+/// The folder the person is in is shared with it, as `torq agent run --share <that folder> -- claude` does;
+/// in a folder that is never shared (the home itself, outside it, a hidden folder of it) nothing is shared,
+/// said in one line, and Claude Code runs in the agent's own folder — so `claude --version` works anywhere.
+pub(crate) fn plain(args: &[String]) -> Result<i32> {
+    let who = caller()?;
+    let home = PathBuf::from(std::env::var_os("HOME").context("HOME is not set: no home to share from")?);
+    let here = std::env::current_dir().map_err(|_| NotShared::Gone).and_then(|d| shareable(&d, &home, rustix::process::getuid().as_raw()));
+    let share = here.map_err(|why| eprintln!("{}", nothing_shared(why))).ok();
+    let mut command = vec!["claude".to_string()];
+    command.extend(args.iter().cloned());
+    launch(&who, Run { share, command })
+}
+
+/// Run it: share the directory (ACLs, and the directory itself, open), then become the agent,
+/// through the launcher. Does not return on success: the program takes this process's place.
+fn launch(who: &Caller, r: Run) -> Result<i32> {
+    use std::os::fd::AsRawFd;
+    let Caller { me, agent, launcher } = who;
     let mut sudo: Vec<String> = Vec::new();
-    let mut launch = vec![launcher];
+    let mut launch = vec![launcher.clone()];
     // Held open until the program has taken this process's place: the launcher binds it.
     let mut _shared: Option<std::fs::File> = None;
     if let Some(share) = &r.share {
         let home = PathBuf::from(std::env::var_os("HOME").context("HOME is not set: no home to share from")?);
         let uid = rustix::process::getuid().as_raw();
         let dir = checked_share(share, &home, uid)?;
+        // Said only the first time: a folder that already has the agent's entry was shared before, and the
+        // walk below only brings what is new in it under the same sharing.
+        let before = shared_before(&dir, agent);
         // One session of the agent's at a time, and none of its programs running while the directory is
         // walked (a link swapped in between the walk's look and its ACL would be granted wherever it
         // leads): the person's agent service held still by systemd's freezer, any other program of the
         // agent's refused — both by the launcher, as root — and thawed after, however the walk ended.
         // With its own process namespace (the launcher), nothing of a session outlives it.
         let frozen = Frozen::hold(&launch[0])?;
-        let shared = share_acls(&dir, uid, &agent, &me);
+        let shared = share_acls(&dir, uid, agent, me);
         // Thawed whatever the walk did, and both said when both fail (the
         // walk's own error was lost behind the thaw's).
         let thawed = frozen.thaw();
@@ -248,13 +365,20 @@ pub(crate) fn run(args: &[String]) -> Result<i32> {
         sudo.extend(["-C".into(), (fd + 1).to_string()]);
         launch.extend(["--share-fd".into(), fd.to_string(), dir.to_string_lossy().into_owned()]);
         _shared = Some(f);
-        eprintln!("Shared with your agent ({agent}): {} (undo: setfacl -R -P -x u:{agent},d:u:{agent} -- {})", dir.display(), dir.display());
+        if !before {
+            eprintln!("{}", shared_line(&dir, agent));
+        }
     }
     launch.push("--".into());
     launch.extend(r.command);
     use std::os::unix::process::CommandExt;
     let e = Command::new(SUDO).args(&sudo).arg("--").args(&launch).exec();
     Err(anyhow::Error::from(e).context("starting the agent (sudo torq-agent-run)"))
+}
+
+/// Said the first time a folder is shared: what the agent may do there now, and how to take it back.
+pub(crate) fn shared_line(dir: &Path, agent: &str) -> String {
+    format!("Shared with your agent ({agent}): {} — it can now read and change what is in this folder, and nothing else of yours. To take that back: setfacl -R -P -x u:{agent},d:u:{agent} -- {}", dir.display(), dir.display())
 }
 
 /// What `torq ask` was asked: a question for the person's agent, or to forget the conversation.
@@ -673,19 +797,92 @@ mod tests {
         std::fs::create_dir_all(&project).unwrap();
         let uid = std::fs::metadata(&home).unwrap().uid();
         assert_eq!(checked_share(&project, &home, uid).unwrap(), std::fs::canonicalize(&project).unwrap());
-        // Each refusal says why, and what to do: go into a folder inside the home first.
+        // Each refusal says why, in words for the person who named the folder.
         let refused = |dir: &Path, uid: u32| checked_share(dir, &home, uid).unwrap_err().to_string();
         let own = refused(&home, uid);
-        assert!(own.contains("is your home itself") && own.contains("go into a folder inside it first"), "{own}");
+        assert!(own.contains("is your home folder itself") && own.contains("share a folder inside it"), "{own}");
         let outside = refused(d.path(), uid);
-        assert!(outside.contains("is not inside your home") && outside.contains("Go into one first"), "{outside}");
+        assert!(outside.contains("is not inside your home"), "{outside}");
         let anothers = refused(&project, uid + 1);
-        assert!(anothers.contains("not yours to share") && anothers.contains("go into a folder of your own first"), "{anothers}");
+        assert!(anothers.contains("not yours to share"), "{anothers}");
         std::fs::write(home.join("file"), "").unwrap();
-        assert!(checked_share(&home.join("file"), &home, uid).is_err(), "not a file");
+        assert_eq!(shareable(&home.join("file"), &home, uid), Err(NotShared::NotADirectory), "not a file");
+        assert_eq!(shareable(&home.join("nowhere"), &home, uid), Err(NotShared::Gone));
         // A link out of the home is where it leads, and refused there.
         std::os::unix::fs::symlink(d.path(), home.join("out")).unwrap();
-        assert!(checked_share(&home.join("out"), &home, uid).is_err());
+        assert_eq!(shareable(&home.join("out"), &home, uid), Err(NotShared::Outside));
+        // None of them tells the person to "name one with --share": they did, or `claude` did for them.
+        for said in [&own, &outside, &anothers] {
+            assert!(!said.contains("--share"), "{said}");
+        }
+    }
+
+    /// A hidden folder directly under the home, and anything inside one, is never shared: keys and settings
+    /// live there. A hidden folder inside a project is the project's.
+    #[test]
+    fn a_hidden_folder_of_the_home_is_never_shared() {
+        use std::os::unix::fs::MetadataExt;
+        let d = tempfile::tempdir().unwrap();
+        let home = d.path().join("home");
+        for dir in [".ssh", ".config/x/deep", ".local/share", "project/.git/hooks", "project/sub", "not.hidden"] {
+            std::fs::create_dir_all(home.join(dir)).unwrap();
+        }
+        let uid = std::fs::metadata(&home).unwrap().uid();
+        for hidden in [".ssh", ".config", ".config/x", ".config/x/deep", ".local/share"] {
+            assert_eq!(shareable(&home.join(hidden), &home, uid), Err(NotShared::Hidden), "{hidden}");
+        }
+        let said = checked_share(&home.join(".ssh"), &home, uid).unwrap_err().to_string();
+        assert!(said.contains("is a hidden folder of your home") && said.contains("Your keys, sign-ins and settings live there") && said.contains("share a folder of your own work instead"), "{said}");
+        // A link to one, under a plain name, is where it leads.
+        std::os::unix::fs::symlink(home.join(".ssh"), home.join("keys")).unwrap();
+        assert_eq!(shareable(&home.join("keys"), &home, uid), Err(NotShared::Hidden));
+        // The controls: a project, a hidden folder inside it, a name with a dot elsewhere in it.
+        for fine in ["project", "project/sub", "project/.git", "project/.git/hooks", "not.hidden"] {
+            assert_eq!(shareable(&home.join(fine), &home, uid), Ok(std::fs::canonicalize(home.join(fine)).unwrap()), "{fine}");
+        }
+    }
+
+    /// `claude`, typed plainly, where the folder is not shared: one line, why, and what to do. It never says
+    /// "--share": the person typed `claude`.
+    #[test]
+    fn what_the_plain_command_says_where_nothing_is_shared() {
+        assert_eq!(
+            nothing_shared(NotShared::Home),
+            "Nothing is shared with your agent here (this is your home folder itself): it works in its own folder. To let it work on a project, go into that project's folder first (cd ~/<folder>)"
+        );
+        for why in [NotShared::Gone, NotShared::NotADirectory, NotShared::Home, NotShared::Outside, NotShared::Hidden, NotShared::NotYours] {
+            let said = nothing_shared(why);
+            assert!(said.starts_with("Nothing is shared with your agent here (") && said.contains("go into that project's folder first") && !said.contains("--share") && !said.contains('\n'), "{said}");
+        }
+        assert!(nothing_shared(NotShared::Hidden).contains("a hidden folder of your home, where keys and settings live"));
+        assert!(nothing_shared(NotShared::Outside).contains("outside your home"));
+    }
+
+    /// Who is an administrator, as sudo's rule for the launcher sees it: a member of wheel, listed or by
+    /// their first group.
+    #[test]
+    fn who_is_an_administrator() {
+        let group = "root:x:0:\nwheel:x:1:alice,dave\nusers:x:100:\nwheelers:x:5:bob\n";
+        let passwd = "alice:x:1000:100::/home/alice:/bin/sh\nbob:x:1001:100::/home/bob:/bin/sh\ncarol:x:1002:1::/home/carol:/bin/sh\n";
+        assert!(administrator(group, passwd, "alice") && administrator(group, passwd, "dave"));
+        assert!(administrator(group, passwd, "carol"), "wheel is her first group");
+        assert!(!administrator(group, passwd, "bob"), "a group that only begins so, and listed in no wheel");
+        assert!(!administrator(group, passwd, "ali") && !administrator(group, passwd, ""));
+        assert!(!administrator("users:x:100:alice\n", passwd, "alice"), "no wheel group at all");
+        assert!(NOT_AN_ADMINISTRATOR.starts_with("Only an administrator") && NOT_AN_ADMINISTRATOR.ends_with("ask an administrator."));
+    }
+
+    /// The long "Shared with your agent" line is for the first time only: a folder whose own entries already
+    /// name the agent was shared before.
+    #[test]
+    fn a_folder_shared_before_is_known_by_its_entry() {
+        let shared = "user::rwx\nuser:torq-agent-alice:rwx\ngroup::r-x\nmask::rwx\nother::r-x\ndefault:user::rwx\ndefault:user:torq-agent-alice:rwx\n";
+        assert!(has_entry(shared, "torq-agent-alice"));
+        assert!(!has_entry(shared, "torq-agent-al") && !has_entry(shared, "torq-agent-alice2") && !has_entry(shared, ""));
+        assert!(!has_entry("user::rwx\ngroup::r-x\nother::r-x\n", "torq-agent-alice"), "never shared");
+        assert!(!has_entry("user::rwx\ndefault:user:torq-agent-alice:rwx\ngroup:torq-agent-alice:rwx\n", "torq-agent-alice"), "only the folder's own entry for the account");
+        let line = shared_line(Path::new("/home/alice/work"), "torq-agent-alice");
+        assert!(line.starts_with("Shared with your agent (torq-agent-alice): /home/alice/work") && line.contains("To take that back: setfacl -R -P -x u:torq-agent-alice,d:u:torq-agent-alice -- /home/alice/work"), "{line}");
     }
 
     #[test]

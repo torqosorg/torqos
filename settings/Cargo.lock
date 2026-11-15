@@ -5043,6 +5043,7 @@ dependencies = [
  "anyhow",
  "nix",
  "regex",
+ "ron",
  "rustix 1.1.6",
  "rustyline",
  "serde",

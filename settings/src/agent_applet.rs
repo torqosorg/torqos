@@ -118,7 +118,7 @@ impl Applet {
         );
         if let Some(t) = self.talk.last() {
             col = col.push(widget::text::caption(t.question.clone()).width(Length::Fill));
-            // Said before the answer, never scrolled out of sight: what it proposes is marked so.
+            // Said before the answer, never scrolled out of sight: what it proposes waits for the person.
             if let Some(taint) = t.taint() {
                 let theme = cosmic::theme::active();
                 col = col.push(widget::text::caption(taint).class(cosmic::theme::Text::Color(theme.cosmic().warning_color().into())).width(Length::Fill));
@@ -236,7 +236,7 @@ impl cosmic::Application for Applet {
                 }
                 self.looking = true;
                 // The service asked only while it runs: looking never starts it.
-                let (client, seqs, known) = (self.client.clone(), self.talk.proposals().into_iter().map(|(s, _)| s).collect(), self.fates.clone());
+                let (client, seqs, known) = (self.client.clone(), self.talk.proposals(), self.fates.clone());
                 return cosmic::task::future(async move { Message::Looked(agentkit::look(client, seqs, known).await) });
             }
             Message::Looked(l) => {
@@ -244,7 +244,7 @@ impl cosmic::Application for Applet {
                 if let Ok(Some(st)) = &l.reach {
                     if conversation::at_look(&mut self.remembered, st, self.talk.working()) {
                         self.talk.clear();
-                        self.note = Some("Your agent forgot the conversation (Forget, from elsewhere): what was shown here is gone from its memory.".into());
+                        self.note = Some(torq::agent::FORGOTTEN_ELSEWHERE.into());
                     }
                 }
                 self.client = l.client;

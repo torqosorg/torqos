@@ -1609,6 +1609,11 @@ fn run_shell(args: &[String]) -> Result<i32> {
     if args.first().map(String::as_str) == Some("agent") && args.get(1).map(String::as_str) == Some("propose") {
         return crate::agent::doctor_mode(&args[2..], true);
     }
+    // `claude`, typed plainly (ADR-055; `torq agent plainCommand`): Claude Code as the person's agent, in the
+    // folder they are in, every word after it Claude Code's own.
+    if args.first().map(String::as_str) == Some("agent") && args.get(1).map(String::as_str) == Some("claude") {
+        return crate::agent::plain(&args[2..]);
+    }
     // A program run as the agent's account (ADR-041): its own entry, not a command of the shell.
     if args.first().map(String::as_str) == Some("agent") {
         return crate::agent::run(&args[1..]);

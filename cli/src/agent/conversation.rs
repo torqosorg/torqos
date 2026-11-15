@@ -128,12 +128,12 @@ impl Conversation {
         self.turns.back()
     }
 
-    /// Every proposal made in this conversation, newest first, and whether its session was tainted.
-    pub fn proposals(&self) -> Vec<(u64, bool)> {
-        self.turns.iter().rev().flat_map(|t| t.proposed.iter().rev().map(|&s| (s, !t.tainted.is_empty()))).collect()
+    /// Every proposal made in this conversation, newest first.
+    pub fn proposals(&self) -> Vec<u64> {
+        self.turns.iter().rev().flat_map(|t| t.proposed.iter().rev().copied()).collect()
     }
 
-    /// The window's own record emptied, as the agent's memory is by `forget`.
+    /// The window's own record emptied, as the conversation is deleted by `forget`.
     pub fn clear(&mut self) {
         self.turns.clear();
     }
@@ -163,10 +163,11 @@ impl Turn {
         s
     }
 
-    /// Said plainly when the session read untrusted text: what it proposes is marked so, and asked for one
-    /// by one.
+    /// Said where the turn proposed something (the broker marks every proposal of a coding tool's, whatever
+    /// it read; its own word for that is not shown): what that means to the person.
+
     pub fn taint(&self) -> Option<String> {
-        (!self.tainted.is_empty()).then(|| format!("Tainted: {}. What it proposes is marked so.", crate::app::taint_line(&self.tainted)))
+        (!self.tainted.is_empty()).then(|| super::ALWAYS_ASKED.to_string())
     }
 }
 
@@ -255,10 +256,10 @@ pub struct ProposalRow {
 }
 
 impl Turn {
-    /// The proposals this turn made, each with its fate (not yet looked up: said so, no Review), and marked
-    /// tainted when the turn's session read untrusted text.
+    /// The proposals this turn made, each with its fate (not yet looked up: said so, no Review).
+
     pub fn proposal_rows(&self, fates: &[(u64, Fate)]) -> Vec<ProposalRow> {
-        let mark = if self.tainted.is_empty() { "" } else { " (tainted)" };
+
         self.proposed
             .iter()
             .map(|&seq| {
@@ -272,7 +273,7 @@ impl Turn {
                     Some(Fate::NotYours) => "not your agent's proposal",
                     Some(Fate::Unread) => "what became of it could not be read (the ledger): looked up again shortly",
                 };
-                ProposalRow { seq, text: format!("Proposed #{seq}{mark}: {said}"), review: matches!(fate, Some(Fate::Waiting | Fate::Failed)) }
+                ProposalRow { seq, text: format!("Proposed #{seq}: {said}"), review: matches!(fate, Some(Fate::Waiting | Fate::Failed)) }
             })
             .collect()
     }
@@ -337,8 +338,8 @@ mod tests {
         assert!(!t.question.contains('\u{1b}') && !t.answer.contains(['\r', '\u{202e}']), "{t:?}");
         assert!(t.answer.starts_with("line one\nrewrite"), "{:?}", t.answer);
         assert_eq!(t.state(), "Answered · read_journal");
-        assert!(t.taint().unwrap().contains("untrusted content (read_journal)"));
-        assert_eq!(c.proposals(), vec![(12, true)]);
+        assert_eq!(t.taint().unwrap(), "Your agent's proposals always wait for you to read and approve them.", "the broker's word for it is not shown");
+        assert_eq!(c.proposals(), vec![12]);
         // What it did, as the engine's steps are said: each kind once, counted.
         let mut d = Conversation::default();
         d.asked("fix it");
@@ -379,7 +380,7 @@ mod tests {
         }
         assert_eq!(c.turns().count(), MAX_TURNS);
         assert_eq!(c.turns().next().unwrap().question, "q5", "the oldest go first");
-        assert_eq!(c.proposals()[0], (MAX_TURNS as u64 + 4, false), "newest first");
+        assert_eq!(c.proposals()[0], MAX_TURNS as u64 + 4, "newest first");
         c.asked("long");
         c.heard(Event::Say { text: "x".repeat(MAX_ANSWER) });
         c.heard(Event::Say { text: "more".into() });
@@ -415,7 +416,7 @@ mod tests {
     }
 
     /// A proposal's row: its fate from the ledger, Review only for one of the person's own agent's that
-    /// waits, and the taint mark wherever the turn's session read untrusted text.
+    /// waits.
     #[test]
     fn proposals_as_a_turn_shows_them() {
         use serde_json::json;
@@ -444,7 +445,7 @@ mod tests {
         assert_eq!(rows[4].text, "Proposed #10: declined");
         c.heard(Event::Tainted { why: "read_journal".into() });
         let rows = c.last().unwrap().proposal_rows(&f);
-        assert!(rows.iter().all(|r| r.text.contains("(tainted)")), "{rows:?}");
+        assert!(rows.iter().all(|r| !r.text.contains("taint")), "the mark is the turn's one sentence, not a word on each row: {rows:?}");
     }
 
     #[test]

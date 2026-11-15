@@ -79,7 +79,7 @@ pub fn brain_of(json: &str) -> anyhow::Result<Brain> {
 pub fn engine_of(json: &str) -> Option<&'static str> {
     let v: serde_json::Value = serde_json::from_str(json).ok()?;
     let id = v["engine"].as_str()?;
-    KNOWN_TOOLS.iter().find(|(known, _, _)| *known == id).map(|(_, name, _)| *name)
+    KNOWN_TOOLS.iter().find(|(known, _, _, _)| *known == id).map(|(_, name, _, _)| *name)
 }
 
 /// What answers this machine's agents: the engine, where the configuration names one (`torq agent engine`);
@@ -102,7 +102,8 @@ impl Brain {
             Place::Local => "Local model (llama-server on this machine)".to_string(),
             Place::ThisMachine(h) => format!("On this machine: {h} · {}", self.model),
             Place::Remote(h) => format!("REMOTE: {h} · {}", self.model),
-            Place::Engine(name) => format!("{name} · REMOTE: what it reads goes to its own service"),
+            // Said by name where TorqOS knows whose it is: what the agent reads leaves the machine, to them.
+            Place::Engine(name) => format!("{name} · what it reads goes to {}", KNOWN_TOOLS.iter().find(|(_, known, _, _)| known == name).map_or("its maker's service", |(_, _, _, maker)| *maker)),
         }
     }
 
@@ -123,6 +124,8 @@ pub struct Setup {
     pub brain: Option<Brain>,
     /// The coding tools the configuration installs for the agents (`torq agent tools`, ADR-051 5).
     pub tools: Vec<CodingTool>,
+    /// Whether `claude`, typed plainly, is a command on this machine: what the person is told to type.
+    pub plain: bool,
 }
 
 /// A coding tool the agents may run (ADR-051 5): what it is, and whether this person's agent has it.
@@ -134,27 +137,37 @@ pub struct CodingTool {
     pub name: &'static str,
     /// Whether the person's agent has its program (in the agent's own profile).
     pub installed: bool,
-    /// How the person starts it: as their agent, in a folder they share.
+    /// How the person starts it, in a terminal: its own name where that is a command here, in the folder they
+    /// want it to work in; else spelled out, as their agent, in a folder they share.
     pub start: String,
 }
 
 /// What the system's configuration wrote of the coding tools (modules/agent.nix).
 const TOOLS_JSON: &str = "/etc/torq/agent-tools.json";
 
-/// The coding tools TorqOS knows (only Claude Code in this step), each with what it is called and its program's name.
-const KNOWN_TOOLS: &[(&str, &str, &str)] = &[("claude-code", "Claude Code", "claude")];
+/// The coding tools TorqOS knows (only Claude Code in this step), each with what it is called, its program's name,
+/// and whose service it asks (where what it reads goes).
+const KNOWN_TOOLS: &[(&str, &str, &str, &str)] = &[("claude-code", "Claude Code", "claude", "Anthropic")];
+
+/// Whether `claude`, typed plainly, is a command on this machine (`torq agent plainCommand`, where Claude Code
+/// is installed for the agents), as `json` (agent-tools.json) says. Not said: it is not.
+pub fn plain_command_of(json: &str) -> bool {
+    serde_json::from_str::<serde_json::Value>(json).is_ok_and(|v| v["plainCommand"] == true)
+}
 
 /// The coding tools `json` (agent-tools.json) names that TorqOS knows, for `agent`'s account: installed if its
-/// program is in that account's own profile (`profile`, its `bin`), as `has` says.
+/// program is in that account's own profile (`profile`, its `bin`), as `has` says. How to start each: its own
+/// name where that is a command here (`plain_command_of`), else through `torq agent run`.
 pub fn tools_of(json: &str, agent: Option<&str>, has: impl Fn(&std::path::Path) -> bool) -> Vec<CodingTool> {
     let named: Vec<String> = serde_json::from_str::<serde_json::Value>(json).ok().and_then(|v| v["tools"].as_array().map(|a| a.iter().filter_map(|t| t.as_str().map(String::from)).collect())).unwrap_or_default();
+    let plain = plain_command_of(json);
     KNOWN_TOOLS
         .iter()
-        .map(|(id, name, program)| CodingTool {
+        .map(|(id, name, program, _)| CodingTool {
             id: id.to_string(),
             name,
             installed: named.iter().any(|n| n == id) && agent.is_some_and(|a| has(&std::path::Path::new("/etc/profiles/per-user").join(a).join("bin").join(program))),
-            start: format!("torq agent run --share <a folder of yours> -- {program}"),
+            start: if plain { program.to_string() } else { format!("torq agent run --share <a folder of yours> -- {program}") },
         })
         .collect()
 }
@@ -166,8 +179,9 @@ pub fn setup() -> anyhow::Result<Setup> {
     let account = super::agent_of(&me);
     let agent = passwd.lines().any(|l| l.split(':').next() == Some(account.as_str())).then_some(account);
     let service = std::path::Path::new(&torq_wire::agent::socket(&me)).exists();
-    let tools = tools_of(&std::fs::read_to_string(TOOLS_JSON).unwrap_or_default(), agent.as_deref(), |p| p.exists());
-    Ok(Setup { me, agent, service, brain: brain()?, tools })
+    let written = std::fs::read_to_string(TOOLS_JSON).unwrap_or_default();
+    let tools = tools_of(&written, agent.as_deref(), |p| p.exists());
+    Ok(Setup { me, agent, service, brain: brain()?, tools, plain: plain_command_of(&written) })
 }
 
 /// How long systemd has to say whether the service runs: a look is never held longer.
@@ -258,7 +272,9 @@ mod tests {
             assert_eq!(engine_of(none), None, "{none}");
         }
         let b = Brain { place: Place::Engine("Claude Code"), model: "Claude Code".into(), endpoint: String::new(), key: false };
-        assert_eq!(b.line(), "Claude Code · REMOTE: what it reads goes to its own service");
+        assert_eq!(b.line(), "Claude Code · what it reads goes to Anthropic");
+        let other = Brain { place: Place::Engine("Something else"), ..b.clone() };
+        assert_eq!(other.line(), "Something else · what it reads goes to its maker's service");
         assert!(b.remote());
     }
 
@@ -270,7 +286,10 @@ mod tests {
         let t = tools_of(r#"{"tools":["claude-code"]}"#, Some("torq-agent-alice"), has);
         assert_eq!(t.len(), 1);
         assert!(t[0].installed && t[0].id == "claude-code" && t[0].name == "Claude Code", "{t:?}");
-        assert_eq!(t[0].start, "torq agent run --share <a folder of yours> -- claude");
+        assert_eq!(t[0].start, "torq agent run --share <a folder of yours> -- claude", "where `claude` is not a command here");
+        let plain = tools_of(r#"{"tools":["claude-code"],"plainCommand":true}"#, Some("torq-agent-alice"), has);
+        assert_eq!(plain[0].start, "claude", "where it is: its own name");
+        assert!(plain_command_of(r#"{"plainCommand":true}"#) && !plain_command_of(r#"{"plainCommand":false}"#) && !plain_command_of("{}") && !plain_command_of(""));
         // Not chosen, no agent, another person's agent, nothing written: not installed for this person.
         for (json, agent) in [(r#"{"tools":[]}"#, Some("torq-agent-alice")), (r#"{"tools":["claude-code"]}"#, None), (r#"{"tools":["claude-code"]}"#, Some("torq-agent-bob")), ("", Some("torq-agent-alice")), ("not json", Some("torq-agent-alice"))] {
             assert!(!tools_of(json, agent, has)[0].installed, "{json} {agent:?}");

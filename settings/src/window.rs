@@ -491,11 +491,11 @@ impl cosmic::Application for Settings {
     /// would ask. An approval the system needs comes after it, in COSMIC's own dialog.
     fn dialog(&self) -> Option<Element<'_, Message>> {
         let Some((question, _)) = self.questions.front() else {
-            // The agent's memory erased: asked first, as a terminal would.
+            // The conversation deleted: asked first.
             return self.forgetting.then(|| {
                 widget::dialog()
                     .title("Forget the conversation?")
-                    .body("Your agent forgets what it remembers of your conversation: later questions start afresh.")
+                    .body(torq::agent::FORGET_ASKS)
                     .primary_action(widget::button::destructive("Forget").on_press(Message::ForgetAnswer(true)))
                     .secondary_action(widget::button::standard("Cancel").on_press(Message::ForgetAnswer(false)))
                     .into()
@@ -2041,8 +2041,8 @@ impl Settings {
         page.into()
     }
 
-    /// The Agent page (ADR-051 2, ADR-055): what the agent is for this person, what answers (its engine), whether a key is
-    /// configured, its memory; the agent's window and the proposals. What changes the system is a line of the
+    /// The Agent page (ADR-051 2, ADR-055): what the agent is for this person, what answers (its engine), its
+    /// conversation; the agent's window and the proposals. What changes the system is a line of the
     /// tree into the draft, committed as every change is.
     fn agent_page(&self) -> Element<'_, Message> {
         let spacing = cosmic::theme::spacing();
@@ -2067,20 +2067,24 @@ impl Settings {
                 .add(settings::item::builder("Your agent account").description(format!("{}'s agent, unprivileged; it sees only folders you share", s.me)).control(widget::text::body(account)))
                 .add(settings::item_row(vec![widget::column::with_capacity(2).push(widget::text::body("Its service")).push(widget::text::caption(service)).width(Length::Fill).into()])),
         );
-        let (model, endpoint, key) = app::agent_model(s.brain.as_ref());
-        let mut brain = settings::section().title("What answers").add(settings::item::builder("Engine or model").description(endpoint).control(widget::text::body(model)));
-        brain = brain.add(
-            settings::item::builder("An API key is configured")
-                .description("Only whether: never its value. Entering a key comes with TorqOS's secrets (ADR-052), not this page; until then an administrator puts its file in place.")
-                .control(widget::text::body(key)),
-        );
+        // What answers: the engine (the program that answers), named, with where what it reads goes; under it
+        // how the person signs it in. A key is only the old `torq doctor`'s to speak of: no such row for an engine.
+        let (model, how, key) = app::agent_model(s.brain.as_ref(), s.plain);
+        let mut brain = settings::section().title("What answers").add(settings::item::builder("The program that answers when you ask (the engine)").description(how).control(widget::text::body(model)));
+        if let Some(key) = key {
+            brain = brain.add(
+                settings::item::builder("An API key is configured")
+                    .description("For `torq doctor` only. Only whether: never its value. An administrator puts its file in place.")
+                    .control(widget::text::body(key)),
+            );
+        }
         page = page.push(brain);
         if let Some((kept, idle)) = app::agent_memory(look.status.as_ref(), s.agent.is_some() && s.service) {
             let forget = widget::button::destructive("Forget…").on_press_maybe((self.busy.is_none() && idle).then_some(Message::Forget));
             page = page.push(
                 settings::section().title("Its conversation").add(
                     settings::item::builder(kept)
-                        .description(format!("Kept by the engine, in your agent's account, and continued after a stop or a restart. Forget starts a new one: {}", app::AGENT_FORGET))
+                        .description(format!("Kept in your agent's account, and continued after a stop or a restart. Forget deletes it, and your next question starts a new one: {}", app::AGENT_FORGET))
                         .control(forget),
                 ),
             );
@@ -2088,17 +2092,17 @@ impl Settings {
         page = page.push(
             settings::section()
                 .title("Open")
-                .add(settings::item::builder("The agent's window").description("Ask it, see what it called, stop it").control(widget::button::standard("Open").on_press(Message::OpenAgent)))
+                .add(settings::item::builder("The agent's window").description("Ask it, see what it did, stop it. Closing the window while it answers stops the answer too").control(widget::button::standard("Open").on_press(Message::OpenAgent)))
                 .add(settings::item::builder("What it proposed").description("Each change waiting for you, with what it does").control(widget::button::standard("Proposals").on_press(Message::Approve))),
         );
         // The coding tools (ADR-051 5): whether this person's agent has each, and how they start it — as their
         // agent, in a folder they share, from a terminal.
         let mut tools = settings::section().title("Coding tools");
         for t in &s.tools {
-            let state = if t.installed { "Installed for your agent" } else { "Not installed (below: it is unfree, so allowed first)" };
+            let state = if t.installed { "Installed for your agent" } else { "Not installed (steps 1 and 2, below)" };
             tools = tools.add(
                 settings::item::builder(t.name)
-                    .description(format!("Runs as your agent, never as you, in the folder you share with it. In a terminal: {}. Sign in there; what it proposes is marked tainted and waits for you.", t.start))
+                    .description(format!("Runs as your agent, never as you, and sees only the folder you start it in. In a terminal, go into a project's folder and type: {}. What it proposes always waits for you.", t.start))
                     .control(widget::text::body(state)),
             );
         }

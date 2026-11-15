@@ -1,6 +1,6 @@
 //! `torq-agent-ui`: the person's agent in a window of its own (ADR-051 4), "TorqOS Agent" in the menu. The
-//! conversation — each question, its answer as it streams, the tools it called and, said plainly, whether
-//! its session read untrusted text — a box to ask in, **Stop**, **Forget** (asked first), and the proposals
+//! conversation — each question, its answer as it streams, what it did on the way and, said plainly, that
+//! what it proposes waits for the person — a box to ask in, **Stop**, **Forget** (asked first), and the proposals
 //! it made, each with **Review** (TorqOS Settings' Proposals page). One window per person: started again (by
 //! the applet's **Open**, or the menu), it raises the one that runs. `torq-agent-ui --check` asks the agent's
 //! status through the same client and prints it, without a window.
@@ -195,7 +195,7 @@ impl Window {
             }
             col = col.push(line);
         }
-        col = col.push(widget::text::caption(if full { t.state() } else { format!("{} · its answer folded away (an earlier turn)", t.state()) }));
+        col = col.push(widget::text::caption(if full { t.state() } else { format!("{} · an earlier question: its answer is not shown here any more", t.state()) }));
         widget::container(col).padding(spacing.space_s).class(cosmic::theme::Container::Card).width(Length::Fill).into()
     }
 }
@@ -247,7 +247,7 @@ impl cosmic::Application for Window {
         cosmic::iced::time::every(EVERY).map(|_| Message::Look)
     }
 
-    /// Forget asks first: the agent's memory of the conversation is erased for good.
+    /// Forget asks first: the conversation is deleted for good.
     fn dialog(&self) -> Option<Element<'_, Message>> {
         // A Decline's question, as torqcli asks it: the proposal, then yes or no.
         if let Some(q) = self.declining.question() {
@@ -267,7 +267,7 @@ impl cosmic::Application for Window {
         Some(
             widget::dialog()
                 .title("Forget the conversation?")
-                .body("Your agent forgets what it remembers of your conversation: later questions start afresh. This window's own record goes too.")
+                .body(format!("{} What this window shows of it goes too.", torq::agent::FORGET_ASKS))
                 .primary_action(widget::button::destructive("Forget").on_press(Message::ForgetAnswer(true)))
                 .secondary_action(widget::button::standard("Cancel").on_press(Message::ForgetAnswer(false)))
                 .into(),
@@ -281,7 +281,7 @@ impl cosmic::Application for Window {
                     return Task::none();
                 }
                 self.looking = true;
-                let (client, seqs, known) = (self.client.clone(), self.talk.proposals().into_iter().map(|(s, _)| s).collect(), self.fates.clone());
+                let (client, seqs, known) = (self.client.clone(), self.talk.proposals(), self.fates.clone());
                 return cosmic::task::future(async move { Message::Looked(agentkit::look(client, seqs, known).await) });
             }
             Message::Looked(l) => {
@@ -290,7 +290,7 @@ impl cosmic::Application for Window {
                     // Forgotten elsewhere (the Agent page, torq ask --forget): not shown as current any more.
                     if conversation::at_look(&mut self.remembered, st, self.talk.working()) {
                         self.talk.clear();
-                        self.note = Some(("Your agent forgot the conversation (Forget, from elsewhere): what was shown here is gone from its memory.".into(), false));
+                        self.note = Some((torq::agent::FORGOTTEN_ELSEWHERE.into(), false));
                     }
                 }
                 self.client = l.client;
@@ -341,7 +341,7 @@ impl cosmic::Application for Window {
                     Ok(()) => {
                         self.talk.clear();
                         self.remembered = Some(conversation::Seen::empty());
-                        ("Your agent has forgotten the conversation.".into(), false)
+                        (torq::agent::FORGOTTEN.into(), false)
                     }
                     Err(e) => (e, true),
                 });
@@ -422,11 +422,11 @@ impl cosmic::Application for Window {
         if !proposals.is_empty() {
             let mut list = widget::row::with_capacity(proposals.len() + 1).spacing(spacing.space_xs).align_y(Alignment::Center);
             list = list.push(widget::text::body("Proposed here:"));
-            for (seq, tainted) in proposals.iter().take(12) {
-                list = list.push(widget::text::body(if *tainted { format!("#{seq} (tainted)") } else { format!("#{seq}") }));
+            for seq in proposals.iter().take(12) {
+                list = list.push(widget::text::body(format!("#{seq}")));
             }
             // Review where one of them still waits for the person.
-            if self.fates.iter().any(|(s, f)| *f == Fate::Waiting && proposals.iter().any(|(p, _)| p == s)) {
+            if self.fates.iter().any(|(s, f)| *f == Fate::Waiting && proposals.contains(s)) {
                 list = list.push(widget::button::standard("Review").on_press(Message::Review));
             }
             page = page.push(list);
@@ -438,7 +438,7 @@ impl cosmic::Application for Window {
             page = page.push(
                 widget::column::with_capacity(3)
                     .spacing(spacing.space_xxs)
-                    .push(widget::text::caption("Attached, sent with your question: untrusted text, so the agent's session is marked tainted when it reads it.").class(cosmic::theme::Text::Color(warn)).width(Length::Fill))
+                    .push(widget::text::caption("Attached: this goes to your agent with your question. It is text your agent reads, and text anyone could have written (a log line, a web page) can carry instructions meant for it. Remove it if you do not want it sent.").class(cosmic::theme::Text::Color(warn)).width(Length::Fill))
                     .push(widget::container(widget::scrollable(widget::text::monotext(a.clone()).width(Length::Fill))).max_height(160.0))
                     .push(widget::button::text("Remove it").on_press(Message::Unattach)),
             );
@@ -453,7 +453,7 @@ impl cosmic::Application for Window {
         ask = ask.push(widget::button::standard("Forget…").on_press_maybe((!working).then_some(Message::Forget)));
         page = page.push(ask);
         if self.talk.last().is_some_and(|t| t.ended == Ended::Working) {
-            page = page.push(widget::text::caption("Answering: Stop ends it, everything it started included."));
+            page = page.push(widget::text::caption("Answering. Stop ends the answer and everything it started; so does closing this window."));
         }
         widget::container(page).padding(spacing.space_m).center_x(Length::Fill).into()
     }

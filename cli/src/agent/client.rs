@@ -46,7 +46,7 @@ impl std::fmt::Display for Unreachable {
         match self {
             Unreachable::NoAgent(agent) => write!(f, "you have no agent account on this machine ({agent}): `torq agent people` names who has one (the owner, by default) — adding you is a system change, an administrator's"),
             Unreachable::IsAgent => write!(f, "this is an agent: it has no agent of its own to ask"),
-            Unreachable::NoService(path) => write!(f, "your agent has no engine on this machine yet ({path} is not there): an administrator chooses one, a system change — `set torq agent tools claude-code`, then `set torq agent engine claude-code` (Claude Code)"),
+            Unreachable::NoService(path) => write!(f, "your agent has nothing to answer with on this machine yet: no engine is chosen (the engine is the program that answers: Claude Code). An administrator sets it up, three changes to the system in this order: `set torq unfree packages claude-code` (allow it), `set torq agent tools claude-code` (install it), `set torq agent engine claude-code` (make it the agent), then `commit`. ({path} is not there.)"),
             Unreachable::NotYours(path) => write!(f, "{path}: not yours to connect to"),
             Unreachable::Silent(what) => write!(f, "your agent did not answer {what}"),
             Unreachable::Refused(text) => write!(f, "{text}"),
