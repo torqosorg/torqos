@@ -25,16 +25,49 @@ pub fn socket(person: &str) -> String {
 /// The longest line either side reads: a request, an event (an answer is at most this long).
 pub const MAX_LINE: usize = 1 << 20;
 
+/// The most of a person's standing instructions for their agent (`~/.config/torq/agent-instructions.md`),
+/// in bytes: a longer text is not used, and said.
+pub const MAX_INSTRUCTIONS: usize = 16 * 1024;
+
+/// What a person's standing instructions begin with, as the engine is given them: whose words they are.
+pub const INSTRUCTIONS_HEAD: &str = "[Standing instructions from the person this agent works for]";
+
+/// A person's standing instructions, as the engine is given them (the service, for the desktop's agent;
+/// `claude` typed in a terminal, for that one): under a line that says whose words they are.
+pub fn standing(instructions: &str) -> String {
+    format!("{INSTRUCTIONS_HEAD}\n{}", instructions.trim())
+}
+
+/// Whether `text` can be a person's standing instructions: not empty, at most `MAX_INSTRUCTIONS` bytes, and
+/// nothing in it that an argument of a command cannot carry (a NUL). Why not, in words, if not.
+pub fn instructions_ok(text: &str) -> Result<(), String> {
+    if text.trim().is_empty() {
+        return Err("they are empty".into());
+    }
+    if text.len() > MAX_INSTRUCTIONS {
+        return Err(format!("they are longer than {} KiB ({} bytes)", MAX_INSTRUCTIONS / 1024, text.len()));
+    }
+    if text.contains('\0') {
+        return Err("they hold a character that is not text (a NUL)".into());
+    }
+    Ok(())
+}
+
 /// What a client asks. An unknown kind or field is refused, not ignored.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "lowercase", deny_unknown_fields)]
 pub enum Request {
     /// A question or a task, with what the person attached to it (an alarm, a failed commit): the
-    /// attached text goes to the engine with the question, marked as attached: something to read.
+    /// attached text goes to the engine with the question, marked as attached: something to read. And the
+    /// person's standing instructions for their agent, if they wrote any (their own file, read by their own
+    /// program: the agent cannot write it): the engine is started with them, and started again, continuing the
+    /// conversation, when a question brings other ones than it was started with.
     Ask {
         text: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         context: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        instructions: Option<String>,
     },
     /// Stop the question being answered (the engine's whole process group, and everything of it). The
     /// conversation is kept: the next question continues it.
@@ -112,9 +145,9 @@ mod tests {
     /// The bytes on the socket, pinned: a change to this format is a deliberate one, made on both sides at once.
     #[test]
     fn the_lines_on_the_socket() {
-        let ask = Request::Ask { text: "why?".into(), context: None };
+        let ask = Request::Ask { text: "why?".into(), context: None, instructions: None };
         assert_eq!(serde_json::to_string(&ask).unwrap(), r#"{"type":"ask","text":"why?"}"#);
-        let with = Request::Ask { text: "this".into(), context: Some("alarm".into()) };
+        let with = Request::Ask { text: "this".into(), context: Some("alarm".into()), instructions: None };
         assert_eq!(serde_json::to_string(&with).unwrap(), r#"{"type":"ask","text":"this","context":"alarm"}"#);
         assert_eq!(serde_json::to_string(&Request::Stop).unwrap(), r#"{"type":"stop"}"#);
         assert_eq!(serde_json::to_string(&Request::Status).unwrap(), r#"{"type":"status"}"#);
@@ -136,6 +169,29 @@ mod tests {
         assert_eq!(serde_json::to_string(&t).unwrap(), r#"{"question":"q","memory":[{"question":"p","answer":null}]}"#);
     }
 
+
+    /// A person's standing instructions go with the question, as a field of its own: absent when there are
+    /// none (the line is then what it always was), and read back as they were sent.
+    #[test]
+    fn standing_instructions_go_with_the_question() {
+        let with = Request::Ask { text: "why?".into(), context: None, instructions: Some("Always answer in German.\n".into()) };
+        let line = r#"{"type":"ask","text":"why?","instructions":"Always answer in German.\n"}"#;
+        assert_eq!(serde_json::to_string(&with).unwrap(), line);
+        assert_eq!(serde_json::from_str::<Request>(line).unwrap(), with);
+        let all = Request::Ask { text: "t".into(), context: Some("c".into()), instructions: Some("i".into()) };
+        assert_eq!(serde_json::to_string(&all).unwrap(), r#"{"type":"ask","text":"t","context":"c","instructions":"i"}"#);
+        assert_eq!(serde_json::from_str::<Request>(r#"{"type":"ask","text":"why?"}"#).unwrap(), Request::Ask { text: "why?".into(), context: None, instructions: None });
+        assert!(serde_json::from_str::<Request>(r#"{"type":"ask","text":"x","instruction":"typo"}"#).is_err(), "a field it does not know is refused");
+        // As the engine is given them: under a line that says whose words they are.
+        assert_eq!(standing("  Always answer in German.\n\n"), "[Standing instructions from the person this agent works for]\nAlways answer in German.");
+        assert!(!standing("-x").starts_with('-'), "never taken for an option");
+        // What can be instructions: some text, at most 16 KiB, nothing a command's argument cannot carry.
+        assert_eq!(instructions_ok("Explain commands: I am new to Linux."), Ok(()));
+        assert_eq!(instructions_ok(&"x".repeat(MAX_INSTRUCTIONS)), Ok(()));
+        assert_eq!(instructions_ok(&"x".repeat(MAX_INSTRUCTIONS + 1)), Err("they are longer than 16 KiB (16385 bytes)".into()));
+        assert_eq!(instructions_ok(" \n\t"), Err("they are empty".into()));
+        assert!(instructions_ok("a\0b").is_err());
+    }
     #[test]
     fn an_unknown_kind_or_field_is_refused() {
         for bad in [r#"{"type":"apply","seq":3}"#, r#"{"type":"ask","text":"x","as":"bob"}"#, r#"{"text":"x"}"#, r#""stop""#, r#"{"type":"ask"}"#] {

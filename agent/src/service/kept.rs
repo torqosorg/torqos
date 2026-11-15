@@ -1,6 +1,7 @@
 //! What the agent's service keeps between its starts (ADR-055 3): which conversation of the engine's is the
 //! person's (the engine's own name for it, so a restart continues it), how many questions it has had, and the
-//! conversation's number (it changes at every forget, so a window that saw another one knows). Two small files
+//! conversation's number (it changes at every forget, so a window that saw another one knows), and a mark of the
+//! standing instructions it began with (so a changed text is known to be another). Two small files
 //! in the service's state directory (`/var/lib/torq-agent-memory/<person>`, 0700, the agent's). Nothing of
 //! what was said is here: the engine keeps its own conversations, in the agent's home.
 //!
@@ -45,6 +46,11 @@ pub struct Conversation {
     pub session: Option<String>,
     /// How many questions it has had.
     pub questions: usize,
+    /// A mark of the person's standing instructions the conversation began with (`mark`; none: it began with
+    /// none). The engine records what it was given at a conversation's first question and keeps to that
+    /// record when the conversation is continued, so the service must know whether today's instructions are
+    /// still those. Not the text: only whether it is the same.
+    pub began: Option<String>,
 }
 
 pub struct Kept {
@@ -76,7 +82,12 @@ impl Kept {
             };
             let questions = v["questions"].as_u64().context("no count of its questions")?;
             anyhow::ensure!(questions <= MAX_QUESTIONS, "its count of questions is more than {MAX_QUESTIONS}");
-            Ok(Conversation { session, questions: questions as usize })
+            let began = match &v["began"] {
+                serde_json::Value::Null => None,
+                serde_json::Value::String(m) if m.len() == 16 && m.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)) => Some(m.clone()),
+                _ => anyhow::bail!("its mark of the instructions is not one"),
+            };
+            Ok(Conversation { session, questions: questions as usize, began })
         };
         read().unwrap_or_else(|e| {
             eprintln!("torq-agent-service: {}: not read ({e:#}); the next question starts a new conversation", self.file().display());
@@ -86,7 +97,7 @@ impl Kept {
 
     /// Keep `c`. Written whole, then put in place: a crash leaves the old one or the new, never half of one.
     pub fn keep(&self, c: &Conversation) -> Result<()> {
-        write_whole(&self.file(), serde_json::json!({ "session": c.session, "questions": c.questions }).to_string().as_bytes())
+        write_whole(&self.file(), serde_json::json!({ "session": c.session, "questions": c.questions, "began": c.began }).to_string().as_bytes())
     }
 
     /// Which conversation this is (never 0): it changes at every `forget`. A counter in its own file; a
@@ -105,6 +116,18 @@ impl Kept {
             _ => Ok(()),
         }
     }
+}
+
+/// A mark of `text` (a person's standing instructions): sixteen hexadecimal digits, the same for the same
+/// text for ever (FNV-1a, 64 bits). Two different texts have the same mark only by a freak chance, and
+/// nothing rests on it but which instructions a continued conversation is given.
+pub fn mark(text: &str) -> String {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in text.bytes() {
+        h ^= u64::from(b);
+        h = h.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    format!("{h:016x}")
 }
 
 /// `bytes` as the whole of `file`: a new file beside it (never written through a link), then renamed over it.
@@ -129,7 +152,7 @@ mod tests {
     use super::*;
 
     fn conversation(session: Option<&str>, questions: usize) -> Conversation {
-        Conversation { session: session.map(String::from), questions }
+        Conversation { session: session.map(String::from), questions, began: None }
     }
 
     #[test]
@@ -209,6 +232,30 @@ mod tests {
         assert_eq!(k.generation(), 7);
         std::fs::write(&g, "9".repeat(MAX_FILE as usize + 1)).unwrap();
         assert_eq!(k.generation(), 1, "larger than its bound: not read");
+    }
+
+    /// The mark of the instructions a conversation began with is kept with it, and is nothing but a mark: the
+    /// same for the same text, another for another, never the text; one that is not a mark is not this program's.
+    #[test]
+    fn the_instructions_a_conversation_began_with_are_marked() {
+        assert_eq!(mark(""), "cbf29ce484222325");
+        assert_eq!(mark("a"), "af63dc4c8601ec8c");
+        assert_eq!(mark("Always answer in German."), mark("Always answer in German."));
+        assert_ne!(mark("Always answer in German."), mark("Always answer in French."));
+        let d = tempfile::tempdir().unwrap();
+        let k = Kept::new(d.path());
+        let began = Conversation { session: Some("abc".into()), questions: 2, began: Some(mark("Always answer in German.")) };
+        k.keep(&began).unwrap();
+        assert_eq!(Kept::new(d.path()).conversation(), began);
+        let text = std::fs::read_to_string(d.path().join("conversation.json")).unwrap();
+        assert!(!text.contains("German"), "the mark, not the text: {text}");
+        // One kept before there were instructions (no such field): it began with none.
+        std::fs::write(d.path().join("conversation.json"), r#"{"session":"abc","questions":2}"#).unwrap();
+        assert_eq!(k.conversation(), conversation(Some("abc"), 2));
+        for bad in [r#"{"session":"abc","questions":2,"began":"Always answer in German."}"#, r#"{"session":"abc","questions":2,"began":7}"#, r#"{"session":"abc","questions":2,"began":"CBF29CE484222325"}"#] {
+            std::fs::write(d.path().join("conversation.json"), bad).unwrap();
+            assert_eq!(k.conversation(), Conversation::default(), "{bad}");
+        }
     }
 
     /// The conversation's number changes at every forget and at nothing else.

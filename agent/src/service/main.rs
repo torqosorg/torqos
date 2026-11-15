@@ -71,6 +71,8 @@ struct Live {
     group: rustix::process::Pid,
     /// Its input: a question is one line written there.
     input: Arc<Mutex<ChildStdin>>,
+    /// The person's standing instructions it was started with (none: it was started with none).
+    instructions: Option<String>,
     /// Whether it was started to continue an earlier conversation.
     continued: bool,
     /// How many questions it has ended.
@@ -245,7 +247,7 @@ impl Agent {
             };
             match serde_json::from_str::<Request>(&line) {
                 Err(e) => refuse(format!("not a request: {e}")),
-                Ok(Request::Ask { text, context }) => {
+                Ok(Request::Ask { text, context, instructions }) => {
                     // A second ask on a connection whose own question is being answered is refused ending with
                     // `status`, not `done`: a `done` here would read as the end of the one being answered.
                     if self.now().asking.as_ref().is_some_and(|a| a.conn == id) {
@@ -253,7 +255,7 @@ impl Agent {
                         out.send(&self.status());
                         continue;
                     }
-                    if let Err(e) = self.ask(&text, context.as_deref(), &out, id) {
+                    if let Err(e) = self.ask(&text, context.as_deref(), instructions.as_deref(), &out, id) {
                         refuse(format!("{e:#}"));
                     }
                 }
@@ -275,9 +277,17 @@ impl Agent {
 
     /// Ask the engine, if it is answering nothing: started first if it does not run (continuing the
     /// conversation kept, if one is), then handed the question. Its events go to `out` as they come, then `done`.
-    fn ask(self: &Arc<Self>, text: &str, context: Option<&str>, out: &Out, conn: u64) -> Result<()> {
+    ///
+    /// `instructions`: the person's standing instructions, as their program read them from their own file.
+    /// The engine is started with them. One that runs with others (the person changed the text, or took it
+    /// away) is ended first and started again, continuing the same conversation, with these.
+    fn ask(self: &Arc<Self>, text: &str, context: Option<&str>, instructions: Option<&str>, out: &Out, conn: u64) -> Result<()> {
         if text.trim().is_empty() {
             bail!("ask what? (an empty question)");
+        }
+        // The person's own program checks them before it sends them; this is the same check, where it counts.
+        if let Some(Err(why)) = instructions.map(torq_wire::agent::instructions_ok) {
+            bail!("your instructions for your agent cannot be used: {why}. Nothing was asked. `torq agent instructions` shows them");
         }
         let line = self.engine.question(text, context);
         let deadline = Instant::now() + ENDING;
@@ -285,6 +295,11 @@ impl Agent {
             let mut now = self.now();
             if now.asking.is_some() {
                 bail!("your agent is answering a question already (one at a time): stop it, or wait");
+            }
+            // An engine started with other instructions than the person has now: ended (it answers nothing), and
+            // waited for just below; the one started after it continues the conversation with these.
+            if let Some(live) = now.engine.as_mut().filter(|l| !l.ending && l.instructions.as_deref() != instructions) {
+                Agent::end(live);
             }
             // An engine that is being ended (a stop or a forget just before this) is waited for: its process is
             // gone, and everything it started, before another one starts.
@@ -300,7 +315,7 @@ impl Agent {
             // agent answering for good.
             let input = match &now.engine {
                 Some(live) => live.input.clone(),
-                None => self.start(&mut now)?,
+                None => self.start(&mut now, instructions)?,
             };
             now.asking = Some(Asking { conn, out: out.clone(), stopped: false });
             break input;
@@ -314,7 +329,9 @@ impl Agent {
 
     /// Start the engine, as the conversation kept says: a new one, or that one continued. Its process in a
     /// group of its own, its environment this program's making (nothing inherited), its home the agent's.
-    fn start(self: &Arc<Self>, now: &mut Now) -> Result<Arc<Mutex<ChildStdin>>> {
+    /// With the person's standing `instructions`; a conversation continued with other ones than it began with
+    /// is told so (engine.rs: the engine would otherwise keep to its record of the old ones).
+    fn start(self: &Arc<Self>, now: &mut Now, instructions: Option<&str>) -> Result<Arc<Mutex<ChildStdin>>> {
         use std::os::unix::process::CommandExt;
         let name = self.engine.name();
         if !self.program.is_file() {
@@ -325,7 +342,13 @@ impl Agent {
         for note in self.engine.link(&self.home) {
             eprintln!("torq-agent-service: {}", clean::clean(&note));
         }
-        let mut cmd = self.engine.command(&self.program, now.conversation.session.as_deref());
+        let mark = instructions.map(kept::mark);
+        // A new conversation begins with these: the engine's record of them is made at its first question.
+        if now.conversation.session.is_none() {
+            now.conversation.began = mark.clone();
+        }
+        let changed = now.conversation.began != mark;
+        let mut cmd = self.engine.command(&self.program, now.conversation.session.as_deref(), instructions, changed);
         cmd.env_clear()
             .env("HOME", &self.home)
             .env("USER", &self.account)
@@ -345,7 +368,7 @@ impl Agent {
         };
         now.starts += 1;
         let input = Arc::new(Mutex::new(input));
-        now.engine = Some(Live { start: now.starts, group: rustix::process::Pid::from_child(&child), input: input.clone(), continued: now.conversation.session.is_some(), ended: 0, unsigned: false, ending: false, reaped: false });
+        now.engine = Some(Live { start: now.starts, group: rustix::process::Pid::from_child(&child), input: input.clone(), instructions: instructions.map(String::from), continued: now.conversation.session.is_some(), ended: 0, unsigned: false, ending: false, reaped: false });
         let (me, start) = (self.clone(), now.starts);
         std::thread::spawn(move || me.hear(child, output, start));
         Ok(input)
@@ -781,7 +804,7 @@ done
     }
 
     fn ask(text: &str) -> Request {
-        Request::Ask { text: text.into(), context: None }
+        Request::Ask { text: text.into(), context: None, instructions: None }
     }
 
     fn done(e: &Event) -> bool {
@@ -849,7 +872,7 @@ done
         let seen = talk(&sock, &[ask("why?")], done);
         assert_eq!(seen, vec![Event::Called { tool: "ran a command".into() }, Event::Say { text: "fine".into() }, Event::Done { exit: 0 }]);
         assert_eq!(status(&sock), standing(false, 1, 1));
-        let with = talk(&sock, &[Request::Ask { text: "and this?".into(), context: Some("an alarm".into()) }], done);
+        let with = talk(&sock, &[Request::Ask { text: "and this?".into(), context: Some("an alarm".into()), instructions: None }], done);
         assert_eq!(with.last(), Some(&Event::Done { exit: 0 }));
         assert_eq!(status(&sock), standing(false, 2, 1), "status says how many questions the conversation has had");
         assert_eq!(lines(&d, "starts"), [format!("{STARTED} linked")], "started once, a new conversation, TorqOS's tools linked before");
@@ -1090,6 +1113,70 @@ echo $$ $(cat "$HOME/own-group") $(cat "$HOME/undumpable") > "$HOME/procs""#,
         assert!(lines(&d, "starts")[1].contains("--resume s-1"));
     }
 
+    /// The person's standing instructions come with each question and the engine is started with them. The
+    /// same ones: the same process. Other ones (changed, taken away, put back): the engine is ended and started
+    /// again, continuing the same conversation, with the new ones, and told to set its record of the old ones
+    /// aside exactly when they are not the ones the conversation began with. A restart of the service knows
+    /// which those were.
+    #[test]
+    fn standing_instructions_start_the_engine_and_a_change_restarts_it_in_the_same_conversation() {
+        let (a, sock, d) = agent(r#"echo $$ >> "$HOME/pids"; say hello; ok"#, me());
+        let with = |text: &str, instructions: Option<&str>| Request::Ask { text: text.into(), context: None, instructions: instructions.map(String::from) };
+        let started = || std::fs::read_to_string(d.path().join("starts")).unwrap_or_default().replace(" linked\n", "\n");
+        let german = "--append-system-prompt [Standing instructions from the person this agent works for]\nAlways answer in German.";
+        let french = "--append-system-prompt [Standing instructions from the person this agent works for]\nAlways answer in French.";
+        let ok = |seen: Vec<Event>| assert_eq!(seen, [Event::Say { text: "hello".into() }, Event::Done { exit: 0 }]);
+        ok(talk(&sock, &[with("one", Some("Always answer in German.\n"))], done));
+        assert_eq!(started(), format!("{STARTED} {german}\n"), "started with them, a new conversation");
+        ok(talk(&sock, &[with("two", Some("Always answer in German.\n"))], done));
+        assert_eq!(started(), format!("{STARTED} {german}\n"), "the same instructions: the same process");
+        assert_eq!(a.now().conversation.began, Some(kept::mark("Always answer in German.\n")));
+        // Changed: ended, and started again continuing the conversation, its record of the old ones set aside.
+        ok(talk(&sock, &[with("three", Some("Always answer in French."))], done));
+        let second = format!("{STARTED} --resume s-1 {french} --system-prompt-snapshot off\n");
+        assert_eq!(started(), format!("{STARTED} {german}\n{second}"));
+        assert_eq!(status(&sock), standing(false, 3, 1), "the same conversation: its number, and its count going on");
+        let pids = lines(&d, "pids");
+        assert!(pids.len() == 3 && pids[0] == pids[1] && pids[1] != pids[2] && gone(pids[0].parse().unwrap()), "another process, the first one gone: {pids:?}");
+        // Taken away: started again with none, the old record set aside.
+        ok(talk(&sock, &[with("four", None)], done));
+        let third = format!("{STARTED} --resume s-1 --system-prompt-snapshot off\n");
+        assert_eq!(started(), format!("{STARTED} {german}\n{second}{third}"));
+        // Put back as the conversation began: its own record is right again, and stands.
+        ok(talk(&sock, &[with("five", Some("Always answer in German.\n"))], done));
+        let fourth = format!("{STARTED} --resume s-1 {german}\n");
+        assert_eq!(started(), format!("{STARTED} {german}\n{second}{third}{fourth}"));
+        // The service started again: it still knows which instructions the conversation began with.
+        talk(&sock, &[Request::Stop], |e| matches!(e, Event::Status { .. }));
+        let again = agent_in(d.path(), me());
+        let sock2 = d.path().join("again.sock");
+        serving(&again, &sock2);
+        ok(talk(&sock2, &[with("six", Some("Always answer in French."))], done));
+        assert_eq!(started(), format!("{STARTED} {german}\n{second}{third}{fourth}{second}"), "continued, and the changed ones known as changed");
+        assert_eq!(status(&sock2), standing(false, 6, 1));
+        // Forgotten: a new conversation begins with whatever the instructions are then, and nothing to set aside.
+        assert_eq!(talk(&sock2, &[Request::Forget], |e| matches!(e, Event::Forgotten)), [Event::Forgotten]);
+        ok(talk(&sock2, &[with("seven", Some("Always answer in French."))], done));
+        assert!(started().ends_with(&format!("{second}{STARTED} {french}\n")), "{}", started());
+        assert_eq!(again.now().conversation.began, Some(kept::mark("Always answer in French.")));
+    }
+
+    /// Instructions that cannot be used (too long, empty, not text an argument carries): refused in words,
+    /// and nothing is asked or started. The person's own program does not send such; the service checks all the same.
+    #[test]
+    fn instructions_that_cannot_be_used_are_refused() {
+        let (_a, sock, d) = agent("say never; ok", me());
+        for (bad, why) in [("x".repeat(torq_wire::agent::MAX_INSTRUCTIONS + 1), "they are longer than 16 KiB (16385 bytes)"), ("  \n".to_string(), "they are empty"), ("a\0b".to_string(), "they hold a character that is not text (a NUL)")] {
+            let seen = talk(&sock, &[Request::Ask { text: "hi".into(), context: None, instructions: Some(bad) }], done);
+            assert_eq!(seen, [Event::Error { text: format!("your instructions for your agent cannot be used: {why}. Nothing was asked. `torq agent instructions` shows them") }, Event::Done { exit: 1 }]);
+        }
+        assert_eq!(lines(&d, "starts"), Vec::<String>::new(), "nothing started");
+        assert_eq!(status(&sock), standing(false, 0, 1));
+        // The control: the longest that may be.
+        let longest = "x".repeat(torq_wire::agent::MAX_INSTRUCTIONS);
+        assert_eq!(talk(&sock, &[Request::Ask { text: "hi".into(), context: None, instructions: Some(longest) }], done).last(), Some(&Event::Done { exit: 0 }));
+    }
+
     /// An engine that ends in the middle of an answer again and again: from the second time in a row the
     /// person is also told where an administrator reads why. An answer it ends itself starts the count anew.
     #[test]
@@ -1232,7 +1319,7 @@ fi"#;
         std::fs::write(d.path().join("engine"), script(body).replace("n=0\n", "n=0\nset -- \"$*\"\n")).unwrap();
         std::fs::set_permissions(d.path().join("engine"), std::fs::Permissions::from_mode(0o755)).unwrap();
         std::fs::create_dir(d.path().join("state")).unwrap();
-        kept::Kept::new(&d.path().join("state")).keep(&kept::Conversation { session: Some("gone-1".into()), questions: 4 }).unwrap();
+        kept::Kept::new(&d.path().join("state")).keep(&kept::Conversation { session: Some("gone-1".into()), questions: 4, began: None }).unwrap();
         let a = agent_in(d.path(), me());
         let sock = d.path().join("s.sock");
         serving(&a, &sock);
@@ -1294,7 +1381,7 @@ fi"#;
             let input = Arc::new(Mutex::new(c.stdin.take().unwrap()));
             (c, input)
         };
-        let live = |c: &Child, input: &Arc<Mutex<ChildStdin>>, reaped| Live { start: 1, group: rustix::process::Pid::from_child(c), input: input.clone(), continued: false, ended: 0, unsigned: false, ending: false, reaped };
+        let live = |c: &Child, input: &Arc<Mutex<ChildStdin>>, reaped| Live { start: 1, group: rustix::process::Pid::from_child(c), input: input.clone(), instructions: None, continued: false, ended: 0, unsigned: false, ending: false, reaped };
         // Reaped: stop and forget (both end it through `Agent::end`) mark it ending and signal nothing.
         let (mut other, input) = group();
         let mut l = live(&other, &input, true);
