@@ -2041,7 +2041,7 @@ impl Settings {
         page.into()
     }
 
-    /// The Agent page (ADR-051 2): what the agent is for this person, the model it asks, whether a key is
+    /// The Agent page (ADR-051 2, ADR-055): what the agent is for this person, what answers (its engine), whether a key is
     /// configured, its memory; the agent's window and the proposals. What changes the system is a line of the
     /// tree into the draft, committed as every change is.
     fn agent_page(&self) -> Element<'_, Message> {
@@ -2068,7 +2068,7 @@ impl Settings {
                 .add(settings::item_row(vec![widget::column::with_capacity(2).push(widget::text::body("Its service")).push(widget::text::caption(service)).width(Length::Fill).into()])),
         );
         let (model, endpoint, key) = app::agent_model(s.brain.as_ref());
-        let mut brain = settings::section().title("Its model").add(settings::item::builder("Model").description(endpoint).control(widget::text::body(model)));
+        let mut brain = settings::section().title("What answers").add(settings::item::builder("Engine or model").description(endpoint).control(widget::text::body(model)));
         brain = brain.add(
             settings::item::builder("An API key is configured")
                 .description("Only whether: never its value. Entering a key comes with TorqOS's secrets (ADR-052), not this page; until then an administrator puts its file in place.")
@@ -2078,9 +2078,9 @@ impl Settings {
         if let Some((kept, idle)) = app::agent_memory(look.status.as_ref(), s.agent.is_some() && s.service) {
             let forget = widget::button::destructive("Forget…").on_press_maybe((self.busy.is_none() && idle).then_some(Message::Forget));
             page = page.push(
-                settings::section().title("Its memory").add(
+                settings::section().title("Its conversation").add(
                     settings::item::builder(kept)
-                        .description(format!("Its last turns, kept by its service; an answer from a session that read untrusted text is never kept. Forget: {}", app::AGENT_FORGET))
+                        .description(format!("Kept by the engine, in your agent's account, and continued after a stop or a restart. Forget starts a new one: {}", app::AGENT_FORGET))
                         .control(forget),
                 ),
             );

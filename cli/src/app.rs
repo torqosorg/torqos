@@ -2005,7 +2005,12 @@ pub fn decline_line(seq: u64) -> String {
 /// and committed as every other change is. Its API key is not one: a file outside the repository, entered with
 /// TorqOS's secrets (ADR-052), not here.
 pub const AGENT_SETTINGS: &[Action] = &[
-    draft("Turn the agent on (doctor mode)", "set torq agent doctor enable true"),
+    // The engine (ADR-055): the coding tool that is the agent, everywhere the desktop offers one. It must be
+    // installed for the agents first (below).
+    draft("Make Claude Code the agent (install it for the agents first)", "set torq agent engine claude-code"),
+    draft("No agent: choose no engine", "delete torq agent engine"),
+    // TorqOS's own small helper, at a terminal only (`torq doctor`), and its model: going (ADR-055).
+    draft("Turn on `torq doctor`, TorqOS's own helper at a terminal (it is being replaced by the engine)", "set torq agent doctor enable true"),
     cf("Use a remote model: its endpoint…", "set torq agent doctor endpoint "),
     cf("The remote model's name…", "set torq agent doctor model "),
     draft("Use the local model again", "delete torq agent doctor endpoint"),
@@ -2089,7 +2094,7 @@ mod page_tests {
         assert_eq!(s(&["read_journal", "show_ledger"]), "made after reading untrusted content (read_journal, show_ledger)");
         assert_eq!(s(&[]), "made after reading untrusted content");
         let n = s(&["not-the-resident-agent", "coding-tool", "show_alarms"]);
-        assert!(n.starts_with("not from TorqOS's resident agent") && n.contains("(not-the-resident-agent, coding-tool)") && n.ends_with("untrusted content (show_alarms)"), "{n}");
+        assert!(n.starts_with("made by a coding tool (your agent's engine") && n.contains("(not-the-resident-agent, coding-tool)") && n.ends_with("untrusted content (show_alarms)"), "{n}");
         let m = s(&["local-tcp-model"]);
         assert!(m.starts_with("its model could have been stood in for") && !m.contains("untrusted content"), "{m}");
     }
@@ -2188,7 +2193,7 @@ pub fn taint_line(sources: &[String]) -> String {
     let names = |v: &[&String]| v.iter().map(|s| history::one_line(s, 40)).collect::<Vec<_>>().join(", ");
     let mut said = Vec::new();
     if !unseen.is_empty() {
-        said.push(format!("not from TorqOS's resident agent — a coding tool, torq agent run or torq doctor — so the broker cannot see what it read ({})", names(&unseen)));
+        said.push(format!("made by a coding tool (your agent's engine, torq agent run or torq doctor), so the broker cannot see what it read ({})", names(&unseen)));
     }
     if !model.is_empty() {
         said.push(format!("its model could have been stood in for by another program on this machine ({})", names(&model)));
@@ -2665,7 +2670,7 @@ pub fn desktop_to_apply(n: usize) -> Option<String> {
 pub fn agent_service_line(agent: Option<&str>, service: bool, status: Option<&Result<crate::agent::client::Status, String>>) -> String {
     match (agent, service, status) {
         (None, _, _) => "Not set up for you: `torq agent people` names who has one (an administrator's change)".to_string(),
-        (_, false, _) => "Not on this machine: it runs where doctor mode is on".to_string(),
+        (_, false, _) => "Not on this machine: no engine is chosen for the agents (`torq agent engine`, an administrator's change)".to_string(),
         (_, true, Some(Ok(st))) if st.running => "Working on a question".to_string(),
         (_, true, Some(Ok(_))) => "Set up, and idle".to_string(),
         (_, true, Some(Err(e))) => format!("Set up, but it did not answer: {e}"),
@@ -2673,10 +2678,12 @@ pub fn agent_service_line(agent: Option<&str>, service: bool, status: Option<&Re
     }
 }
 
-/// The Agent page's model section: the model's line, its endpoint, whether a key is configured.
+/// The Agent page's model section: what answers, in a line; where (the model's endpoint, or for an engine how
+/// the person signs it in); whether a key is configured.
 pub fn agent_model(brain: Option<&crate::agent::setup::Brain>) -> (String, String, &'static str) {
     match brain {
-        None => ("None: doctor mode is off".to_string(), String::new(), "No"),
+        None => ("None: no engine is chosen".to_string(), String::new(), "No"),
+        Some(b) if matches!(b.place, crate::agent::setup::Place::Engine(_)) => (b.line(), "It signs in by itself, as your agent. Once, in a terminal: `torq agent run -- claude`, then /login".to_string(), "No: it needs none"),
         Some(b) => (b.line(), b.endpoint.clone(), if b.key { "Yes" } else { "No" }),
     }
 }
@@ -2687,14 +2694,14 @@ pub fn agent_memory(status: Option<&Result<crate::agent::client::Status, String>
     match (status, has_service) {
         (Some(Ok(st)), _) => Some((
             match st.turns {
-                0 => "It remembers nothing of your conversation".to_string(),
-                1 => "It remembers 1 turn of your conversation".to_string(),
-                n => format!("It remembers {n} turns of your conversation"),
+                0 => "A new conversation: nothing asked yet".to_string(),
+                1 => "Your conversation has had 1 question".to_string(),
+                n => format!("Your conversation has had {n} questions"),
             },
             !st.running,
         )),
         // Not running: not asked (asking would start it). Forget still can, when asked to.
-        (None, true) => Some(("It is not running now: how much it remembers shows while it runs".to_string(), true)),
+        (None, true) => Some(("It is not running now: how long the conversation is shows while it runs".to_string(), true)),
         _ => None,
     }
 }
@@ -4386,12 +4393,15 @@ mod moved_decisions {
         assert_eq!(agent_service_line(Some("a"), true, Some(&idle)), "Set up, and idle");
         assert_eq!(agent_service_line(Some("a"), true, Some(&Err("no".into()))), "Set up, but it did not answer: no");
         assert_eq!(agent_service_line(Some("a"), true, None), "Set up");
-        assert_eq!(agent_model(None), ("None: doctor mode is off".to_string(), String::new(), "No"));
+        assert_eq!(agent_model(None), ("None: no engine is chosen".to_string(), String::new(), "No"));
+        let e = crate::agent::setup::Brain { place: crate::agent::setup::Place::Engine("Claude Code"), model: "Claude Code".into(), endpoint: String::new(), key: false };
+        let (line, how, key) = agent_model(Some(&e));
+        assert!(line.starts_with("Claude Code") && how.contains("`torq agent run -- claude`, then /login") && key == "No: it needs none", "{line} / {how} / {key}");
         let b = crate::agent::setup::Brain { place: crate::agent::setup::Place::Local, model: "m".into(), endpoint: "http://x".into(), key: true };
         assert_eq!(agent_model(Some(&b)), (b.line(), "http://x".to_string(), "Yes"));
-        assert_eq!(agent_memory(Some(&idle), false), Some(("It remembers nothing of your conversation".into(), true)));
-        assert_eq!(agent_memory(Some(&busy), true), Some(("It remembers 1 turn of your conversation".into(), false)));
-        assert_eq!(agent_memory(Some(&Ok(Status { running: false, turns: 4, conversation: 0 })), true).unwrap().0, "It remembers 4 turns of your conversation");
+        assert_eq!(agent_memory(Some(&idle), false), Some(("A new conversation: nothing asked yet".into(), true)));
+        assert_eq!(agent_memory(Some(&busy), true), Some(("Your conversation has had 1 question".into(), false)));
+        assert_eq!(agent_memory(Some(&Ok(Status { running: false, turns: 4, conversation: 0 })), true).unwrap().0, "Your conversation has had 4 questions");
         assert_eq!(agent_memory(None, true).map(|m| m.1), Some(true));
         assert_eq!(agent_memory(None, false), None);
         assert_eq!(agent_memory(Some(&Err("x".into())), true), None);

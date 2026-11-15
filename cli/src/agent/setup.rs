@@ -1,5 +1,6 @@
 //! What the agent is for this person and on this machine (ADR-051 2 and 4), as the Agent page, the applet
-//! and the window say it: their agent account, whether its service is here, and the model it asks —
+//! and the window say it: their agent account, whether its service is here, and what answers — the engine
+//! (ADR-055, from /etc/torq/agent-tools.json), or the model TorqOS's own `torq doctor` asks —
 //! local, or REMOTE and where — read from what the system's configuration put in /etc/torq/agent.json
 //! (modules/ai.nix), everyone's to read. Whether a key is configured is a yes or a no: its file's name is
 //! in the configuration, its contents are the agent's, never read here.
@@ -26,6 +27,9 @@ pub enum Place {
     ThisMachine(String),
     /// Off the machine: its host. What the agent reads leaves the machine.
     Remote(String),
+    /// The engine's own (ADR-055): the coding tool asks its maker's service itself, as the agent, with the
+    /// sign-in kept in the agent's account. What the agent reads leaves the machine.
+    Engine(&'static str),
 }
 
 /// The model the agent asks.
@@ -71,8 +75,19 @@ pub fn brain_of(json: &str) -> anyhow::Result<Brain> {
     Ok(Brain { place, model: crate::history::one_line(&w.model, 80), endpoint: crate::history::one_line(&shown_url(&w.endpoint), 200), key: w.api_key_file.is_some() })
 }
 
-/// The model this machine's agent asks: `None` when doctor mode is off (nothing configured).
+/// The engine `json` (agent-tools.json) names, if it is one TorqOS knows: what it is called.
+pub fn engine_of(json: &str) -> Option<&'static str> {
+    let v: serde_json::Value = serde_json::from_str(json).ok()?;
+    let id = v["engine"].as_str()?;
+    KNOWN_TOOLS.iter().find(|(known, _, _)| *known == id).map(|(_, name, _)| *name)
+}
+
+/// What answers this machine's agents: the engine, where the configuration names one (`torq agent engine`);
+/// else the model TorqOS's own `torq doctor` asks, where doctor mode is on; else `None`.
 pub fn brain() -> anyhow::Result<Option<Brain>> {
+    if let Some(name) = engine_of(&std::fs::read_to_string(TOOLS_JSON).unwrap_or_default()) {
+        return Ok(Some(Brain { place: Place::Engine(name), model: name.to_string(), endpoint: String::new(), key: false }));
+    }
     match std::fs::read_to_string(AGENT_JSON) {
         Ok(json) => brain_of(&json).map(Some),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
@@ -87,11 +102,12 @@ impl Brain {
             Place::Local => "Local model (llama-server on this machine)".to_string(),
             Place::ThisMachine(h) => format!("On this machine: {h} · {}", self.model),
             Place::Remote(h) => format!("REMOTE: {h} · {}", self.model),
+            Place::Engine(name) => format!("{name} · REMOTE: what it reads goes to its own service"),
         }
     }
 
     pub fn remote(&self) -> bool {
-        matches!(self.place, Place::Remote(_))
+        matches!(self.place, Place::Remote(_) | Place::Engine(_))
     }
 }
 
@@ -125,7 +141,7 @@ pub struct CodingTool {
 /// What the system's configuration wrote of the coding tools (modules/agent.nix).
 const TOOLS_JSON: &str = "/etc/torq/agent-tools.json";
 
-/// The coding tools TorqOS knows (only Claude Code in this step), each with its program's name.
+/// The coding tools TorqOS knows (only Claude Code in this step), each with what it is called and its program's name.
 const KNOWN_TOOLS: &[(&str, &str, &str)] = &[("claude-code", "Claude Code", "claude")];
 
 /// The coding tools `json` (agent-tools.json) names that TorqOS knows, for `agent`'s account: installed if its
@@ -231,6 +247,19 @@ mod tests {
         assert_eq!(here.place, Place::ThisMachine("127.0.0.1:8099".into()));
         assert!(!here.remote());
         assert!(brain_of("{}").is_err());
+    }
+
+    /// ADR-055: the engine the configuration names, by what it is called; none named, or one this TorqOS does
+    /// not know, is no engine. Where there is one, it is what answers, said remote.
+    #[test]
+    fn the_engine_the_configuration_names() {
+        assert_eq!(engine_of(r#"{"tools":["claude-code"],"engine":"claude-code"}"#), Some("Claude Code"));
+        for none in [r#"{"tools":["claude-code"],"engine":null}"#, r#"{"tools":["claude-code"]}"#, r#"{"engine":"something-else"}"#, "", "not json"] {
+            assert_eq!(engine_of(none), None, "{none}");
+        }
+        let b = Brain { place: Place::Engine("Claude Code"), model: "Claude Code".into(), endpoint: String::new(), key: false };
+        assert_eq!(b.line(), "Claude Code · REMOTE: what it reads goes to its own service");
+        assert!(b.remote());
     }
 
     /// ADR-051 5: the coding tools the configuration chose, installed where the agent's own profile has them;

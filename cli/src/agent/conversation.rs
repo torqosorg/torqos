@@ -30,7 +30,7 @@ pub enum Ended {
 pub struct Turn {
     pub question: String,
     pub answer: String,
-    /// The tools it called, in order.
+    /// What it did on the way, in order: each tool it used, in words ("ran a command").
     pub called: Vec<String>,
     /// Why its session is tainted: each source of untrusted text it read (none: untainted).
     pub tainted: Vec<String>,
@@ -148,8 +148,17 @@ impl Turn {
             Ended::Stopped => "Stopped".to_string(),
             Ended::Failed => "Did not finish".to_string(),
         };
-        if !self.called.is_empty() {
-            s.push_str(&format!(" · called {}", self.called.join(", ")));
+        // What it did on the way, each kind once, in the order it first did it: "ran a command (3 times), read a file".
+        let mut did: Vec<(&str, usize)> = Vec::new();
+        for c in &self.called {
+            match did.iter_mut().find(|(name, _)| *name == c.as_str()) {
+                Some((_, n)) => *n += 1,
+                None => did.push((c, 1)),
+            }
+        }
+        if !did.is_empty() {
+            let said: Vec<String> = did.iter().map(|(name, n)| if *n == 1 { name.to_string() } else { format!("{name} ({n} times)") }).collect();
+            s.push_str(&format!(" · {}", said.join(", ")));
         }
         s
     }
@@ -327,9 +336,16 @@ mod tests {
         assert!(!c.working() && t.ended == Ended::Answered);
         assert!(!t.question.contains('\u{1b}') && !t.answer.contains(['\r', '\u{202e}']), "{t:?}");
         assert!(t.answer.starts_with("line one\nrewrite"), "{:?}", t.answer);
-        assert_eq!(t.state(), "Answered · called read_journal");
+        assert_eq!(t.state(), "Answered · read_journal");
         assert!(t.taint().unwrap().contains("untrusted content (read_journal)"));
         assert_eq!(c.proposals(), vec![(12, true)]);
+        // What it did, as the engine's steps are said: each kind once, counted.
+        let mut d = Conversation::default();
+        d.asked("fix it");
+        for tool in ["ran a command", "read a file", "ran a command", "changed a file", "ran a command"] {
+            d.heard(Event::Called { tool: tool.into() });
+        }
+        assert_eq!(d.last().unwrap().state(), "Working… · ran a command (3 times), read a file, changed a file");
         // Nothing more lands on a turn that is over.
         c.heard(Event::Say { text: "late".into() });
         assert!(!c.last().unwrap().answer.contains("late"));
