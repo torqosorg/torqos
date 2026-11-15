@@ -75,6 +75,20 @@ struct Live {
     /// Being ended (stopped, forgotten, or of no more use): nothing more of it is heard, and nothing is asked
     /// of it.
     ending: bool,
+    /// Its process has been waited for (reaped): its group's number is no longer its own, and may be another
+    /// process's by now, so the group is never signalled again. What it left is the sweep's.
+    reaped: bool,
+}
+
+impl Live {
+    /// Kill its process group, all of it at once: only while its process is not yet reaped. After that the
+    /// group's number is not the engine's any more, and what is left of it
+    /// is in this unit's control group, which `sweep` ends.
+    fn kill(&self) {
+        if !self.reaped {
+            let _ = rustix::process::kill_process_group(self.group, rustix::process::Signal::KILL);
+        }
+    }
 }
 
 /// The question being answered: the connection that asked, where its events go, whether it was stopped.
@@ -324,7 +338,7 @@ impl Agent {
         };
         now.starts += 1;
         let input = Arc::new(Mutex::new(input));
-        now.engine = Some(Live { start: now.starts, group: rustix::process::Pid::from_child(&child), input: input.clone(), continued: now.conversation.session.is_some(), ended: 0, unsigned: false, ending: false });
+        now.engine = Some(Live { start: now.starts, group: rustix::process::Pid::from_child(&child), input: input.clone(), continued: now.conversation.session.is_some(), ended: 0, unsigned: false, ending: false, reaped: false });
         let (me, start) = (self.clone(), now.starts);
         std::thread::spawn(move || me.hear(child, output, start));
         Ok(input)
@@ -351,8 +365,25 @@ impl Agent {
             // Whoever waits for this may have stopped waiting (below): nothing is left to tell.
             let _ = heard.send(());
         });
+        // Waited for without being reaped (WNOWAIT): while it is dead and not yet reaped, its number is still
+        // its own, and its group's. So the last signal to its group, the mark that it is reaped, and the
+        // reaping are done together, with the agent's state held: no stop or forget can signal the group
+        // between them, and none does after (`Live::kill`). Once reaped, the number may be given to another
+        // process (a `torq agent run` session's, the same account), which a signal to "the engine's group"
+        // would then reach.
+        let pid = rustix::process::Pid::from_child(&child);
+        while matches!(rustix::process::waitid(rustix::process::WaitId::Pid(pid), rustix::process::WaitIdOptions::EXITED | rustix::process::WaitIdOptions::NOWAIT), Err(rustix::io::Errno::INTR)) {}
+        {
+            let mut now = self.now();
+            if let Some(live) = now.engine.as_mut().filter(|l| l.start == start) {
+                live.kill();
+                live.reaped = true;
+            }
+            // At once: it has ended (above). If it had not (the wait failed), it is waited for below, marked
+            // already, and nothing signals its group meanwhile.
+            let _ = child.try_wait();
+        }
         let _ = child.wait();
-        let _ = rustix::process::kill_process_group(rustix::process::Pid::from_child(&child), rustix::process::Signal::KILL);
         self.sweep();
         // What it wrote before it ended is taken first: its last lines may be its answer's end. Waited for a
         // moment only: where what it left cannot be swept (outside a unit), its output may never end.
@@ -424,7 +455,7 @@ impl Agent {
                 }
                 if lost || unsigned {
                     live.ending = true;
-                    let _ = rustix::process::kill_process_group(live.group, rustix::process::Signal::KILL);
+                    live.kill();
                 }
                 say.push(Event::Done { exit: if ok { 0 } else { 1 } });
             }
@@ -447,7 +478,7 @@ impl Agent {
     /// End the engine's process: nothing more of it is heard, and `hear` sees to the rest of it.
     fn end(live: &mut Live) -> u64 {
         live.ending = true;
-        let _ = rustix::process::kill_process_group(live.group, rustix::process::Signal::KILL);
+        live.kill();
         live.start
     }
 
@@ -1160,6 +1191,63 @@ fi"#;
         assert_eq!(status(&sock), standing(true, 1, 1), "another connection's end does not stop it");
         a.stop(Some(asker));
         assert_eq!(status(&sock), standing(false, 1, 1));
+    }
+
+    /// Once the engine's process is reaped, its group is never signalled again, by a stop or a forget or
+    /// anything else: the number may be another process's by then. Here the "other process" is a group of
+    /// the test's own, standing where a reused number would.
+    #[test]
+    fn a_reaped_engines_group_is_never_signalled() {
+        use std::os::unix::process::CommandExt;
+        let group = || {
+            let mut c = std::process::Command::new("sleep").arg("300").process_group(0).stdin(Stdio::piped()).spawn().unwrap();
+            let input = Arc::new(Mutex::new(c.stdin.take().unwrap()));
+            (c, input)
+        };
+        let live = |c: &Child, input: &Arc<Mutex<ChildStdin>>, reaped| Live { start: 1, group: rustix::process::Pid::from_child(c), input: input.clone(), continued: false, ended: 0, unsigned: false, ending: false, reaped };
+        // Reaped: stop and forget (both end it through `Agent::end`) mark it ending and signal nothing.
+        let (mut other, input) = group();
+        let mut l = live(&other, &input, true);
+        assert_eq!(Agent::end(&mut l), 1);
+        assert!(l.ending);
+        l.kill();
+        std::thread::sleep(Duration::from_millis(200));
+        assert!(matches!(other.try_wait(), Ok(None)), "a group that is no longer the engine's was signalled");
+        // The control: not reaped, the same call ends the whole group.
+        let mut l = live(&other, &input, false);
+        Agent::end(&mut l);
+        let ended = other.wait().unwrap();
+        assert_eq!(std::os::unix::process::ExitStatusExt::signal(&ended), Some(9));
+        // And through the service: an engine that ended by itself is marked reaped, while it is still the
+        // agent's engine (here for the moment its output is waited for: a program it left, in a session of its
+        // own, holds that open, and nothing sweeps outside a unit).
+        let body = format!(
+            r#"TORQ_TEST_HELPER=own-session {} --exact tests::helper --ignored --test-threads=1 3>&1 >/dev/null 2>&1 & echo $! > "$HOME/own"
+while [ "$(cut -d' ' -f6 /proc/$!/stat)" = "$(cut -d' ' -f6 /proc/$$/stat)" ]; do sleep 0.05; done
+say bye; exit 0"#,
+            std::env::current_exe().unwrap().display()
+        );
+        let (a, sock, d) = agent(&body, me());
+        let mut c = UnixStream::connect(&sock).unwrap();
+        writeln!(c, "{}", serde_json::to_string(&ask("go")).unwrap()).unwrap();
+        let t = Instant::now();
+        while a.now().engine.as_ref().map(|l| l.reaped) != Some(true) {
+            assert!(t.elapsed() < Duration::from_secs(10), "an engine that ended was never marked reaped while it was still the agent's");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let left = rustix::process::Pid::from_raw(pid(&d, "own")).unwrap();
+        assert!(rustix::process::test_kill_process(left).is_ok(), "the control: what it left still runs, its group never signalled after the reaping");
+        let _ = rustix::process::kill_process(left, rustix::process::Signal::KILL);
+        let mut r = BufReader::new(c);
+        let mut last = None;
+        while let Ok(Line::Text(l)) = read_line(&mut r, MAX_LINE) {
+            last = Some(serde_json::from_str::<Event>(&l).unwrap());
+            if matches!(last, Some(Event::Done { .. })) {
+                break;
+            }
+        }
+        assert_eq!(last, Some(Event::Done { exit: 1 }));
+        assert!(a.now().engine.is_none());
     }
 
     /// Not part of the suite: the service by hand, against a real engine, outside systemd (how the real Claude
