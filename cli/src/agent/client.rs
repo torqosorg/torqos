@@ -79,7 +79,7 @@ impl Unreachable {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Status {
     pub running: bool,
-    /// How many turns of the conversation it remembers.
+    /// How many questions this conversation has had.
     pub turns: usize,
     /// Which conversation it is: changes when it is forgotten (0: an older agent, which does not say).
     pub conversation: u64,
@@ -206,7 +206,7 @@ impl Client {
         }
     }
 
-    /// Erase the conversation it remembers (refused while a task runs).
+    /// End the conversation, so the next question starts a new one (refused while a question is being answered).
     pub fn forget(&self) -> Result<(), Unreachable> {
         let mut l = self.send(&Request::Forget)?;
         loop {

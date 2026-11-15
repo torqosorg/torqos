@@ -190,9 +190,9 @@ pub fn glance(reach: &Result<Option<Status>, Unreachable>, here: Option<&Turn>) 
         Ok(Some(s)) if s.running => ("Working…".into(), Mood::Working),
         Ok(Some(s)) => {
             let kept = match s.turns {
-                0 => "remembers nothing yet".to_string(),
-                1 => "remembers 1 turn".to_string(),
-                n => format!("remembers {n} turns"),
+                0 => "no conversation yet".to_string(),
+                1 => "a conversation of 1 question".to_string(),
+                n => format!("a conversation of {n} questions"),
             };
             (format!("Idle · {kept}"), if failed { Mood::Trouble } else { Mood::Quiet })
         }
@@ -397,8 +397,8 @@ mod tests {
     #[test]
     fn at_a_glance() {
         let idle = |turns| Ok(Some(Status { running: false, turns, conversation: 0 }));
-        assert_eq!(glance(&idle(0), None), ("Idle · remembers nothing yet".into(), Mood::Quiet));
-        assert_eq!(glance(&idle(3), None), ("Idle · remembers 3 turns".into(), Mood::Quiet));
+        assert_eq!(glance(&idle(0), None), ("Idle · no conversation yet".into(), Mood::Quiet));
+        assert_eq!(glance(&idle(3), None), ("Idle · a conversation of 3 questions".into(), Mood::Quiet));
         assert_eq!(glance(&Ok(None), None), ("Idle".into(), Mood::Quiet), "not running: not asked");
         assert_eq!(glance(&Ok(Some(Status { running: true, turns: 1, conversation: 0 })), None).1, Mood::Working, "a task from anywhere: working");
         assert_eq!(glance(&Err(Unreachable::NoAgent("torq-agent-me".into())), None), ("The agent is not set up for you".into(), Mood::Quiet));

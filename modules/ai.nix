@@ -80,14 +80,11 @@ in
       default = null;
       example = "/var/lib/torq/secrets/model.key";
       description = ''
-        A file holding the endpoint's API key, on one line, that only root reads — e.g.
-        `sudo install -D -o root -g root -m 600 key /var/lib/torq/secrets/model.key`. Each person's resident
-        agent (`torq-agent@<person>.service`) gets it as its own systemd credential (LoadCredential): no
-        program run as the agent under `torq agent run` — Claude Code included — can read it, and neither the
-        one-shot `torq doctor` nor `torq agent propose` can use a keyed model (they say so; `torq ask` does).
-        Never in the config repo (everyone on the machine reads it, and its history keeps every value), nor in
-        an agent's home or a person's (whatever runs as them reads it). A string, not a Nix path, so the key is
-        never copied into the world-readable store.
+        Not used any more, and going with doctor mode (ADR-055). It named a file holding the endpoint's API
+        key, which only the agent's service was given; that service now runs the person's coding tool
+        (`torq agent engine`), which signs in by itself. `torq doctor` and `torq agent propose` cannot use a
+        model that needs a key, and say so. Never put a key in the config repo (everyone on the machine reads
+        it, and its history keeps every value).
       '';
     };
 

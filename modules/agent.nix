@@ -11,8 +11,9 @@ let
   agentOf = person: "torq-agent-${person}";
   # Each agent account, and the person it serves: the broker's map (broker.json), and the accounts below.
   # (Only names that fit: one too long is the assertion's to say, below, not NixOS's abort.)
-  # Each person's resident agent's own account (ADR-051 3, amended 2026-11-11): its service runs as it, never as
-  # the agent account any program run as the agent has.
+  # The old loop's second account for each person (ADR-051 3, amended 2026-11-11). Nothing runs as it any more
+  # (ADR-055: the agent's service runs the person's engine, as the agent account); it is still made where doctor
+  # mode is on, for the broker's rule about it, and goes with both (docs/HARNESS-AS-A-SYSTEM.md, phase 2).
   residentOf = person: "torq-resident-${person}";
   fits = p: lib.stringLength (residentOf p) <= 31;
   # The launcher's sudo rules that would let its caller set the environment (SETENV), as text or as rules.
@@ -21,8 +22,10 @@ let
     ++ lib.filter (l: lib.hasInfix "torq-agent-run" l && lib.hasInfix "SETENV" l) (lib.splitString "\n" config.security.sudo.extraConfig);
   personsLikeAgents = lib.attrNames (lib.filterAttrs (n: u: u.isNormalUser && (lib.hasPrefix "torq-agent" n || lib.hasPrefix "torq-resident" n)) config.users.users);
   agents = lib.listToAttrs (map (p: lib.nameValuePair (agentOf p) p) (lib.filter fits cfg.people));
-  # Where the resident service runs (its socket, its unit): the resident accounts, and the broker's map of them.
-  resident = cfg.service.enable && config.torq.agent.doctor.enable;
+  # Where the agent's service is (its socket, its unit): where an engine is chosen (ADR-055 1).
+  bridged = cfg.engine != null;
+  # Where the old loop's accounts are still made, and the broker's map of them: where doctor mode is on.
+  resident = config.torq.agent.doctor.enable;
   # Any torq-agent@ unit this configuration writes (an instance or the template) whose text delegates its control
   # group. A unit file a package brings (systemd.packages) is not in systemd.units, so not seen here: it is a file
   # inside a built package, which evaluation cannot read. Those are read in the units as built (unitsCheck).
@@ -31,8 +34,7 @@ let
   # The agent's units as this module writes them (below), each with the one file NixOS makes of it: what the
   # check on the units as built holds the finished directory to. Nothing else there may be named as they are,
   # and none may have a drop-in.
-  ownUnits = lib.concatMap (person: [ "torq-agent@${person}.service" "torq-agent@${person}.socket" ]
-    ++ lib.optional (modelKey != null) "torq-agent-key@${person}.service") (lib.attrValues agents);
+  ownUnits = lib.concatMap (person: [ "torq-agent@${person}.service" "torq-agent@${person}.socket" ]) (lib.attrValues agents);
   expectedUnits = lib.genAttrs ownUnits (name: "${config.systemd.units.${name}.unit}/${name}");
   # What each of those units must say, word for word (2026-11-14, KNOWN-GAPS 6zzo): the text NixOS makes of
   # this module's own values (ownSockets, ownServices, below) and of nothing else. Why this way. Another module
@@ -79,11 +81,11 @@ let
       DirectoryMode = "0755";
       Accept = false;
       RemoveOnStop = true;
-      # A start that fails (the model's key missing, most of all) must not cost the person their socket. The
+      # A start that fails must not cost the person their socket. The
       # connection that asked for the start stays waiting on the socket when the service fails, and systemd,
       # listening again, would start the service for it again at once, over and over, until a limit stopped
       # the socket for good (failed, and its file removed): then nothing answers until an administrator
-      # restarts the socket, the key long back or not. With this, systemd turns away what is waiting each time
+      # restarts the socket, whatever was wrong long put right. With this, systemd turns away what is waiting each time
       # the service ends, so one question is one start, and the socket stays. (systemd 260.5,
       # src/core/socket.c: socket_trigger_notify, socket_enter_listening. Together with the service's
       # StartLimitIntervalSec=0, below.) The cost: a question that arrives in the instant the service ends is
@@ -95,11 +97,9 @@ let
     description = "${person}'s TorqOS agent (proposes; a person applies)";
     requires = [ "torq-agent@${person}.socket" ];
     after = [ "torq-agent@${person}.socket" "torq-broker.socket" ];
-    # A start that failed: if the model's key is missing, TorqOS says so in this unit's journal (keyMissing).
-    onFailure = lib.optional (modelKey != null) "torq-agent-key@${person}.service";
     # No limit on how often it may be started. systemd's own (5 starts in 10 s) would otherwise be reached by a
-    # person asking a few times while the key is missing, and a socket whose service has reached it is stopped
-    # for good ("service-start-limit-hit"): the key put back, the agent would still not answer until an
+    # person asking a few times while its start fails, and a socket whose service has reached it is stopped
+    # for good ("service-start-limit-hit"): what was wrong put right, the agent would still not answer until an
     # administrator restarted the socket. Nothing restarts this unit by itself (no Restart=); only a connection
     # starts it, one start for each (the socket's FlushPending), and only its own person can connect. How often
     # that may be is the socket's to limit, by systemd's defaults, left as they are: more than 15 in 2 s are
@@ -107,29 +107,28 @@ let
     # asking by hand does not reach.
     unitConfig.StartLimitIntervalSec = 0;
     serviceConfig = {
-      ExecStart = "${config.torq.agent.doctor.package}/bin/torq-agent-service ${person}";
+      # The bridge (agent/src/service): it runs the engine named here, hands it each question, and passes on
+      # what it says. `bridged` (below) says this unit is only where an engine is chosen.
+      ExecStart = "${config.torq.agent.doctor.package}/bin/torq-agent-service ${person} ${toString cfg.engine}";
       # The listening socket as standard input (Accept=no): the program takes it from there.
       StandardInput = "socket";
       StandardOutput = "journal";
       StandardError = "journal";
-      # Its own account, never the agent's (ADR-051 3 amended 2026-11-11).
-      User = residentOf person;
-      Group = residentOf person;
-      # Its memory and its programs' home (`home`, which the service makes): the agent's, 0700, outside the
-      # agent's home, hidden from `torq agent run` (modules/agent-run.sh). The agent's home itself is out of
-      # its reach (below): every program run as the agent can write there, and nothing it leaves is read by
-      # what runs in this unit — which is why the broker may take this unit for the resident agent (ADR-051
-      # step 5).
+      # The person's one agent account (ADR-055 2): the engine runs as it, as every program `torq agent run`
+      # starts does, and so does the bridge that starts it. The broker takes whatever arrives from this
+      # account for a coding tool's, tainted: each proposal waits for the person (broker/src/socket.rs).
+      User = agent;
+      Group = agent;
+      # What the service keeps (the conversation's name at the engine, its count: agent/src/service/kept.rs),
+      # 0700, outside the agent's home, hidden from `torq agent run` (modules/agent-run.sh).
       WorkingDirectory = "/var/lib/torq-agent-memory/${person}";
       StateDirectory = "torq-agent-memory/${person}";
       StateDirectoryMode = "0700";
-      InaccessiblePaths = [ "-/var/lib/${agent}" ];
-      # The model's key (a file only root reads): this unit's own credential, in a place only it sees; hidden
-      # from `torq agent run` besides (modules/agent-run.sh hides /run/credentials). ADR-051 step 5, amended.
-      LoadCredential = lib.optional (modelKey != null) "model-key:${toString modelKey}";
-      # (As root, outside the sandbox, as `+` runs a command: it also takes away root's word of a missing
-      # key, the person's, in /run.)
-      ExecStartPre = lib.optional (modelKey != null) "+${keyCheck} ${person}";
+      # The agent's own home: the engine's home and its working directory (its settings, its sign-in, its
+      # conversations), and the one other place it may write (the system is read-only, below).
+      ReadWritePaths = [ "/var/lib/${agent}" ];
+      # What systemd gives other units as credentials: hidden, as `torq agent run` hides it.
+      InaccessiblePaths = [ "-/run/credentials" ];
       # The launcher's sandbox: every home (and /root, and the people's runtime directories in
       # /run/user) out of reach, /tmp its own, no privilege at all.
       ProtectHome = true;
@@ -137,9 +136,10 @@ let
       NoNewPrivileges = true;
       CapabilityBoundingSet = "";
       AmbientCapabilities = "";
-      # And more: the system read-only but its memory; no other user's processes seen; the kernel's
-      # settings, modules, logs and clock, and the control groups, untouchable (no Delegate: a process of
-      # the agent's cannot move itself into this unit's group, whose cgroup.procs is root's).
+      # And more than the launcher's: the system read-only but its home and what it keeps; no other user's
+      # processes seen; the kernel's settings, modules, logs and clock, and the control groups, untouchable (no
+      # Delegate: nothing the engine starts can leave this unit's group, whose cgroup.procs is root's, so the
+      # service ends all of it when the engine is stopped).
       ProtectSystem = "strict";
       ProtectProc = "invisible";
       ProtectKernelTunables = true;
@@ -152,112 +152,30 @@ let
       RestrictRealtime = true;
       RestrictSUIDSGID = true;
       LockPersonality = true;
-      MemoryDenyWriteExecute = true;
-      RemoveIPC = true;
+      # Not MemoryDenyWriteExecute: an engine is a JavaScript program (Claude Code), whose runtime writes the
+      # code it then runs; with it the engine does not start. `torq agent run` never had it.
+      # Its own IPC namespace: what the engine makes there goes with the unit. Not RemoveIPC: that takes away
+      # the account's objects on the whole machine when this unit stops, and the account is also the one a
+      # `torq agent run` session at a terminal runs as.
       PrivateIPC = true;
       KeyringMode = "private";
       UMask = "0077";
-      # Unix sockets (the broker, the local model), the network (a remote model), and netlink: the
-      # doctor's `ip` and `iw` read the interfaces through it (hardware_facts).
+      # Unix sockets (the broker), the network (the engine's own service), and netlink (a program reads the
+      # machine's interfaces through it: torq-mcp's `ip` and `iw`, the engine's runtime).
       RestrictAddressFamilies = [ "AF_UNIX" "AF_INET" "AF_INET6" "AF_NETLINK" ];
       SystemCallFilter = [ "@system-service" ];
       SystemCallErrorNumber = "EPERM";
       SystemCallArchitectures = "native";
       # Not PrivateUsers: in a user namespace of its own, SO_PEERCRED would name every caller nobody.
-      # Not PrivateDevices: the doctor's rfkill and lsblk read devices.
+      # Not PrivateDevices: torq-mcp's rfkill and lsblk read devices.
     };
-  }) agents
-  # What says a missing key (keyMissing), started only by the agent unit's failure. Root, as the check at the
-  # start is, since the key's directory is root's alone to look into; but with one capability (to look, not to
-  # write), a read-only system and no new privilege. It is given no credential and never opens the key.
-  // lib.optionalAttrs (modelKey != null) (lib.mapAttrs' (agent: person: lib.nameValuePair "torq-agent-key@${person}" {
-    description = "${person}'s TorqOS agent: says a missing model key";
-    # Never held back for starting often: it runs once for each failed start, and a failed start is one
-    # question of the person's (the socket's FlushPending, above), as often as the socket lets them ask.
-    unitConfig.StartLimitIntervalSec = 0;
-    serviceConfig = {
-      Type = "oneshot";
-      ExecStart = "${keyMissing} torq-agent@${person}.service";
-      CapabilityBoundingSet = "CAP_DAC_READ_SEARCH";
-      NoNewPrivileges = true;
-      ProtectSystem = "strict";
-      # The one place it writes: its word for the person (keyMissingDir, root's own directory, where being
-      # its owner is enough to write). Not there, it still says its line in the journal.
-      ReadWritePaths = [ "-${keyMissingDir}" ];
-    };
-  }) agents);
+  }) agents;
   residents = lib.optionalAttrs resident (lib.listToAttrs (map (p: lib.nameValuePair (residentOf p) p) (lib.filter fits cfg.people)));
   # Claude Code for the agents (ADR-051 5, `torq agent tools`): the version dev mode pins (modules/dev.nix), unfree,
   # so only where `torq unfree` allows it — else the assertion below says so, and nothing unfree is evaluated.
   claudeChosen = builtins.elem "claude-code" cfg.tools;
   claudeAllowed = config.torq.unfree.all || builtins.elem "claude-code" config.torq.unfree.packages;
   claudeCode = pkgs.claude-code.override { manifest = lib.importJSON ./claude-code-manifest.json; };
-  # The model key, checked where it is read, at each start of a resident agent, as root (`+`): a plain file, root's,
-  # that no one else may read (step 5's second review: the configuration can only check the path's name). Otherwise
-  # the unit does not start, and its journal says why.
-  modelKey = config.torq.agent.doctor.apiKeyFile;
-  # Root's word, for the person, that their agent could not start for want of the key (keyMissing writes it;
-  # torqcli's client reads that it is there, cli/src/agent/client.rs KEY_MISSING_DIR): an empty file named for
-  # the person, in a directory only root writes. It holds nothing of the key, not even its path.
-  keyMissingDir = "/run/torq/agent-key-missing";
-  keyCheck = pkgs.writeShellScript "torq-agent-key-check" ''
-    f=${lib.escapeShellArg (toString modelKey)}
-    # This command runs, so systemd has loaded the unit's credential: the key is there. Root's word that it was
-    # missing is taken away before the key is judged below, since a key that is there and wrong is not a key
-    # missing. ($1: the person, a login name.)
-    # A word that cannot be taken away stops the start, and says so: an agent that started never has a word
-    # left saying it could not (torqcli's client would repeat it to the person the next time the agent was slow
-    # to answer). It is root's own file in root's own directory in /run, so this fails only on a machine where
-    # something else is wrong (a directory put at that name, /run read-only), which the line names.
-    if [ -n "''${1-}" ]; then
-      word=${keyMissingDir}/"$1"
-      if ! ${pkgs.coreutils}/bin/rm -f -- "$word"; then
-        echo "torq-agent: root's word that the model's key was missing, $word, could not be taken away (the line before this says why): the resident agent is not started while that word would still be read. The key itself may be in order. Take the word away as root (sudo rm -r $word), then ask again" >&2
-        exit 1
-      fi
-    fi
-    if [ -L "$f" ] || [ ! -f "$f" ]; then
-      echo "torq-agent: the model's key, $f, is not a plain file (a link is not followed): the resident agent is not started" >&2
-      exit 1
-    fi
-    owner=$(${pkgs.coreutils}/bin/stat -c %u -- "$f")
-    mode=$(${pkgs.coreutils}/bin/stat -c %a -- "$f")
-    if [ "$owner" != 0 ] || [ $(( 0$mode & 077 )) -ne 0 ]; then
-      echo "torq-agent: the model's key, $f, must be root's and readable by no one else (sudo chown root:root $f; sudo chmod 600 $f): the resident agent is not started" >&2
-      exit 1
-    fi
-  '';
-  # A key that is not there at all. systemd refuses the unit before any of its commands runs: it loads a unit's
-  # credentials for every command it starts, ExecCondition and ExecStartPre included (tried on systemd 260), so
-  # the check above never gets to speak. This runs after that failure, as a unit of its own that the agent's unit
-  # names in OnFailure. It looks only at whether anything is at the path, never at what the file holds, and
-  # writes TorqOS's own line into the journal as an entry about the agent's unit (OBJECT_SYSTEMD_UNIT, which
-  # `journalctl -u` and `systemctl status` show when root wrote it). It changes nothing on the way to a start:
-  # no key, no start, as before.
-  keyMissing = pkgs.writeShellScript "torq-agent-key-missing" ''
-    f=${lib.escapeShellArg (toString modelKey)}
-    unit=$1
-    # The same said to the person, who cannot read the journal or look into the key's directory: an empty file
-    # of root's, named for them (the unit's instance), that torqcli's client finds after its failure. Only that
-    # it is there is read. It is taken away as soon as it is no longer so: here, when the key is found there,
-    # and at the agent's next start that loads its key (keyCheck).
-    person=''${unit#torq-agent@}
-    person=''${person%.service}
-    word=${keyMissingDir}/$person
-    if [ -e "$f" ]; then
-      ${pkgs.coreutils}/bin/rm -f -- "$word" || true
-      exit 0
-    fi
-    msg="torq-agent: the model's key, $f, is missing (torq.agent.doctor.apiKeyFile names it; a link to nothing counts as missing): the resident agent is not started without it. Put the key there as root's alone: sudo install -D -o root -g root -m 600 <the key's file> $f"
-    printf 'MESSAGE=%s\nPRIORITY=3\nSYSLOG_IDENTIFIER=torq-agent\nOBJECT_SYSTEMD_UNIT=%s\n' "$msg" "$unit" | ${pkgs.util-linux}/bin/logger --journald || echo "$msg" >&2
-    # Made anew each time (never written through whatever was there), its time this failure's.
-    umask 022
-    ${pkgs.coreutils}/bin/rm -f -- "$word" || true
-    ${pkgs.coreutils}/bin/touch -- "$word" || echo "torq-agent: could not leave word of the missing key at $word" >&2
-    # The key put there while this ran: a start that loaded it may already have taken the word away, before it
-    # was written again just above. Not left to say what is no longer so.
-    if [ -e "$f" ]; then ${pkgs.coreutils}/bin/rm -f -- "$word" || true; fi
-  '';
   # `torq agent run` (ADR-041, 5): a person starts a program as their own agent. This runs as root
   # (through sudo), hides every home and the people's runtime directories, gives a private /tmp,
   # binds in only the directory shared with it, and drops to the caller's agent for good.
@@ -276,6 +194,11 @@ in
       Each person now has an agent account of their own (ADR-051 3), which proposes packages only for
       that person: list the people who get one in torq.agent.people (the owner, by default). No agent
       proposes another person's packages any more.'')
+    # Removed, not renamed: the service was TorqOS's own loop, on wherever doctor mode was. It is now the
+    # bridge to the person's engine, and is there exactly where an engine is chosen (ADR-055).
+    (lib.mkRemovedOptionModule [ "torq" "agent" "service" "enable" ] ''
+      The agent's service is there where an engine is chosen: set torq.agent.engine (`set torq agent engine
+      claude-code`) to have it, and leave it unset to have none.'')
   ];
 
   options.torq.agent.launcher = lib.mkOption {
@@ -316,6 +239,20 @@ in
     '';
   };
 
+  options.torq.agent.engine = lib.mkOption {
+    type = lib.types.nullOr (lib.types.enum [ "claude-code" ]);
+    default = null;
+    example = "claude-code";
+    description = ''
+      The coding tool that is this machine's agent: `claude-code`, Claude Code. Every place in TorqOS that
+      offers AI (the agent's window and panel applet, `torq ask` at a terminal) then reaches it. It runs as
+      each person's own agent account, in the same sandbox as `torq agent run`: it sees its own home, not
+      yours, and can only propose a change to the system, which you approve. Install it for the agents first
+      (`set torq agent tools claude-code`), and sign in once: `torq agent run -- claude`, then /login. Not
+      set, the default: the machine has no agent to ask.
+    '';
+  };
+
   options.torq.agent.claudeCode = lib.mkOption {
     type = lib.types.package;
     internal = true;
@@ -324,24 +261,12 @@ in
     description = "Claude Code, as `torq agent tools` installs it for the agents (a VM test puts a stand-in here: the real one is unfree, and large).";
   };
 
-  options.torq.agent.service.enable = lib.mkOption {
-    type = lib.types.bool;
-    default = true;
-    description = ''
-      Whether each person in `people` has their agent resident (ADR-051 3): `torq-agent@<person>.service`,
-      started by its socket (`/run/torq-agent/<person>.sock`, theirs alone) the first time they `torq ask`,
-      as their agent account, in a sandbox. It keeps their conversation (its last turns) and runs one task
-      at a time. Only where doctor mode is on (`torq.agent.doctor.enable`): its harness and its model are
-      the doctor's. Not tied to the desktop: `torq ask` works on a server's terminal too.
-    '';
-  };
-
   options.torq.agent.residents = lib.mkOption {
     type = lib.types.attrsOf lib.types.str;
     internal = true;
     readOnly = true;
     default = residents;
-    description = "Each resident agent's own account and the person it serves (the broker's map, /etc/torq/broker.json; ADR-051 3 amended 2026-11-11).";
+    description = "The old loop's second account for each person and the person it serves (the broker's map, /etc/torq/broker.json; ADR-051 3 amended 2026-11-11). Only where doctor mode is on; nothing runs as it since ADR-055.";
   };
 
   options.torq.agent.agents = lib.mkOption {
@@ -419,6 +344,11 @@ in
       # ADR-039: nothing unfree in an image, and nothing unfree unasked. Claude Code is unfree in nixpkgs.
       assertion = !claudeChosen || claudeAllowed;
       message = "torq.agent.tools: claude-code is unfree (nixpkgs' licence), and nothing unfree is installed unless allowed: allow it first with `set torq unfree packages claude-code` (or `set torq unfree all true`), then `set torq agent tools claude-code`.";
+    }
+    {
+      # The engine is one of the coding tools installed for the agents: without its program there is nothing to run.
+      assertion = cfg.engine == null || builtins.elem cfg.engine cfg.tools;
+      message = "torq.agent.engine: ${toString cfg.engine} is not installed for the agents. Install it first: `set torq agent tools ${toString cfg.engine}`, then `set torq agent engine ${toString cfg.engine}`.";
     }];
 
     # Static system users: the broker names its caller from /etc/passwd, where a DynamicUser is not.
@@ -449,7 +379,8 @@ in
       ++ lib.optional (cfg.tools != [ ]) config.torq.agent.doctor.package;
     # The coding tools chosen (the launcher links TorqOS into them at each start; the Agent page shows them),
     # and TorqOS's skill, linked into each (ADR-051 7): advice, which the tool may rewrite.
-    environment.etc."torq/agent-tools.json".text = builtins.toJSON { inherit (cfg) tools; };
+    # And the engine among them, if one is chosen (ADR-055 1): what the person's programs say answers them.
+    environment.etc."torq/agent-tools.json".text = builtins.toJSON { inherit (cfg) tools engine; };
     environment.etc."torq/skills/torqos/SKILL.md".source = ./agent-skill.md;
     # Where the launcher binds a shared directory first, as root, before checking it (root's alone).
     systemd.tmpfiles.settings."10-torq-agent"."/run/torq-agent-stage".d = { mode = "0700"; user = "root"; group = "root"; };
@@ -465,27 +396,42 @@ in
     '';
   }
 
-  # Each person's agent, resident (ADR-051 3, step 2): `torq-agent@<person>.service`, started by its
-  # socket the first time the person asks (`torq ask`), so it costs nothing until then. It holds the
-  # person's conversation and runs one task at a time, each TorqOS's harness (`torq-doctor --propose
-  # --task`) as its own process, as the agent, in the sandbox below — at least the launcher's (every
-  # home hidden, the people's runtime directories hidden, its own /tmp, no privilege, its home its own)
-  # and systemd's hardening besides. Only where doctor mode is on: the harness and its model are its.
-  (lib.mkIf (cfg.service.enable && config.torq.agent.doctor.enable) {
-    # What the broker's resident rule rests on (ADR-051 3 amended 2026-11-11, socket::found_resident), each said.
-    # The primary defence is the uid: the resident's own account, which nothing run as the agent account is. The
-    # second lines: the unit's control group is root's to fill (nothing delegated, in any torq-agent@ unit this configuration writes — an
-    # instance or the template); no agent or resident account has a user manager to make units with;
-    # a same-uid program may trace only its own descendants.
+  # The old loop's second accounts (ADR-051 3, amended 2026-11-11), where doctor mode is on: hidden — no
+  # password, no login, no home, no group but its own. Nothing runs as one since ADR-055; the broker still
+  # counts it as the person's agent (broker.json's `residents`) until its rule goes (phase 2).
+  (lib.mkIf resident {
+    users.users = lib.mapAttrs (account: person: {
+      isSystemUser = true;
+      group = account;
+      description = "${person}'s TorqOS agent, resident (the old loop's account; proposes, a person applies)";
+      home = "/var/empty";
+      createHome = false;
+      hashedPassword = "!";
+    }) residents;
+    users.groups = lib.mapAttrs (_: _: { }) residents;
+  })
+
+  # Each person's agent, as a service (ADR-051 3, ADR-055 3): `torq-agent@<person>.service`, started by its
+  # socket the first time the person asks (`torq ask`, the agent's window), so it costs nothing until then.
+  # It is the bridge to the engine: it runs the engine as one long-lived process for the person's
+  # conversation, as the agent, in the sandbox below — at least the launcher's (every home hidden, the
+  # people's runtime directories hidden, its own /tmp, no privilege, its home its own) and systemd's
+  # hardening besides. Only where an engine is chosen.
+  (lib.mkIf bridged {
+    # What the service's sandbox rests on besides the unit's own text, each said: the unit's control group is
+    # root's to fill and nothing in it can leave (nothing delegated, in any torq-agent@ unit this configuration
+    # writes — an instance or the template), so stopping the engine ends all of it; no agent account has a
+    # user manager to make units with; a same-uid program may trace only its own descendants (the engine
+    # cannot trace the bridge that started it, nor a `torq agent run` session).
     assertions = lib.concatLists (lib.mapAttrsToList (agent: person:
       let sc = config.systemd.services."torq-agent@${person}".serviceConfig; in [
         {
           assertion = !(sc ? Delegate) && !(sc ? DelegateSubgroup);
-          message = "systemd.services.\"torq-agent@${person}\": no Delegate or DelegateSubgroup — a second line behind the resident account's uid: the broker also takes this unit's control group for ${person}'s resident agent, which only root may move a process into.";
+          message = "systemd.services.\"torq-agent@${person}\": no Delegate or DelegateSubgroup — nothing ${person}'s agent starts may leave this unit's control group, which only root may move a process into or out of: stopping the agent ends all of it.";
         }
         {
-          assertion = (config.users.users.${agent}.linger or null) != true && (config.users.users.${residentOf person}.linger or null) != true;
-          message = "users.users.${agent}.linger, users.users.${residentOf person}.linger: neither account has a user manager of its own (a second line behind the uids: its units would be its own to make, outside the resident agent's control group).";
+          assertion = (config.users.users.${agent}.linger or null) != true;
+          message = "users.users.${agent}.linger: the agent account has no user manager of its own (its units would be its own to make, outside its service's control group and its sandbox).";
         }
       ]) agents)
       # Each of the agent's units says what this module writes and nothing else (intendedText, above): who it
@@ -497,11 +443,11 @@ in
       }) ownUnits
       ++ [{
         assertion = delegatedUnits == [ ];
-        message = "systemd.units ${lib.concatStringsSep ", " delegatedUnits}: no Delegate or DelegateSubgroup in any torq-agent@ unit, an instance or the template — a second line behind the resident account's uid (the unit's control group, root's to fill).";
+        message = "systemd.units ${lib.concatStringsSep ", " delegatedUnits}: no Delegate or DelegateSubgroup in any torq-agent@ unit, an instance or the template (the unit's control group is root's to fill: stopping the agent ends all of it).";
       }
       {
         assertion = (config.boot.kernel.sysctl."kernel.yama.ptrace_scope" or 0) >= 1;
-        message = "boot.kernel.sysctl.\"kernel.yama.ptrace_scope\": at least 1 where the agent is resident — a second line behind the uids: a program of the agent's may trace only its own descendants.";
+        message = "boot.kernel.sysctl.\"kernel.yama.ptrace_scope\": at least 1 where the agent has a service: a program of the agent's may trace only its own descendants.";
       }];
     # The same "nothing delegated", for what the assertions above cannot see: a unit file or drop-in a package
     # brings (systemd.packages). Read in the directory /etc/systemd/system is made from, where the packages'
@@ -515,26 +461,9 @@ in
     system.checks = [ (unitsCheck { units = config.environment.etc."systemd/system".source; expected = expectedUnits; intended = intendedUnits; }) ];
     # Only the person may connect (the socket theirs, 0600, in a directory root's) — and the service
     # answers only them, by the kernel's word (SO_PEERCRED), root included.
-    # Each person's resident agent's own account (ADR-051 3, amended 2026-11-11): hidden — no password, no login,
-    # no home, no group but its own — so that what its service keeps (its memory, its programs' home, the model's
-    # key as its credential) is its own, and nothing any program run as the agent account can write is read by
-    # it. The broker counts it as the person's one agent (broker.json's `residents`).
-    users.users = lib.mapAttrs (account: person: {
-      isSystemUser = true;
-      group = account;
-      description = "${person}'s TorqOS agent, resident (its service's own account; proposes, a person applies)";
-      home = "/var/empty";
-      createHome = false;
-      hashedPassword = "!";
-    }) residents;
-    users.groups = lib.mapAttrs (_: _: { }) residents;
+    # A linger file is how an account gets a user manager; the assertion above reads the configuration.
     systemd.sockets = ownSockets;
     systemd.services = ownServices;
-    # Root's, and only root writes there: a person reads that their word is there, and can put none of their
-    # own. In /run, so no word outlives a restart of the machine.
-    systemd.tmpfiles.settings."10-torq-agent" = lib.mkIf (modelKey != null) {
-      ${keyMissingDir}.d = { mode = "0755"; user = "root"; group = "root"; };
-    };
   })
   ];
 }

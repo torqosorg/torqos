@@ -22,6 +22,15 @@ let
       }).config;
     in map (a: a.message) (lib.filter (a: !a.assertion) config.assertions);
   doctorOn = { enable = true; endpoint = "https://api.example.org/v1"; model = "m"; };
+  # An engine chosen (ADR-055): Claude Code allowed, installed for the agents (a stand-in: the real one is
+  # unfree and large) and named as the engine — with whatever else `extra` says.
+  withEngine = extra: {
+    imports = [ extra ];
+    torq.unfree.packages = [ "claude-code" ];
+    torq.agent.tools = [ "claude-code" ];
+    torq.agent.engine = "claude-code";
+    torq.agent.claudeCode = pkgs.hello;
+  };
   ours = ms: lib.filter (m: lib.hasInfix "torq.agent" m || lib.hasInfix "torq-agent" m || lib.hasInfix "ptrace_scope" m) ms;
   # `name` fails evaluation with a message holding `text`.
   refuses = name: extra: text:
@@ -56,25 +65,50 @@ let
       if ms == [ ] && names == [ "claude-code" ] && !(lib.any (p: lib.getName p == "claude-code") c.environment.systemPackages)
       then "claude-code allowed: the agent's alone"
       else throw "agent-assertions: claude-code allowed: ${builtins.toJSON { inherit ms names; }}")
-    # What the broker's resident rule rests on (ADR-051 step 5's review): said, where the agent is resident.
+    # The engine (ADR-055 1): one of the coding tools installed for the agents, or refused, saying what to set.
+    (refuses "an engine not installed" { torq.agent.engine = "claude-code"; } "torq.agent.engine: claude-code is not installed for the agents. Install it first: `set torq agent tools claude-code`")
+    (let ms = ours (failing (withEngine { })); in if ms == [ ] then "an engine installed" else throw "agent-assertions: an engine that is installed is refused: ${builtins.toJSON ms}")
+    # The agent's service is where an engine is chosen, and nowhere else: not on a plain machine, and not
+    # where only doctor mode is on (which still makes the old loop's account, for the broker's rule: phase 2).
+    (let plain = configOf { }; doctor = configOf { torq.agent.doctor = doctorOn; }; engine = configOf (withEngine { }); has = c: c.systemd.services ? "torq-agent@dev" || c.systemd.sockets ? "torq-agent@dev"; in
+      if !(has plain) && !(has doctor) && has engine
+        && !(plain.users.users ? torq-resident-dev) && doctor.users.users ? torq-resident-dev && !(engine.users.users ? torq-resident-dev)
+        && (builtins.fromJSON engine.environment.etc."torq/agent-tools.json".text) == { tools = [ "claude-code" ]; engine = "claude-code"; }
+        && (builtins.fromJSON plain.environment.etc."torq/agent-tools.json".text) == { tools = [ ]; engine = null; }
+      then "the service is where an engine is"
+      else throw "agent-assertions: the agent's service is not exactly where an engine is chosen")
+    # The old switch for the service is gone, and says what took its place.
+    (refuses "the old service switch" { torq.agent.service.enable = false; } "torq.agent.engine")
+    # The unit is the bridge, as the person's one agent account, in the launcher's sandbox and more: who it
+    # runs as, what it runs, what it may write, what it cannot see. (The whole text is held by the rule below
+    # and tests/agent-units.nix; this says the lines the fence is.)
+    (let sc = (configOf (withEngine { })).systemd.services."torq-agent@dev".serviceConfig; in
+      if sc.User == "torq-agent-dev" && sc.Group == "torq-agent-dev" && lib.hasSuffix "/bin/torq-agent-service dev claude-code" sc.ExecStart
+        && sc.ProtectHome == true && sc.PrivateTmp && sc.NoNewPrivileges && sc.CapabilityBoundingSet == "" && sc.AmbientCapabilities == ""
+        && sc.ProtectSystem == "strict" && sc.ReadWritePaths == [ "/var/lib/torq-agent-dev" ] && sc.InaccessiblePaths == [ "-/run/credentials" ]
+        && sc.StateDirectory == "torq-agent-memory/dev" && sc.RestrictNamespaces && sc.ProtectControlGroups
+        && !(sc ? LoadCredential) && !(sc ? ExecStartPre) && !(sc ? Delegate) && !(sc ? RemoveIPC)
+      then "the unit is the bridge, fenced"
+      else throw "agent-assertions: the agent's unit is not as it should be: ${builtins.toJSON sc}")
+    # What the service's sandbox rests on besides: said, where the agent has a service.
     # Each the per-instance assertion's own message, which the template's check (below) does not share.
-    (refuses "a delegated resident unit" { torq.agent.doctor = doctorOn; systemd.services."torq-agent@dev".serviceConfig.Delegate = true; } "systemd.services.\"torq-agent@dev\": no Delegate or DelegateSubgroup")
-    (refuses "a resident unit's subgroup" { torq.agent.doctor = doctorOn; systemd.services."torq-agent@dev".serviceConfig.DelegateSubgroup = "x"; } "systemd.services.\"torq-agent@dev\": no Delegate or DelegateSubgroup")
-    (refuses "a delegated template" { torq.agent.doctor = doctorOn; systemd.services."torq-agent@".serviceConfig.Delegate = true; } "in any torq-agent@ unit")
+    (refuses "a delegated agent unit" (withEngine { systemd.services."torq-agent@dev".serviceConfig.Delegate = true; }) "systemd.services.\"torq-agent@dev\": no Delegate or DelegateSubgroup")
+    (refuses "an agent unit's subgroup" (withEngine { systemd.services."torq-agent@dev".serviceConfig.DelegateSubgroup = "x"; }) "systemd.services.\"torq-agent@dev\": no Delegate or DelegateSubgroup")
+    (refuses "a delegated template" (withEngine { systemd.services."torq-agent@".serviceConfig.Delegate = true; }) "in any torq-agent@ unit")
     # The agent's units say only what TorqOS's module writes (modules/agent.nix, intendedText): another part of
     # the configuration that changes one is refused here, at evaluation, by the unit and the setting. (The units
-    # as built are held to the same text: tests/agent-units.nix. The control is "the key root's", below.)
-    (let withKey = doctorOn // { apiKeyFile = "/var/lib/torq/secrets/model.key"; }; said = "the agent's unit says only what TorqOS's own module writes"; in lib.concatStringsSep ", " [
-      (refuses "the agent's user changed" { torq.agent.doctor = withKey; systemd.services."torq-agent@dev".serviceConfig.User = lib.mkForce "root"; } "systemd.units.\"torq-agent@dev.service\": ${said}")
-      (refuses "the agent's user changed, said" { torq.agent.doctor = withKey; systemd.services."torq-agent@dev".serviceConfig.User = lib.mkForce "root"; } "User: it says `User=root`, which TorqOS's module does not write; User: it lacks `User=torq-resident-dev`, which TorqOS's module writes")
-      (refuses "a command before the agent's" { torq.agent.doctor = withKey; systemd.services."torq-agent@dev".serviceConfig.ExecStartPre = [ "+/bin/sh -c true" ]; } "ExecStartPre: it says `ExecStartPre=+/bin/sh -c true`")
-      (refuses "the agent's sandbox changed" { torq.agent.doctor = withKey; systemd.services."torq-agent@dev".serviceConfig.ProtectSystem = lib.mkForce "full"; } "ProtectSystem: it says `ProtectSystem=full`")
-      (refuses "the socket's mode changed" { torq.agent.doctor = withKey; systemd.sockets."torq-agent@dev".socketConfig.SocketMode = lib.mkForce "0666"; } "systemd.units.\"torq-agent@dev.socket\": ${said}")
-      (refuses "the key unit's command changed" { torq.agent.doctor = withKey; systemd.services."torq-agent-key@dev".serviceConfig.ExecStart = lib.mkForce "/bin/sh -c true"; } "systemd.units.\"torq-agent-key@dev.service\": ${said}")
-      (refuses "the unit's text forced" { torq.agent.doctor = withKey; systemd.units."torq-agent@dev.service".text = lib.mkForce "[Service]\nExecStart=/bin/sh -c true\n"; } "ExecStart: it says `ExecStart=/bin/sh -c true`")
+    # as built are held to the same text: tests/agent-units.nix. The control is "an engine installed", above.)
+    (let said = "the agent's unit says only what TorqOS's own module writes"; in lib.concatStringsSep ", " [
+      (refuses "the agent's user changed" (withEngine { systemd.services."torq-agent@dev".serviceConfig.User = lib.mkForce "root"; }) "systemd.units.\"torq-agent@dev.service\": ${said}")
+      (refuses "the agent's user changed, said" (withEngine { systemd.services."torq-agent@dev".serviceConfig.User = lib.mkForce "root"; }) "User: it says `User=root`, which TorqOS's module does not write; User: it lacks `User=torq-agent-dev`, which TorqOS's module writes")
+      (refuses "a command before the agent's" (withEngine { systemd.services."torq-agent@dev".serviceConfig.ExecStartPre = [ "+/bin/sh -c true" ]; }) "ExecStartPre: it says `ExecStartPre=+/bin/sh -c true`")
+      (refuses "the agent's sandbox changed" (withEngine { systemd.services."torq-agent@dev".serviceConfig.ProtectSystem = lib.mkForce "full"; }) "ProtectSystem: it says `ProtectSystem=full`")
+      (refuses "the agent's home opened" (withEngine { systemd.services."torq-agent@dev".serviceConfig.ProtectHome = lib.mkForce "read-only"; }) "ProtectHome: it says `ProtectHome=read-only`")
+      (refuses "the socket's mode changed" (withEngine { systemd.sockets."torq-agent@dev".socketConfig.SocketMode = lib.mkForce "0666"; }) "systemd.units.\"torq-agent@dev.socket\": ${said}")
+      (refuses "the unit's text forced" (withEngine { systemd.units."torq-agent@dev.service".text = lib.mkForce "[Service]\nExecStart=/bin/sh -c true\n"; }) "ExecStart: it says `ExecStart=/bin/sh -c true`")
     ])
-    (refuses "a lingering agent"{ torq.agent.doctor = doctorOn; users.users.torq-agent-dev.linger = true; } "neither account has a user manager of its own")
-    (refuses "tracing allowed" { torq.agent.doctor = doctorOn; boot.kernel.sysctl."kernel.yama.ptrace_scope" = lib.mkForce 0; } "kernel.yama.ptrace_scope")
+    (refuses "a lingering agent" (withEngine { users.users.torq-agent-dev.linger = true; }) "the agent account has no user manager of its own")
+    (refuses "tracing allowed" (withEngine { boot.kernel.sysctl."kernel.yama.ptrace_scope" = lib.mkForce 0; }) "kernel.yama.ptrace_scope")
     (refuses "the key where the agent reads it" { torq.agent.doctor = doctorOn // { apiKeyFile = "/var/lib/torq-agent-dev/model.key"; }; } "a file only root reads")
     (refuses "the key in /var/tmp" { torq.agent.doctor = doctorOn // { apiKeyFile = "/var/tmp/model.key"; }; } "a file only root reads")
     (refuses "the key in /dev/shm" { torq.agent.doctor = doctorOn // { apiKeyFile = "/dev/shm/model.key"; }; } "a file only root reads")
@@ -82,68 +116,19 @@ let
     (refuses "the key named another way (/./)" { torq.agent.doctor = doctorOn // { apiKeyFile = "/./tmp/model.key"; }; } "named plainly")
     (refuses "the key named another way (..)" { torq.agent.doctor = doctorOn // { apiKeyFile = "/srv/../home/dev/k"; }; } "named plainly")
     (let ms = ours (failing { torq.agent.doctor = doctorOn // { apiKeyFile = "/var/lib/torq/secrets/model.key"; }; }); in if ms == [ ] then "the key root's" else throw "agent-assertions: a root-only key refused: ${builtins.toJSON ms}")
-    # A missing key is said by a unit of its own, started by the agent unit's failure (modules/agent.nix,
-    # keyMissing): there only where a key is named, given no credential and nothing of the key but its path
-    # (in its script), and the agent's own unit still takes the key the one way and checks it at each start.
-    (let
-      c = configOf { torq.agent.doctor = doctorOn // { apiKeyFile = "/var/lib/torq/secrets/model.key"; }; };
-      agent = c.systemd.services."torq-agent@dev";
-      says = c.systemd.services."torq-agent-key@dev";
-      sc = says.serviceConfig;
-      text = c.systemd.units."torq-agent-key@dev.service".text;
-    in
-      if agent.onFailure == [ "torq-agent-key@dev.service" ]
-        && agent.serviceConfig.LoadCredential == [ "model-key:/var/lib/torq/secrets/model.key" ]
-        && lib.length agent.serviceConfig.ExecStartPre == 1 && lib.hasPrefix "+" (lib.head agent.serviceConfig.ExecStartPre)
-        && !(agent.serviceConfig ? ExecCondition)
-        && sc.Type == "oneshot" && lib.hasSuffix " torq-agent@dev.service" sc.ExecStart
-        && sc.CapabilityBoundingSet == "CAP_DAC_READ_SEARCH" && sc.NoNewPrivileges && sc.ProtectSystem == "strict"
-        && !(sc ? LoadCredential) && !(sc ? User)
-        && !(lib.hasInfix "Credential" text) && !(lib.hasInfix "model.key" text)
-        && says.wantedBy == [ ] && says.requiredBy == [ ]
-      then "a missing key said by its own unit"
-      else throw "agent-assertions: the unit that says a missing key is not as it should be: ${builtins.toJSON { inherit (agent) onFailure; inherit sc; }}")
-    (let c = configOf { torq.agent.doctor = doctorOn; }; in
-      if !(c.systemd.services ? "torq-agent-key@dev") && c.systemd.services."torq-agent@dev".onFailure == [ ]
-        && c.systemd.services."torq-agent@dev".serviceConfig.LoadCredential == [ ]
-      then "no key named: nothing to say"
-      else throw "agent-assertions: a unit for a missing key where no key is named")
-    # Root's word of a missing key, for the person (KNOWN-GAPS 6zzo, 2026-11-14): a directory in /run that only
-    # root writes and anyone reads; the unit that says a missing key may write there and nowhere else; the
-    # agent's own check at its start is given the person, whose word it takes away (still one command, as
-    # root); and the word's place is the one torqcli's client reads (cli/src/agent/client.rs, KEY_MISSING_DIR).
-    (let
-      c = configOf { torq.agent.doctor = doctorOn // { apiKeyFile = "/var/lib/torq/secrets/model.key"; }; };
-      dir = c.systemd.tmpfiles.settings."10-torq-agent"."/run/torq/agent-key-missing".d or null;
-      sc = c.systemd.services."torq-agent-key@dev".serviceConfig;
-      pre = c.systemd.services."torq-agent@dev".serviceConfig.ExecStartPre;
-      client = builtins.readFile ../cli/src/agent/client.rs;
-    in
-      if dir != null && dir.mode == "0755" && dir.user == "root" && dir.group == "root"
-        && sc.ReadWritePaths == [ "-/run/torq/agent-key-missing" ] && sc.ProtectSystem == "strict"
-        && !(sc ? BindPaths) && !(sc ? StateDirectory) && !(sc ? RuntimeDirectory)
-        && lib.length pre == 1 && lib.hasPrefix "+" (lib.head pre) && lib.hasSuffix "-torq-agent-key-check dev" (lib.head pre)
-        && lib.hasInfix "pub const KEY_MISSING_DIR: &str = \"/run/torq/agent-key-missing\";" client
-      then "a missing key's word: root's directory, the one place written"
-      else throw "agent-assertions: root's word of a missing key is not as it should be: ${builtins.toJSON { inherit dir pre; inherit (sc) ReadWritePaths; }}")
     # A start that fails does not cost the person their socket (KNOWN-GAPS 6zzo): what waits on the socket is
     # turned away when the service ends, so a failed start is not tried again for the same question, and the
     # unit has no limit of starts that would stop its socket for good. Nothing restarts it by itself. (What
-    # this does on a running machine is tests/agent-service.nix's to show.) With a key named and without.
+    # this does on a running machine is tests/agent-service.nix's to show.)
     (let
       ok = c: (c.systemd.sockets."torq-agent@dev".socketConfig.FlushPending or null) == true
         && c.systemd.sockets."torq-agent@dev".socketConfig.Accept == false
         && (c.systemd.services."torq-agent@dev".unitConfig.StartLimitIntervalSec or null) == 0
         && !(c.systemd.services."torq-agent@dev".serviceConfig ? Restart);
     in
-      if ok (configOf { torq.agent.doctor = doctorOn; }) && ok (configOf { torq.agent.doctor = doctorOn // { apiKeyFile = "/var/lib/torq/secrets/model.key"; }; })
+      if ok (configOf (withEngine { }))
       then "a failed start leaves the socket"
       else throw "agent-assertions: the agent's socket or unit would let failed starts stop the socket for good")
-    (let c = configOf { torq.agent.doctor = doctorOn; }; in
-      if !((c.systemd.tmpfiles.settings."10-torq-agent" or { }) ? "/run/torq/agent-key-missing")
-        && c.systemd.services."torq-agent@dev".serviceConfig.ExecStartPre == [ ]
-      then "no key named: no word of one"
-      else throw "agent-assertions: a place for a missing key's word where no key is named")
     (refuses "SETENV in sudoers text" ({ config, ... }: {
       security.sudo.extraConfig = "%wheel ALL=(root) NOPASSWD: SETENV: ${config.torq.agent.launcher}/bin/torq-agent-run";
     }) "a rule for torq-agent-run with SETENV")

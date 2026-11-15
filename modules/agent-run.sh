@@ -8,7 +8,7 @@
 # the caller's own agent, torq-agent-<person> (setpriv: its uid and group, no capabilities, no new privileges) and runs the program in
 # bubblewrap, in a process namespace of its own (nothing it starts outlives it): the people's runtime
 # directories (their sockets: ssh-agent, D-Bus) hidden, /tmp its own,
-# its home the agent's, the agent services' memory and their own home hidden, the agent's own profile (its coding
+# its home the agent's, what the agent services keep hidden, the agent's own profile (its coding
 # tools, `torq agent tools`) on its PATH, TorqOS linked into those tools first, as the agent. Nothing the person asked for runs as root; the agent
 # has no way into the home. `--hold-frozen` holds the agent still while torqcli shares a directory (below).
 set -euo pipefail
@@ -53,11 +53,12 @@ fi
 # `--hold-frozen` (torq agent run --share, ADR-051 3 step 2): the agent held still while torqcli, as the
 # person, walks the directory being shared and sets its ACLs — a program of the agent's running then could
 # swap a file for a link between the walk's look and its ACL. The person's agent service is frozen
-# (systemd's freezer: each of its processes stopped where it is, the task it runs included), and any
-# other process of the agent's — another `torq agent run` — refuses the share, as one session at a time
-# always did. A service that starts during the walk runs with every home hidden (modules/agent.nix): it
-# cannot reach the directory. `frozen` said, it waits for its input to end (torqcli done with the walk,
-# or gone however it went), then thaws — on every way out.
+# (systemd's freezer: each of its processes stopped where it is, the engine it runs and whatever that
+# started included; they run as the agent, in the service's own control group, which is how they are told
+# from a session at a terminal), and any other process of the agent's — another `torq agent run` — refuses
+# the share, as one session at a time always did. A service that starts during the walk runs with every
+# home hidden (modules/agent.nix): it cannot reach the directory. `frozen` said, it waits for its input to
+# end (torqcli done with the walk, or gone however it went), then thaws — on every way out.
 if [ "${1-}" = --hold-frozen ]; then
   unit="torq-agent@$person.service"
   frozen="" cgroup=""
@@ -173,12 +174,11 @@ exec unshare --mount --propagation private -- bash -euo pipefail -c '
     mkdir -p -- "$share"
     mount --move "$stage" "$share"
   fi
-  # The memory of the agent services (their conversations, /var/lib/torq-agent-memory/<person>): written by
-  # each service alone, hidden from every program run here (ADR-051 3, step 2) — made first, as root,
-  # so that it is there to hide.
+  # What the agent services keep (which conversation each person has, /var/lib/torq-agent-memory/<person>):
+  # written by each service alone, hidden from every program run here (ADR-051 3, step 2) — made first, as
+  # root, so that it is there to hide.
   mkdir -p -m 0755 /var/lib/torq-agent-memory
-  # The credentials systemd gives units (the resident agent gets the model key as one): hidden as well, made
-  # first so that it is there to hide.
+  # The credentials systemd gives units: hidden as well, made first so that it is there to hide.
   mkdir -p -m 0755 /run/credentials
   # The sandbox, as the agent: every program the launcher runs as the agent runs in it (the link below too).
   sandbox=(setpriv --reuid "$agent" --regid "$agent" --init-groups --no-new-privs --inh-caps=-all --bounding-set=-all --

@@ -12,8 +12,8 @@
 #
 # Then the same check as a real configuration carries it (its `system.checks`), with a package that brings such
 # a unit file or drop-in, and without: that configuration's own unit directory, as NixOS builds it (TorqOS's
-# programs replaced by stand-ins, so nothing long is built). And the flake's own hosts, the desktop on, with a
-# resident agent: their unit directories pass it, so the check refuses none of what TorqOS itself puts there.
+# programs replaced by stand-ins, so nothing long is built). And the flake's own hosts, the desktop on, with an
+# agent that has a service: their unit directories pass it, so the check refuses none of what TorqOS itself puts there.
 { pkgs, self }:
 
 let
@@ -311,13 +311,19 @@ let
       torq.user = "dev";
       boot.loader.grub.enable = false;
       fileSystems."/" = { device = "/dev/disk/by-label/root"; fsType = "ext4"; };
-      torq.agent.doctor = { enable = true; endpoint = "https://api.example.org/v1"; model = "m"; };
-    } stubs extra ];
+    } engineOn stubs extra ];
   }).config;
+  # An engine chosen (ADR-055), so the agent has its units: Claude Code allowed, installed for the agents (a
+  # stand-in) and named as the engine.
+  engineOn = {
+    torq.unfree.packages = [ "claude-code" ];
+    torq.agent.tools = [ "claude-code" ];
+    torq.agent.engine = "claude-code";
+    torq.agent.claudeCode = stub;
+  };
   carried = config: lib.filter (c: (c.name or "") == "torq-agent-units-its-own") config.system.checks;
   only = found: if lib.length found == 1 then lib.head found else throw "agent-units: the configuration carries ${toString (lib.length found)} such checks, not one";
   ofSystem = extra: only (carried (configOf extra));
-  withKey = { torq.agent.doctor.apiKeyFile = "/var/lib/torq/secrets/model.key"; };
   refusesSystem = name: files: says:
     pkgs.runCommand "refused-${name}" { failed = pkgs.testers.testBuildFailure (ofSystem { systemd.packages = [ (package "brings-${name}" files) ]; }); } ''
       grep -F -- ${lib.escapeShellArg says} "$failed/testBuildFailure.log"
@@ -325,14 +331,14 @@ let
     '';
   # The same, of a configuration's own doing (`extra`), and for whose the file is.
   refusesConfig = name: extra: says:
-    pkgs.runCommand "refused-${name}" { failed = pkgs.testers.testBuildFailure (ofSystem { imports = [ withKey extra ]; }); } ''
+    pkgs.runCommand "refused-${name}" { failed = pkgs.testers.testBuildFailure (ofSystem extra); } ''
       grep -F -- ${lib.escapeShellArg says} "$failed/testBuildFailure.log"
       grep -q -F ${lib.escapeShellArg ownHeading} "$failed/testBuildFailure.log"
       touch $out
     '';
   # The same, refused for what one of the agent's units says (rule 3), and not for whose the file is.
   refusesText = name: extra: says:
-    pkgs.runCommand "refused-text-${name}" { failed = pkgs.testers.testBuildFailure (ofSystem { imports = [ withKey extra ]; }); } ''
+    pkgs.runCommand "refused-text-${name}" { failed = pkgs.testers.testBuildFailure (ofSystem extra); } ''
       grep -F -- ${lib.escapeShellArg says} "$failed/testBuildFailure.log"
       grep -q -F ${lib.escapeShellArg textHeading} "$failed/testBuildFailure.log"
       if grep -q -F ${lib.escapeShellArg ownHeading} "$failed/testBuildFailure.log"; then
@@ -353,21 +359,20 @@ let
     in
       if lib.hasInfix it named then "the system's build depends on it"
       else throw "agent-units: the system's build does not depend on the check (${it} is not among its checks)";
-  # Only where the agent is resident, as the assertions are: with doctor mode off there is no such unit.
+  # Only where the agent has a service, as the assertions are: with no engine chosen there is no such unit.
   notWithout =
-    if carried (configOf { torq.agent.doctor.enable = lib.mkForce false; }) == [ ] then "not carried where no agent is resident"
-    else throw "agent-units: the check is carried where no agent is resident";
-  # What the check is told to expect is what the module writes: the three units of each person where a key is
-  # named, two where none is. Read at evaluation; were one dropped from the list, the check would call it another's.
+    if carried (configOf { torq.agent.engine = lib.mkForce null; }) == [ ] then "not carried where no agent has a service"
+    else throw "agent-units: the check is carried where no agent has a service";
+  # What the check is told to expect is what the module writes: the two units of each person. Read at
+  # evaluation; were one dropped from the list, the check would call it another's.
   expectsAll =
     let
       names = extra: lib.sort lib.lessThan (map (l: lib.head (lib.splitString " " l)) (lib.splitString "\n" (ofSystem extra).expected));
       two = people: lib.sort lib.lessThan (lib.concatMap (p: [ "torq-agent@${p}.service" "torq-agent@${p}.socket" ]) people);
-      three' = people: lib.sort lib.lessThan (two people ++ map (p: "torq-agent-key@${p}.service") people);
-      both = { imports = [ withKey ]; users.users.pat.isNormalUser = true; torq.agent.people = [ "dev" "pat" ]; };
+      both = { users.users.pat.isNormalUser = true; torq.agent.people = [ "dev" "pat" ]; };
     in
-      if names { } == two [ "dev" ] && names withKey == three' [ "dev" ] && names both == three' [ "dev" "pat" ] then "the check expects each unit the module writes"
-      else throw "agent-units: the check expects ${builtins.toJSON [ (names { }) (names withKey) (names both) ]}";
+      if names { } == two [ "dev" ] && names both == two [ "dev" "pat" ] then "the check expects each unit the module writes"
+      else throw "agent-units: the check expects ${builtins.toJSON [ (names { }) (names both) ]}";
   systemCases = [
     # The controls: the configuration as it is, and a package that brings a unit of its own, delegating (its own business).
     (ofSystem { })
@@ -377,18 +382,15 @@ let
     # The unit itself: NixOS keeps the package's file as the unit and makes this configuration's its overrides.conf.
     (refusesSystem "the-unit-itself" { "torq-agent@dev.service" = delegates; } "torq-agent@dev.service: Delegate=yes")
 
-    # Whose the files are. The controls: a key named (the third unit), two people, a package's drop-ins for
-    # other units and another "torq-" unit, and this configuration's own mask of a unit it writes.
-    (ofSystem withKey)
-    (ofSystem { imports = [ withKey ]; users.users.pat.isNormalUser = true; torq.agent.people = [ "dev" "pat" ]; })
-    (ofSystem { imports = [ withKey (brings "others" { "torq-broker.service.d/10-pkg.conf" = settings.environment; "user@.service.d/10-pkg.conf" = settings.environment; "torq-agentx.service" = ours; }) ]; })
-    (ofSystem { imports = [ withKey ]; systemd.services."torq-agent-key@dev".enable = false; })
+    # Whose the files are. The controls: two people, and a package's drop-ins for other units and another
+    # "torq-" unit.
+    (ofSystem { users.users.pat.isNormalUser = true; torq.agent.people = [ "dev" "pat" ]; })
+    (ofSystem { imports = [ (brings "others" { "torq-broker.service.d/10-pkg.conf" = settings.environment; "user@.service.d/10-pkg.conf" = settings.environment; "torq-agentx.service" = ours; }) ]; })
     # A package's files, through NixOS's own laying out, none of them delegating.
     (refusesConfig "a-users-drop-in" (brings "a-users-drop-in" { "torq-agent@dev.service.d/10-pkg.conf" = settings.user; }) "torq-agent@dev.service.d: a drop-in directory of the agent's units")
     (refusesConfig "every-services" (brings "every-services" { "service.d/10-pkg.conf" = settings.environment; }) "service.d: a drop-in directory systemd also applies")
     (refusesConfig "the-dash" (brings "the-dash" { "torq-.service.d/10-pkg.conf" = settings.load-credential; }) "torq-.service.d: a drop-in directory systemd also applies")
     (refusesConfig "a-sockets-drop-in" (brings "a-sockets-drop-in" { "torq-agent@dev.socket.d/10-pkg.conf" = "[Socket]\nSocketMode=0666\n"; }) "torq-agent@dev.socket.d: a drop-in directory of the agent's units")
-    (refusesConfig "the-key-units-drop-in" (brings "the-key-units-drop-in" { "torq-agent-key@dev.service.d/10-pkg.conf" = settings.exec-start; }) "torq-agent-key@dev.service.d: a drop-in directory of the agent's units")
     (refusesConfig "a-template" (brings "a-template" { "torq-agent@.service" = ours; }) "torq-agent@.service: named as the agent's units are")
     # The unit itself, a package's: it stays the unit, and this configuration's is made its overrides.conf.
     (refusesConfig "the-unit-a-packages" (brings "the-unit-a-packages" { "torq-agent@dev.service" = "[Service]\nExecStart=/bin/true\nUser=root\n"; }) "torq-agent@dev.service: not the unit this configuration writes (it is /nix/store/")
@@ -402,9 +404,9 @@ let
 
     # What the files say (rule 3), through NixOS's own module system: another part of the configuration changes
     # one of the agent's units, and the file is still "the one this configuration writes". Each a control too:
-    # `ofSystem withKey` above is the same configuration without the change, and passes.
+    # `ofSystem { }` above is the same configuration without the change, and passes.
     (refusesText "its-user" { systemd.services."torq-agent@dev".serviceConfig.User = lib.mkForce "root"; } "torq-agent@dev.service: User: the unit as built says \"User=root\"")
-    (refusesText "its-user-lacking" { systemd.services."torq-agent@dev".serviceConfig.User = lib.mkForce "root"; } "torq-agent@dev.service: User: the unit as built lacks \"User=torq-resident-dev\"")
+    (refusesText "its-user-lacking" { systemd.services."torq-agent@dev".serviceConfig.User = lib.mkForce "root"; } "torq-agent@dev.service: User: the unit as built lacks \"User=torq-agent-dev\"")
     (refusesText "its-command" { systemd.services."torq-agent@dev".serviceConfig.ExecStart = lib.mkForce "/bin/sh -c true"; } "torq-agent@dev.service: ExecStart: the unit as built says \"ExecStart=/bin/sh -c true\"")
     (refusesText "a-command-before" { systemd.services."torq-agent@dev".serviceConfig.ExecStartPre = [ "+/bin/sh -c true" ]; } "torq-agent@dev.service: ExecStartPre: the unit as built says \"ExecStartPre=+/bin/sh -c true\"")
     (refusesText "a-script-before" { systemd.services."torq-agent@dev".preStart = "true"; } "torq-agent@dev.service: ExecStartPre: the unit as built says")
@@ -418,7 +420,6 @@ let
     (refusesText "the-sockets-mode" { systemd.sockets."torq-agent@dev".socketConfig.SocketMode = lib.mkForce "0666"; } "torq-agent@dev.socket: SocketMode: the unit as built says \"SocketMode=0666\"")
     (refusesText "the-sockets-owner" { systemd.sockets."torq-agent@dev".socketConfig.SocketUser = lib.mkForce "pat"; } "torq-agent@dev.socket: SocketUser: the unit as built says \"SocketUser=pat\"")
     (refusesText "another-place-to-listen" { systemd.sockets."torq-agent@dev".listenStreams = [ "/tmp/agent.sock" ]; } "torq-agent@dev.socket: ListenStream: the unit as built says \"ListenStream=/tmp/agent.sock\"")
-    (refusesText "the-key-units-command" { systemd.services."torq-agent-key@dev".serviceConfig.ExecStart = lib.mkForce "/bin/sh -c true"; } "torq-agent-key@dev.service: ExecStart: the unit as built says \"ExecStart=/bin/sh -c true\"")
     # Not through systemd.services at all: the unit's text, and the unit's file, forced.
     (refusesText "its-text-forced" { systemd.units."torq-agent@dev.service".text = lib.mkForce "[Service]\nExecStart=/bin/sh -c true\n"; } "torq-agent@dev.service: ExecStart: the unit as built says \"ExecStart=/bin/sh -c true\"")
     (refusesText "its-file-forced" ({ pkgs, ... }: { systemd.units."torq-agent@dev.service".unit = lib.mkForce (pkgs.writeTextDir "torq-agent@dev.service" "[Service]\nExecStart=/bin/sh -c true\n"); })
@@ -431,7 +432,7 @@ let
     # here too, though the directory of links it makes changes nothing in the unit. The same wish from the other
     # side, a target that wants the agent's unit, is let by (the control).
     (refusesText "wanted-by" { systemd.services."torq-agent@dev".wantedBy = [ "multi-user.target" ]; } "torq-agent@dev.service: WantedBy: the unit as built says \"WantedBy=multi-user.target\"")
-    (ofSystem { imports = [ withKey ]; systemd.targets.multi-user.wants = [ "torq-agent@dev.service" ]; })
+    (ofSystem { systemd.targets.multi-user.wants = [ "torq-agent@dev.service" ]; })
     # Another name for the agent's unit, of the configuration's own making: its drop-ins would be the agent's.
     (refusesConfig "another-name-for-ours" { systemd.services."torq-agent@dev".aliases = [ "other.service" ]; } "other.service: another name for the agent's unit torq-agent@dev.service")
     (refusesConfig "another-names-drop-in" { systemd.services."torq-agent@dev".aliases = [ "other.service" ]; systemd.services.other = { overrideStrategy = "asDropin"; serviceConfig.User = "root"; }; }
@@ -443,23 +444,22 @@ let
     (refusesConfig "every-services-said" (brings "every-services-said" { "service.d/10-pkg.conf" = settings.environment; }) "-brings-every-services-said (the file is /nix/store/")
   ];
 
-  # The flake's own hosts, each with a resident agent (a key named) and the desktop on: what TorqOS itself puts
+  # The flake's own hosts, each with an agent that has a service (an engine chosen) and the desktop on: what TorqOS itself puts
   # in the unit directory (its own units, COSMIC's packages') is not refused. Their programs are the real ones'
   # stand-ins where TorqOS's own would have to be compiled; everything else is the host's.
   hostCases =
     let
       system = pkgs.stdenv.hostPlatform.system;
       resident = { lib, ... }: {
-        imports = [ stubs withKey ];
+        imports = [ stubs engineOn ];
         # (The image and the installer have no owner yet: one, so that there is an agent to check.)
         torq.user = lib.mkDefault "owner";
-        torq.agent.doctor = { enable = true; endpoint = "https://api.example.org/v1"; model = "m"; };
       };
       devVm = if system == "aarch64-linux" then "dev-vm-aarch64" else "dev-vm-x86_64";
-      # (Not a check of nothing: the host has an agent, whose three units the check is told to expect.)
+      # (Not a check of nothing: the host has an agent, whose two units the check is told to expect.)
       host = name: modules:
         let c = only (carried (self.nixosConfigurations.${name}.extendModules { modules = [ resident ] ++ modules; }).config); in
-        if lib.length (lib.splitString "\n" c.expected) == 3 then c else throw "agent-units: ${name}: the check expects ${c.expected}, not an agent's three units";
+        if lib.length (lib.splitString "\n" c.expected) == 2 then c else throw "agent-units: ${name}: the check expects ${c.expected}, not an agent's two units";
     in [
       (host devVm [ ])
       (host devVm [ { torq.desktop = { enable = true; settingsPackage = stub; }; } ])
