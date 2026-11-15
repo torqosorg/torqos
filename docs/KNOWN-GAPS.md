@@ -1417,11 +1417,9 @@ Its §5 lists claims without a test.
      `org.torqos.AgentWindow` on the person's session bus; another program of the person's that took the name
      first would be the one "raised" (and the window would not open). It is the person's own session bus, so
      only their own programs could; not the agent's (no agent account reaches the session bus, ADR-051 6).
-   - **A panel the person already configured keeps its applets.** `org.torqos.Agent` is in the panel's
-     *default*: a person whose `~/.config/cosmic/com.system76.CosmicPanel.Panel/v1/plugins_wings` already exists
-     (any COSMIC user before this change, the owner's laptop included) does not get it until they add it in
-     COSMIC Settings → Desktop → Panel → Applets, or remove that file. TorqOS does not write into a person's
-     panel settings.
+   - **A panel the person already configured gets TorqOS's applets once, at login (fixed 2026-11-15, 6zzt).** The
+     panel's `plugins_wings` is replaced whole by a person's own file, so `org.torqos.Agent` (in the default) did not
+     reach the owner's laptop. `torq-desktop-defaults`, a user service of the person's own session, adds it (6zzt).
    - **Who you are is the uid's name in /etc/passwd** (torqcli's `me()`, the agent client): an account only an
      NSS module knows (systemd-homed, LDAP) is not found. TorqOS declares every account in its configuration,
      so none is.
@@ -1443,11 +1441,11 @@ Its §5 lists claims without a test.
 
 6zzn. **The agent's entry points and Decline buttons (ADR-051 4, step 4, built 2026-11-10, `tests/desktop-agent.nix`).** Open:
    - **The key is Super+Shift+A** (the owner): Super+A stays COSMIC's App Library. Super+Shift+A is bound to
-     nothing in cosmic-comp 1.11.0's defaults; a later COSMIC that takes it would lose to TorqOS's custom default
-     (custom wins), which the desktop test checks against the defaults it ships with.
-   - **A person who already has custom shortcuts** (`~/.config/cosmic/com.system76.CosmicSettings.Shortcuts/v1/custom`,
-     written the first time they changed one) does not get Super+Shift+A: their file replaces the default, as with
-     the panel (6zzm). They add it in COSMIC Settings → Keyboard → Shortcuts.
+     nothing in cosmic-comp 1.11.0's defaults; it is a line added to the `defaults` key (the system's,
+     modules/desktop.nix `shortcutDefaults`), where cosmic-comp puts a person's `custom` over it. A later COSMIC
+     that takes the same key in its defaults makes the build stop (the line is refused if the key is there already).
+   - **A person who already has custom shortcuts** gets Super+Shift+A too: it is in the `defaults` key, which COSMIC
+     Settings never writes. Their own binding of that key, if they have one, wins (fixed 2026-11-15, 6zzt).
    - **Not driven in a VM**: each Ask the agent and Decline button (the test checks what they hand over in
      torqcli's units and the window's handoff path end to end through the key and the launcher's program), a crash
      notification's click (the notification daemon's own signal; a test cannot click it, nor fake it from another
@@ -1741,3 +1739,28 @@ Its §5 lists claims without a test.
   clean session's use let through by a grant that does not say `tainted-too` (those machines have no resident
   agent; the broker's own tests have it), `allow <name> session`, and "Allow for…" replacing a grant (torqcli's
   units have what it sends, against a stand-in broker).
+
+6zzt. **TorqOS's defaults reach a person who already has their own shortcuts or panel (2026-11-15; the VM test
+  `tests/desktop-defaults.nix` is written, not yet run).** COSMIC reads a person's own `~/.config/cosmic/<component>/v1/<key>`
+  instead of the system's, whole (cosmic-config `Config::get`), so a default added after a person first changed a
+  shortcut or the panel never reached them (the owner's laptop: Super+Shift+A did nothing, the agent's applet was
+  missing). Shortcuts: TorqOS's key is in the `defaults` key, which cosmic-comp merges under the person's `custom`
+  and COSMIC Settings never writes. The panel has no such layer: `torq-desktop-defaults` (`cli/src/cosmic_defaults.rs`),
+  run by the person's own session at login, adds each `org.torqos.*` applet of the default list to their own
+  `plugins_wings` once, beside its neighbour in the default, and remembers it in
+  `~/.local/state/torq/desktop-defaults`, so an applet they take out stays out. Nothing privileged writes in a home.
+  What remains:
+   - **Only these two keys.** Other defaults TorqOS ships through `share/cosmic` have the same weakness: none are known
+     beyond the panel's `plugins_wings` and the shortcuts, because the package carries nothing else of COSMIC's
+     configuration (`settings/package.nix` copies the panel's default schema whole: the panel's other keys, and the
+     dock's, are COSMIC's own and are not touched). A new TorqOS default in another key needs its own handling.
+   - **Only applets named `org.torqos.*`.** An applet of someone else that TorqOS adds to the default is not offered.
+   - **The memory is in the home's state, not the configuration.** A machine rebuilt from the person's repository has
+     their saved `plugins_wings` (desktop sync) but no memory: an applet they had removed is offered once more.
+   - **A file it does not understand** (not the shape COSMIC writes, a link, over 64 KiB, or one changing while it is
+     read) is left as it was and the journal says so (`journalctl --user -u torq-desktop-defaults`); it is tried again at
+     the next login. A person whose panel file holds `None` gets nothing. No window says anything: the applet appears.
+   - **The file is rewritten in COSMIC's own style** (`ron` pretty print): comments in a hand-edited file would be lost.
+   - **The panel takes the change at once** (cosmic-panel watches its configuration and restarts applets when
+     `plugins_wings` changes: `cosmic-panel-bin/src/space_container/space_container.rs`), in the running session; cosmic-comp
+     likewise watches the shortcut keys. Not seen on a desktop; the VM test is to show it.

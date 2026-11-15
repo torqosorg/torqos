@@ -116,8 +116,10 @@ The person sets the engine, and the desktop's AI is Claude Code.
       Claude Code is installed for the agents; added by the owner, 2026-11-15).
 - [ ] Instructions for your agent: a text of the person's own that the engine is always given, in the
       desktop's agent and at a terminal (added by the owner, 2026-11-15). Not started.
-- [ ] The desktop's defaults reach a person who already has their own shortcuts or panel (the bug
-      seen on the laptop: Super+Shift+A did nothing and the applet was missing).
+- [x] The desktop's defaults reach a person who already has their own shortcuts or panel (the bug
+      seen on the laptop: Super+Shift+A did nothing and the applet was missing). Done 2026-11-15: the key is in
+      COSMIC's `defaults`; the applets by `torq-desktop-defaults` (KNOWN-GAPS 6zzt). Unit tests ran; VM test
+      `tests/desktop-defaults.nix` written, not yet run.
 - [x] Tests: a stand-in engine that speaks the same JSON, in unit tests and the VM tests; the real
       Claude Code driven once by hand on the check host, and what was seen written down here. (The VM
       tests `agent-service` and `desktop-agent` were run; the others that changed only evaluate so far.)
@@ -158,11 +160,30 @@ One consistent deletion, so nothing dead is left behind.
 - [ ] One full check.
 
 ### Phase 5: the agent in the desktop
+Its place is the **TorqOS AI dock** (the owner, 2026-11-15): a slim rail on the **left edge** of the
+screen that opens into a drawer, beside COSMIC's own dock and panel and not part of them. It is a
+program of TorqOS's own (the toolkit TorqOS Settings uses, a layer-shell surface, its own service), so
+nothing of COSMIC is changed or rebuilt, and it does not depend on the panel's list of applets. On by
+default where an engine is chosen; settings for off, the edge, and hiding itself. The agent's panel
+applet becomes a small mark that opens the rail, or goes; the approvals applet stays.
+- [ ] The dock: the rail and its drawer, with the conversation in it (what the agent's window shows now).
 - [ ] "Ask the agent" on a file or folder in Files, sharing it for that conversation.
 - [ ] A quick bar: a key, a box over whatever is open, the answer in place.
 - [ ] The agent's notifications (done; needs you), with their buttons.
 - [ ] The screen, by the person's grant (ADR-051 6).
 - [ ] One full check.
+
+### Phase 6: the agent's workbench (the end goal; the owner, 2026-11-15)
+Many views of the AI at work, in the dock's drawer: the helpers an agent started (subagents) and what
+each is doing, layouts to control them, pipelines of steps, a view into the agent's own desktop. Not
+planned in detail yet. What the earlier phases must leave room for, so that this is an addition and
+not a rewrite:
+- The socket's protocol gets a version, and its events come to carry structure: which agent or helper
+  said or did a thing (the engine's own ids), not only text.
+- The proxy's record keeps the engine's `x-claude-code-agent-id` and `x-claude-code-parent-agent-id`
+  with each request, so a view can draw who started whom.
+- Nothing is built on "one conversation for each person, for ever": the service's state and the
+  protocol name a conversation, so several can come later.
 
 ### Later, not planned yet
 A desk of its own for the agent (its own hidden desktop session); a pull request for the computer (a

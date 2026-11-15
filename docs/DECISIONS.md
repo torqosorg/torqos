@@ -2441,10 +2441,17 @@ vouches for, that only proposes, every change ledgered and undone in one command
   built the launcher asked at once; no longer (below): nothing is sent by itself. The entry points:
   1. **The key**: Super+Shift+A runs `/run/current-system/sw/bin/torq-agent-ui` (the owner, 2026-11-10: Super+A
      stays COSMIC's App Library; Super+Shift+A is bound to nothing in cosmic-comp 1.11.0's `data/keybindings.ron`,
-     the shortcuts' `defaults`), a default of COSMIC's own *custom* shortcuts
-     (`share/cosmic/com.system76.CosmicSettings.Shortcuts/v1/custom` in the settings package, read where the
-     panel's default is; cosmic-settings-daemon merges custom over defaults; the person changes it in COSMIC
-     Settings, which then writes their own). It opens the window without a handoff (nothing to hand over).
+     the shortcuts' `defaults`). **Amended 2026-11-15:** it is a line in the system's `defaults` key
+     (`modules/desktop.nix` `shortcutDefaults`: cosmic-comp's own file with ours added, winning the profile's collision by
+     priority), not in a `custom` file as first built. cosmic-comp reads `defaults` and the person's `custom` and puts the
+     second over the first (cosmic-settings-config `shortcuts()`: one map `extend`ed by the other); COSMIC Settings writes
+     only `custom`. The earlier text said "cosmic-settings-daemon merges custom over defaults" and drew from it that a
+     system `custom` default would reach everyone; that merge is `defaults` against `custom`, not the system's `custom`
+     file against a person's: cosmic-config's `Config::get` reads the person's file *instead of* the system's for a key,
+     whole. So a person who had changed any shortcut never got Super+Shift+A (the owner's laptop). The panel's applet list
+     has no layer of this kind: see ADR-051 4's applets, `torq-desktop-defaults` (`cli/src/cosmic_defaults.rs`), KNOWN-GAPS
+     6zzt. The person changes the key in COSMIC Settings, which then writes their own `custom`.
+     It opens the window without a handoff (nothing to hand over).
   2. **The launcher**: `torq-agent-launcher` (torqcli's crate; `torq::agent::launcher`), a pop-launcher plugin
      in `/etc/pop-launcher/plugins/torq-agent/plugin.ron` (pop-launcher's system plugin directory; it runs
      `bin.path` as written when absolute): `ask <question>` offers "Ask your agent: …"; choosing it opens the

@@ -23,6 +23,7 @@ mod tree;
 mod candidate;
 pub mod session;
 pub mod desktop;
+pub mod cosmic_defaults;
 pub mod secrets;
 mod shell;
 pub mod complete;

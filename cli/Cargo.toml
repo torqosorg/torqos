@@ -24,5 +24,7 @@ sha2 = "0.10"
 # Already built for rustyline, with these features.
 nix = { version = "0.30", default-features = false, features = ["signal"] }
 tempfile = "3"
+# COSMIC's own files (RON) of a person's panel (src/cosmic_defaults.rs): read and written as COSMIC does.
+ron = { version = "0.12", default-features = false }
 # A person's SSH tunnels file, ~/.config/torq/tunnels.toml (ADR-050).
 toml = { version = "0.9", default-features = false, features = ["parse", "serde", "std"] }
