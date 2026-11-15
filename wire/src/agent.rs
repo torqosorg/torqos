@@ -1,14 +1,16 @@
-//! A person's agent service (ADR-051 3, step 2): `torq-agent@<person>.service` on its socket
-//! `/run/torq-agent/<person>.sock`, one JSON line at a time each way. A client (`torq ask`, later the
-//! panel's window) sends a `Request`; the service answers with `Event`s, streamed as they come. The
-//! service runs each task as its own process, TorqOS's harness (`torq-doctor --propose --task`), which
-//! is handed a `Task` on its input and writes the task's own events (`say`, `called`, `proposed`,
-//! `tainted`, `error`) on its output; the service relays them and says `done` last. Every request ends
+//! A person's agent service (ADR-051 3, ADR-055 3): `torq-agent@<person>.service` on its socket
+//! `/run/torq-agent/<person>.sock`, one JSON line at a time each way. A client (`torq ask`, the panel's
+//! applet, the agent's window) sends a `Request`; the service answers with `Event`s, as they come. The
+//! service is the bridge to the person's engine (their coding tool, `torq agent engine`): it hands the
+//! question over and passes on what the engine says and does, then says `done`. Every request ends
 //! with a last frame, on every way it can go: `done` (an ask; and any refusal or error, exit 1),
 //! `status` (status, stop) or `forgotten` (forget).
 //!
 //! Who is asking is never in a request: the service takes it from the kernel (SO_PEERCRED) and answers
 //! only the person it serves.
+//!
+//! `Task` and `Turn` are the old loop's (`torq-doctor --propose --task`, which wrote the same events on its
+//! output): nothing starts it that way any more, and they go with it (docs/HARNESS-AS-A-SYSTEM.md, phase 2).
 
 use serde::{Deserialize, Serialize};
 
@@ -28,44 +30,46 @@ pub const MAX_LINE: usize = 1 << 20;
 #[serde(tag = "type", rename_all = "lowercase", deny_unknown_fields)]
 pub enum Request {
     /// A question or a task, with what the person attached to it (an alarm, a failed commit): the
-    /// attached text is untrusted data, and taints the task's session.
+    /// attached text goes to the engine with the question, marked as attached: something to read.
     Ask {
         text: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         context: Option<String>,
     },
-    /// End the running task (its whole process group, and everything of it).
+    /// Stop the question being answered (the engine's whole process group, and everything of it). The
+    /// conversation is kept: the next question continues it.
     Stop,
-    /// Whether a task is running.
+    /// Whether a question is being answered.
     Status,
-    /// Erase the conversation the agent remembers.
+    /// End the conversation: the next question starts a new one.
     Forget,
 }
 
-/// What the service (and, for the first five, the task's process) says. Strict, as `Request` is: a kind or a field one
+/// What the service says. Strict, as `Request` is: a kind or a field one
 /// side does not know is refused, never guessed at. Both sides are one
 /// system's build: a switch that changes either restarts the service (its unit names the new programs), so a
 /// client and the service it reaches differ only for a moment, and then say so rather than misread.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "lowercase", deny_unknown_fields)]
 pub enum Event {
-    /// The answer, cleaned of escapes and invisible characters, as the doctor cleans it.
+    /// A part of the answer, cleaned of escapes and invisible characters.
     Say { text: String },
-    /// A tool the task ran (by its name: `read_journal`, `propose_change`, …).
+    /// Something the engine did on the way, in words a person reads ("ran a command", "read a file"); a tool
+    /// TorqOS has no words for, by its own name.
     Called { tool: String },
-    /// A proposal the broker recorded from this task's session: its number.
+    /// A proposal the engine made through TorqOS's tools: the broker's number for it.
     Proposed { seq: u64 },
-    /// The session read untrusted text, from this source: tainted for good.
+    /// What the answer proposes is marked tainted at the broker, and why (a source's word: `coding-tool`).
     Tainted { why: String },
     /// Something failed; what, in words.
     Error { text: String },
-    /// The ask is over: its task's exit code (killed by `stop`: 128 + the signal), or 1 when no task
-    /// started (refused: the error before it says why). Every ask ends with it.
+    /// The ask is over: 0 when it was answered, 137 when it was stopped (128 + the signal that ended the engine),
+    /// 1 when it failed or was refused (the error before it says why). Every ask ends with it.
     Done { exit: i32 },
-    /// The answer to `status` (and to `stop`, after it): whether a task is running.
+    /// The answer to `status` (and to `stop`, after it): whether a question is being answered.
     Status {
         running: bool,
-        /// How many turns of the conversation it remembers (ADR-051 9: shown on the Agent page).
+        /// How many questions this conversation has had (shown on the Agent page).
         #[serde(default)]
         turns: usize,
         /// Which conversation this is: a number that changes whenever the conversation is forgotten, so a window
@@ -76,13 +80,6 @@ pub enum Event {
     },
     /// The conversation is forgotten.
     Forgotten,
-}
-
-impl Event {
-    /// Whether the task's own process may say this; the rest are the service's alone.
-    pub fn from_task(&self) -> bool {
-        matches!(self, Event::Say { .. } | Event::Called { .. } | Event::Proposed { .. } | Event::Tainted { .. } | Event::Error { .. })
-    }
 }
 
 /// One turn the agent remembers: what the person asked, and what it answered — kept only when the
@@ -145,16 +142,6 @@ mod tests {
             assert!(serde_json::from_str::<Request>(bad).is_err(), "{bad}");
         }
         assert!(serde_json::from_str::<Task>(r#"{"question":"q","tools":["shell"]}"#).is_err());
-    }
-
-    /// Only the service says a task is done, or answers status: a task's process cannot end its own
-    /// stream early, or claim another state.
-    #[test]
-    fn what_a_task_may_say() {
-        assert!(Event::Say { text: String::new() }.from_task() && Event::Proposed { seq: 1 }.from_task());
-        for e in [Event::Done { exit: 0 }, Event::Status { running: false, turns: 0, conversation: 0 }, Event::Forgotten] {
-            assert!(!e.from_task(), "{e:?}");
-        }
     }
 
     #[test]

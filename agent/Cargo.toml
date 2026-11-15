@@ -14,7 +14,7 @@ path = "src/lib.rs"
 name = "torq-doctor"
 path = "src/main.rs"
 
-# A person's agent, resident (ADR-051 3): their conversation, one task at a time, each the harness above.
+# A person's agent, as a service (ADR-055 3): the bridge to their engine (Claude Code), one question at a time.
 [[bin]]
 name = "torq-agent-service"
 path = "src/service/main.rs"

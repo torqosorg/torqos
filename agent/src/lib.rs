@@ -1,5 +1,5 @@
 //! TorqOS's agent, as a library its programs share (ADR-042, ADR-051): `torq-doctor` (the harness),
-//! `torq-agent-service` (each person's agent, resident) and `torq-mcp` (TorqOS's tools for a coding tool,
+//! `torq-agent-service` (each person's agent as a service: the bridge to their engine, ADR-055) and `torq-mcp` (TorqOS's tools for a coding tool,
 //! ADR-051 7). One closed set of tools (`tools`), one way of cleaning what is shown (`clean`), one session
 //! at the broker per run (`session`, `doctor`).
 
