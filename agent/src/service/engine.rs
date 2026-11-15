@@ -148,12 +148,126 @@ impl Engine {
         }
     }
 
-    /// What the person does when it is not signed in.
-    pub fn sign_in(self) -> &'static str {
+    /// Delete the engine's own record of conversation `session` from the agent's `home`: what was asked and
+    /// answered, as the engine wrote it down. This is what makes Forget true. What could not be deleted, each
+    /// a line (none: it is gone, or was never there).
+    ///
+    /// Claude Code (seen with 2.1.316, 2026-11-15, in an account that had used it): a conversation is
+    /// `~/.claude/projects/<the folder it ran in, as a name>/<session>.jsonl`; beside it, for some, a folder
+    /// `<session>/` (its helpers' own conversations, and tools' long results); and `~/.claude/file-history/
+    /// <session>/` and `~/.claude/session-env/<session>/`. Every folder on the way is opened as a folder and
+    /// never through a link, and what is deleted is deleted by its name inside the folder that was opened: a
+    /// link put in any of these places is not followed out (a link named as the conversation is itself removed,
+    /// not what it points to).
+    pub fn erase(self, home: &Path, session: &str) -> Vec<String> {
+        let mut left = Vec::new();
+        // Never a name that could lead elsewhere (`session_ok` allows letters, digits and dashes only).
+        if !session_ok(session) {
+            return left;
+        }
         match self {
-            Engine::ClaudeCode => "Claude Code is not signed in for your agent. In a terminal, run `torq agent run -- claude`, type /login and follow what it says. Then ask again.",
+            Engine::ClaudeCode => {
+                let Some(claude) = folder(rustix::fs::CWD, &home.join(".claude"), "~/.claude", &mut left) else { return left };
+                if let Some(projects) = folder(&claude, Path::new("projects"), "~/.claude/projects", &mut left) {
+                    let inside = names(&projects).unwrap_or_else(|e| {
+                        left.push(format!("~/.claude/projects: {e}"));
+                        Vec::new()
+                    });
+                    for name in inside {
+                        let shown = format!("~/.claude/projects/{}", name.to_string_lossy());
+                        let Some(project) = folder(&projects, Path::new(&name), &shown, &mut left) else { continue };
+                        for gone in [format!("{session}.jsonl"), session.to_string()] {
+                            if let Err(e) = remove_in(&project, std::ffi::OsStr::new(&gone), 0) {
+                                left.push(format!("{shown}/{gone}: {e}"));
+                            }
+                        }
+                    }
+                }
+                for kept in ["file-history", "session-env"] {
+                    let shown = format!("~/.claude/{kept}");
+                    if let Some(dir) = folder(&claude, Path::new(kept), &shown, &mut left) {
+                        if let Err(e) = remove_in(&dir, std::ffi::OsStr::new(session), 0) {
+                            left.push(format!("{shown}/{session}: {e}"));
+                        }
+                    }
+                }
+            }
+        }
+        left
+    }
+
+    /// What the person does when it is not signed in. `plain`: whether `claude`, typed plainly, is a command
+    /// on this machine (`torq agent plainCommand`); else the same spelled out.
+    pub fn sign_in(self, plain: bool) -> String {
+        match self {
+            Engine::ClaudeCode => format!(
+                "Claude Code is not signed in for your agent. Sign it in once, in a terminal: type `{}`, then type /login and follow what it says. Then ask again. (Starting it is an administrator's command: if you are not one, ask one.)",
+                if plain { "claude" } else { "torq agent run -- claude" }
+            ),
         }
     }
+
+    /// Whether `claude`, typed plainly, is a command on this machine, as its configuration wrote it
+    /// (`tools`: /etc/torq/agent-tools.json's text, modules/agent.nix). Not said, or not read: it is not.
+    pub fn plain_command(tools: &str) -> bool {
+        serde_json::from_str::<Value>(tools).is_ok_and(|v| v["plainCommand"] == true)
+    }
+}
+
+/// The folder `name` inside `at`, opened as a folder and never through a link. Not there: none, and nothing
+/// to say. A link, or not a folder: none, and said in `left` (nothing in it is touched).
+fn folder(at: impl std::os::fd::AsFd, name: &Path, shown: &str, left: &mut Vec<String>) -> Option<std::os::fd::OwnedFd> {
+    use rustix::fs::{Mode, OFlags};
+    match rustix::fs::openat(at, name, OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC, Mode::empty()) {
+        Ok(fd) => Some(fd),
+        Err(rustix::io::Errno::NOENT) => None,
+        Err(rustix::io::Errno::LOOP | rustix::io::Errno::NOTDIR) => {
+            left.push(format!("{shown} is a link, or not a folder: it is not followed, and nothing in it was deleted"));
+            None
+        }
+        Err(e) => {
+            left.push(format!("{shown}: {e}"));
+            None
+        }
+    }
+}
+
+/// The names in the folder `dir` (not `.` and `..`).
+fn names(dir: &std::os::fd::OwnedFd) -> rustix::io::Result<Vec<std::ffi::OsString>> {
+    use std::os::unix::ffi::OsStrExt;
+    let mut all = Vec::new();
+    for entry in rustix::fs::Dir::read_from(dir)? {
+        let entry = entry?;
+        let name = entry.file_name().to_bytes();
+        if name != b"." && name != b".." {
+            all.push(std::ffi::OsStr::from_bytes(name).to_os_string());
+        }
+    }
+    Ok(all)
+}
+
+/// How deep a conversation's own folder is followed down (Claude Code's is two deep).
+const MAX_DEPTH: usize = 16;
+
+/// Remove `name` from the folder `at`, with all it holds if it is a folder. By its name inside the folder
+/// that is open, so never through a link: a link is removed itself, and a folder is opened as a folder
+/// (no link followed) before what is in it is removed the same way. Not there: nothing to do.
+fn remove_in(at: &std::os::fd::OwnedFd, name: &std::ffi::OsStr, depth: usize) -> rustix::io::Result<()> {
+    use rustix::fs::{AtFlags, Mode, OFlags};
+    use rustix::io::Errno;
+    match rustix::fs::unlinkat(at, name, AtFlags::empty()) {
+        Ok(()) | Err(Errno::NOENT) => return Ok(()),
+        Err(Errno::ISDIR) => {}
+        Err(e) => return Err(e),
+    }
+    if depth >= MAX_DEPTH {
+        return Err(Errno::LOOP);
+    }
+    let dir = rustix::fs::openat(at, name, OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC, Mode::empty())?;
+    for n in names(&dir)? {
+        remove_in(&dir, &n, depth + 1)?;
+    }
+    rustix::fs::unlinkat(at, name, AtFlags::REMOVEDIR)
 }
 
 /// The engine's output, heard a line at a time: what is kept between the lines of one question.
@@ -357,6 +471,76 @@ mod tests {
         assert_eq!(heard(&["", "junk", "[1,2]", "7", r#"{"type":"stream_event","event":{}}"#, r#"{"type":"assistant"}"#, r#"{"type":"assistant","message":{"content":"text"}}"#, r#"{"type":"user","message":{"content":"hello"}}"#, r#"{"type":"say","text":"as the old loop did"}"#, r#"{"type":"done","exit":0}"#]), []);
         assert_eq!(heard(&[r#"{"type":"system","subtype":"init","session_id":"../../etc; rm"}"#, r#"{"type":"system","subtype":"init","session_id":7}"#]), [], "a session's name that is not shaped like one is not kept");
         assert!(session_ok("ef37b4eb-a4bb-45a9-aa2a-db4f61c11dcb") && !session_ok("") && !session_ok(&"a".repeat(65)) && !session_ok("--resume"));
+    }
+
+    /// Forget is true: the engine's own record of the conversation is deleted from the agent's home, where
+    /// Claude Code keeps it, and nothing else is. No link is followed out: a folder on the way that is a link
+    /// is left alone and said, and a link named as the conversation is removed itself, not what it points to.
+    #[test]
+    fn a_forgotten_conversation_is_deleted_and_no_link_is_followed() {
+        let d = tempfile::tempdir().unwrap();
+        let (home, outside) = (d.path().join("home"), d.path().join("outside"));
+        let (s, other) = ("ef37b4eb-a4bb-45a9-aa2a-db4f61c11dcb", "11111111-2222-3333-4444-555555555555");
+        let claude = home.join(".claude");
+        let put = |file: std::path::PathBuf| {
+            std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+            std::fs::write(&file, "what was said").unwrap();
+            file
+        };
+        // The conversation, as Claude Code 2.1.316 lays it out; in two project folders (the agent's home, and a
+        // folder that was shared with it).
+        let gone = [
+            put(claude.join(format!("projects/-var-lib-torq-agent-alice/{s}.jsonl"))),
+            put(claude.join(format!("projects/-var-lib-torq-agent-alice/{s}/subagents/agent-a1.jsonl"))),
+            put(claude.join(format!("projects/-var-lib-torq-agent-alice/{s}/tool-results/toolu_1.txt"))),
+            put(claude.join(format!("projects/-home-alice-work/{s}.jsonl"))),
+            put(claude.join(format!("file-history/{s}/abc@v1"))),
+            put(claude.join(format!("session-env/{s}/env"))),
+        ];
+        // What is not that conversation's: another one, the engine's own notes, its settings.
+        let kept = [
+            put(claude.join(format!("projects/-var-lib-torq-agent-alice/{other}.jsonl"))),
+            put(claude.join(format!("projects/-var-lib-torq-agent-alice/{other}/subagents/agent-b1.jsonl"))),
+            put(claude.join("projects/-var-lib-torq-agent-alice/memory/MEMORY.md")),
+            put(claude.join(format!("file-history/{other}/abc@v1"))),
+            put(claude.join("settings.json")),
+            put(home.join(".claude.json")),
+            // Outside the agent's home, reached only through links put in its folders.
+            put(outside.join(format!("{s}.jsonl"))),
+            put(outside.join(format!("{s}/subagents/agent-a1.jsonl"))),
+            put(outside.join("pointed-at/file")),
+        ];
+        // A project folder that is a link out, and a link named as the conversation's own folder.
+        std::os::unix::fs::symlink(&outside, claude.join("projects/-linked")).unwrap();
+        let named = claude.join(format!("projects/-home-alice-work/{s}"));
+        std::os::unix::fs::symlink(outside.join("pointed-at"), &named).unwrap();
+        let left = Engine::ClaudeCode.erase(&home, s);
+        assert_eq!(left, ["~/.claude/projects/-linked is a link, or not a folder: it is not followed, and nothing in it was deleted"]);
+        for f in &gone {
+            assert!(!f.exists(), "{} is still there", f.display());
+        }
+        assert!(!claude.join(format!("projects/-var-lib-torq-agent-alice/{s}")).exists() && !claude.join(format!("file-history/{s}")).exists() && !claude.join(format!("session-env/{s}")).exists(), "its folders too");
+        assert!(named.symlink_metadata().is_err(), "the link named as the conversation is removed itself");
+        for f in &kept {
+            assert!(f.exists(), "{} was deleted", f.display());
+        }
+        // Again: nothing left to delete, and nothing to say but the link.
+        assert_eq!(Engine::ClaudeCode.erase(&home, s).len(), 1);
+        // `~/.claude` itself a link: nothing is touched through it.
+        let linked = d.path().join("linked-home");
+        std::fs::create_dir(&linked).unwrap();
+        std::os::unix::fs::symlink(&claude, linked.join(".claude")).unwrap();
+        assert_eq!(Engine::ClaudeCode.erase(&linked, other), ["~/.claude is a link, or not a folder: it is not followed, and nothing in it was deleted"]);
+        assert!(kept[0].exists() && kept[1].exists());
+        // A home with nothing of the engine's in it, and a name that is not a session's: nothing done, nothing said.
+        assert_eq!(Engine::ClaudeCode.erase(&d.path().join("no-such-home"), s), Vec::<String>::new());
+        std::fs::create_dir_all(claude.join("projects/-x/..jsonl")).unwrap();
+        assert_eq!(Engine::ClaudeCode.erase(&home, "."), Vec::<String>::new());
+        assert_eq!(Engine::ClaudeCode.erase(&home, "../../outside/pointed-at"), Vec::<String>::new());
+        assert!(claude.join("projects/-x/..jsonl").exists() && outside.join("pointed-at/file").exists());
+        // The control: the other conversation is deleted when it is the one forgotten.
+        assert_eq!(Engine::ClaudeCode.erase(&home, other).len(), 1);
+        assert!(!kept[0].exists() && !kept[1].exists() && !kept[3].exists() && kept[2].exists() && kept[4].exists() && kept[5].exists());
     }
 
     /// How it is started, and continued; what a question's line is.

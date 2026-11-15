@@ -45,6 +45,8 @@ struct Agent {
     home: PathBuf,
     kept: kept::Kept,
     now: Mutex<Now>,
+    /// Whether `claude`, typed plainly, is a command here: what a person is told to type to sign in.
+    plain: bool,
     /// The unit's `cgroup.procs`: every process of the engine is there (none outside a unit, e.g. in a test).
     procs: Option<PathBuf>,
 }
@@ -58,6 +60,9 @@ struct Now {
     starts: u64,
     engine: Option<Live>,
     asking: Option<Asking>,
+    /// How many answers in a row the engine has ended in the middle of (it went away before its answer's end):
+    /// from the second, the person is told where an administrator reads why.
+    early: u32,
 }
 
 /// The engine's process.
@@ -326,7 +331,9 @@ impl Agent {
             .env("USER", &self.account)
             .env("LOGNAME", &self.account)
             .env("SHELL", "/run/current-system/sw/bin/bash")
-            .env("PATH", format!("/run/wrappers/bin:/etc/profiles/per-user/{}/bin:/run/current-system/sw/bin", self.account))
+            // No /run/wrappers/bin: the set-id programs there (sudo, su, mount) give nothing where no privilege
+            // can be gained (NoNewPrivileges), and the engine is not to try them.
+            .env("PATH", format!("/etc/profiles/per-user/{}/bin:/run/current-system/sw/bin", self.account))
             .env("LANG", "C.UTF-8")
             .env("TERM", "dumb");
         let mut child = cmd.current_dir(&self.home).process_group(0).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::inherit()).spawn().with_context(|| format!("starting {name} ({})", self.program.display()))?;
@@ -391,11 +398,20 @@ impl Agent {
         let mut now = self.now();
         now.engine = None;
         let left = now.asking.take();
+        // An answer it ended in the middle of, by itself: counted, until it next ends one itself.
+        if left.as_ref().is_some_and(|a| !a.stopped) {
+            now.early = now.early.saturating_add(1);
+        }
+        let again = now.early >= 2;
         drop(now);
         match left {
             Some(a) if a.stopped => a.out.send(&Event::Done { exit: STOPPED }),
             Some(a) => {
-                a.out.send(&Event::Error { text: format!("{} ended before it finished its answer. Ask again: the conversation is kept.", self.engine.name()) });
+                let mut text = format!("{} ended before it finished its answer. Ask again: the conversation is kept.", self.engine.name());
+                if again {
+                    text.push_str(&format!(" If it keeps happening, an administrator can read why: journalctl -u torq-agent@{}", self.person));
+                }
+                a.out.send(&Event::Error { text });
                 a.out.send(&Event::Done { exit: 1 });
             }
             None => {}
@@ -406,7 +422,7 @@ impl Agent {
     /// keeps, kept. Nothing of an engine that is being ended is taken.
     fn step(&self, start: u64, step: Step) {
         let mut now = self.now();
-        let Now { conversation, generation, engine, asking, .. } = &mut *now;
+        let Now { conversation, generation, engine, asking, early, .. } = &mut *now;
         let Some(live) = engine.as_mut().filter(|l| l.start == start && !l.ending) else { return };
         let out = asking.as_ref().map(|a| a.out.clone());
         let mut say = Vec::new();
@@ -423,13 +439,15 @@ impl Agent {
             Step::Proposed(seq) => say.extend([Event::Tainted { why: torq_agent::mcp::CODING_TOOL.into() }, Event::Proposed { seq }]),
             Step::NotSignedIn => {
                 live.unsigned = true;
-                say.push(Event::Error { text: self.engine.sign_in().into() });
+                say.push(Event::Error { text: self.engine.sign_in(self.plain) });
             }
             Step::End { ok, why, silent } => {
                 // An end no one asked for (the engine went on by itself) ends no one's question.
                 if asking.take().is_none() {
                     return;
                 }
+                // It ended this one itself: whatever went before, it is not ending early any more.
+                *early = 0;
                 // The first question of a conversation continued, ended in failure with nothing said: the engine
                 // no longer has that conversation. The next question starts a new one, and a window is told so.
                 let lost = !ok && silent && live.continued && live.ended == 0;
@@ -509,20 +527,31 @@ impl Agent {
     }
 
     /// Forget the conversation: refused while a question is being answered; else the engine's process is
-    /// ended, and the next question starts a new conversation, under a new number.
+    /// ended, the engine's own record of the conversation is deleted from the agent's home (engine.rs:
+    /// `erase`), and the next question starts a new conversation, under a new number. If the record could not
+    /// be deleted, that is said, not "forgotten": the new conversation starts all the same.
     fn forget(&self) -> Result<()> {
-        let start = {
+        let (start, session) = {
             let mut now = self.now();
             if now.asking.is_some() {
                 bail!("your agent is answering a question: stop it first, or wait");
             }
+            let session = now.conversation.session.clone();
             self.kept.forget()?;
             now.conversation = kept::Conversation::default();
             now.generation = self.kept.generation();
-            now.engine.as_mut().map(Agent::end)
+            (now.engine.as_mut().map(Agent::end), session)
         };
+        // The engine first: gone, and all it started, before what it wrote is deleted.
         if let Some(start) = start {
             self.gone(start);
+        }
+        let left = session.map(|s| self.engine.erase(&self.home, &s)).unwrap_or_default();
+        if let Some(first) = left.first() {
+            for l in &left {
+                eprintln!("torq-agent-service: deleting the forgotten conversation: {}", clean::clean(l));
+            }
+            bail!("Your next question starts a new conversation, but the old one could not be deleted from your agent's account ({}). An administrator can read more: journalctl -u torq-agent@{}", clean::clean(first), self.person);
         }
         Ok(())
     }
@@ -599,12 +628,13 @@ fn agent(args: &[String]) -> Result<Agent> {
     };
     let state = std::env::var_os("STATE_DIRECTORY").context("no STATE_DIRECTORY: where the conversation's name is kept (the unit's StateDirectory)")?;
     let kept = kept::Kept::new(Path::new(&state));
-    let now = Now { conversation: kept.conversation(), generation: kept.generation(), starts: 0, engine: None, asking: None };
+    let now = Now { conversation: kept.conversation(), generation: kept.generation(), starts: 0, engine: None, asking: None, early: 0 };
     Ok(Agent {
         person: person.clone(),
         uid,
         engine,
         program: engine.program(&account),
+        plain: Engine::plain_command(&std::fs::read_to_string("/etc/torq/agent-tools.json").unwrap_or_default()),
         account,
         home,
         kept,
@@ -671,13 +701,16 @@ mod tests {
     use super::*;
     use std::os::unix::fs::PermissionsExt;
 
-    /// A stand-in engine: a script that speaks Claude Code's lines. It notes each start's arguments (and
+    /// A stand-in engine: a script that speaks Claude Code's lines. It notes the PATH each start was given in
+    /// `$HOME/path`, each start's arguments (and
     /// whether TorqOS was linked into its settings by then) in `$HOME/starts` and each question's line in
-    /// `$HOME/questions`, names its session `s-1`, and runs `body` for each question (`$q`, its line; `$n`, its
+    /// `$HOME/questions`, names its session `s-1` and keeps it where Claude Code keeps a conversation
+    /// (`$HOME/.claude/projects/<a folder>/s-1.jsonl`), and runs `body` for each question (`$q`, its line; `$n`, its
     /// number in this process), with `say <text>`, `use <id> <tool>` and `ok` to write an answer's lines.
     fn script(body: &str) -> String {
         format!(
             r#"#!/bin/sh
+printf '%s\n' "$PATH" >> "$HOME/path"
 PATH={}
 echo "$* $(test -f "$HOME/.claude.json" && echo linked)" >> "$HOME/starts"
 say() {{ printf '{{"type":"assistant","message":{{"content":[{{"type":"text","text":"%s"}}]}},"parent_tool_use_id":null}}\n' "$1"; }}
@@ -687,6 +720,7 @@ n=0
 while read -r q; do
 n=$((n+1))
 printf '%s\n' "$q" >> "$HOME/questions"
+mkdir -p "$HOME/.claude/projects/-its-folder" && printf '%s\n' "$q" >> "$HOME/.claude/projects/-its-folder/s-1.jsonl"
 printf '%s\n' '{{"type":"system","subtype":"init","session_id":"s-1"}}'
 {body}
 done
@@ -700,8 +734,8 @@ done
         let state = dir.join("state");
         let _ = std::fs::create_dir(&state);
         let kept = kept::Kept::new(&state);
-        let now = Now { conversation: kept.conversation(), generation: kept.generation(), starts: 0, engine: None, asking: None };
-        Arc::new(Agent { person: "alice".into(), uid, engine: Engine::ClaudeCode, program: dir.join("engine"), account: "torq-agent-alice".into(), home: dir.into(), kept, now: Mutex::new(now), procs: Some(dir.join("procs")) })
+        let now = Now { conversation: kept.conversation(), generation: kept.generation(), starts: 0, engine: None, asking: None, early: 0 };
+        Arc::new(Agent { person: "alice".into(), uid, engine: Engine::ClaudeCode, program: dir.join("engine"), account: "torq-agent-alice".into(), home: dir.into(), kept, now: Mutex::new(now), plain: true, procs: Some(dir.join("procs")) })
     }
 
     fn serving(a: &Arc<Agent>, sock: &Path) {
@@ -819,6 +853,7 @@ done
         assert_eq!(with.last(), Some(&Event::Done { exit: 0 }));
         assert_eq!(status(&sock), standing(false, 2, 1), "status says how many questions the conversation has had");
         assert_eq!(lines(&d, "starts"), [format!("{STARTED} linked")], "started once, a new conversation, TorqOS's tools linked before");
+        assert_eq!(lines(&d, "path"), ["/etc/profiles/per-user/torq-agent-alice/bin:/run/current-system/sw/bin"], "its PATH: the agent's own profile, then the system's; no set-id wrappers");
         let asked = lines(&d, "questions");
         assert_eq!(asked.len(), 2);
         let second: serde_json::Value = serde_json::from_str(&asked[1]).unwrap();
@@ -932,14 +967,51 @@ say "$(head -c 70000 /dev/zero | tr '\0' x)"; ok"#;
         assert_eq!(talk(&sock, &[ask("again")], done).last(), Some(&Event::Done { exit: 0 }));
         let idle = pid(&d, "engine-pid");
         assert!(!gone(idle) && a.now().engine.is_some(), "the control: it runs between questions");
+        // What the engine wrote down of the conversation is in the agent's home, where it keeps it.
+        let record = d.path().join(".claude/projects/-its-folder/s-1.jsonl");
+        assert_eq!(std::fs::read_to_string(&record).unwrap().lines().count(), 3, "the control: its record of the three questions");
         assert_eq!(talk(&sock, &[Request::Forget], |e| matches!(e, Event::Forgotten)), [Event::Forgotten]);
         assert!(gone(idle) && a.now().engine.is_none(), "ended with the conversation");
+        assert!(!record.exists(), "forgotten, and the engine's record of it still there");
         assert_eq!(status(&sock), standing(false, 0, 2), "another conversation, by its number");
         assert_eq!(talk(&sock, &[ask("who?")], done).last(), Some(&Event::Done { exit: 0 }));
         let starts = lines(&d, "starts");
         assert_eq!(starts.len(), 3);
         assert!(starts[1].contains("--resume s-1"), "the control: after the stop it was continued: {starts:?}");
         assert_eq!(starts[2], format!("{STARTED} linked"), "nothing continued after a forget");
+    }
+
+    /// A record that cannot be deleted (here its folder is a link, which is never followed): Forget says so
+    /// instead of "forgotten", in words with what to do; the new conversation starts all the same. And a
+    /// forget with the engine not running deletes the record too.
+    #[test]
+    fn forget_says_when_the_record_could_not_be_deleted() {
+        let (a, sock, d) = agent("say hello; ok", me());
+        assert_eq!(talk(&sock, &[ask("first")], done).last(), Some(&Event::Done { exit: 0 }));
+        talk(&sock, &[Request::Stop], |e| matches!(e, Event::Status { .. }));
+        let projects = d.path().join(".claude/projects");
+        let elsewhere = d.path().join("elsewhere");
+        std::fs::rename(&projects, &elsewhere).unwrap();
+        std::os::unix::fs::symlink(&elsewhere, &projects).unwrap();
+        let seen = talk(&sock, &[Request::Forget], |e| matches!(e, Event::Done { .. } | Event::Forgotten));
+        let [Event::Error { text }, Event::Done { exit: 1 }] = &seen[..] else { panic!("{seen:?}") };
+        assert_eq!(text, "Your next question starts a new conversation, but the old one could not be deleted from your agent's account (~/.claude/projects is a link, or not a folder: it is not followed, and nothing in it was deleted). An administrator can read more: journalctl -u torq-agent@alice");
+        assert!(elsewhere.join("-its-folder/s-1.jsonl").exists(), "nothing deleted through the link");
+        assert_eq!(status(&sock), standing(false, 0, 2), "a new conversation all the same");
+        // The link put right, a question, and a forget asked of a service started again, with no engine running:
+        // the record goes by the name the service kept.
+        std::fs::remove_file(&projects).unwrap();
+        std::fs::rename(&elsewhere, &projects).unwrap();
+        std::fs::remove_file(projects.join("-its-folder/s-1.jsonl")).unwrap();
+        assert_eq!(talk(&sock, &[ask("second")], done).last(), Some(&Event::Done { exit: 0 }));
+        assert!(projects.join("-its-folder/s-1.jsonl").exists());
+        let again = agent_in(d.path(), me());
+        let sock2 = d.path().join("again.sock");
+        serving(&again, &sock2);
+        assert!(again.now().engine.is_none() && again.now().conversation.session.as_deref() == Some("s-1"));
+        assert_eq!(talk(&sock2, &[Request::Forget], |e| matches!(e, Event::Forgotten)), [Event::Forgotten]);
+        assert!(!projects.join("-its-folder/s-1.jsonl").exists());
+        drop(a);
     }
 
     /// Not part of the suite: run by the tests below as a process of the engine's that goes where a program
@@ -1016,6 +1088,24 @@ echo $$ $(cat "$HOME/own-group") $(cat "$HOME/undumpable") > "$HOME/procs""#,
         assert_eq!(status(&sock), standing(false, 0, 1));
         assert_eq!(talk(&sock, &[ask("again")], done), [Event::Say { text: "bye".into() }, Event::Done { exit: 0 }]);
         assert!(lines(&d, "starts")[1].contains("--resume s-1"));
+    }
+
+    /// An engine that ends in the middle of an answer again and again: from the second time in a row the
+    /// person is also told where an administrator reads why. An answer it ends itself starts the count anew.
+    #[test]
+    fn ending_early_again_says_where_an_administrator_reads_why() {
+        let body = r#"c=$(cat "$HOME/count" 2>/dev/null || echo 0); c=$((c+1)); echo $c > "$HOME/count"; case $c in 3) say fine; ok;; *) exit 3;; esac"#;
+        let (_a, sock, _d) = agent(body, me());
+        let early = "Claude Code ended before it finished its answer. Ask again: the conversation is kept.";
+        let again = format!("{early} If it keeps happening, an administrator can read why: journalctl -u torq-agent@alice");
+        let said = |seen: Vec<Event>| match &seen[..] {
+            [Event::Error { text }, Event::Done { exit: 1 }] => text.clone(),
+            other => panic!("{other:?}"),
+        };
+        assert_eq!(said(talk(&sock, &[ask("one")], done)), early, "once: only to ask again");
+        assert_eq!(said(talk(&sock, &[ask("two")], done)), again, "twice in a row");
+        assert_eq!(talk(&sock, &[ask("three")], done), [Event::Say { text: "fine".into() }, Event::Done { exit: 0 }]);
+        assert_eq!(said(talk(&sock, &[ask("four")], done)), early, "the first again, after an answer that ended well");
     }
 
     /// The refusal's wait for what was sent is one deadline: a peer that keeps sending is cut off.
@@ -1119,7 +1209,7 @@ printf '%s\n' '{"type":"assistant","message":{"content":[{"type":"text","text":"
 fi"#;
         let (a, sock, d) = agent(body, me());
         let seen = talk(&sock, &[ask("hi")], done);
-        assert_eq!(seen, [Event::Error { text: "Claude Code is not signed in for your agent. In a terminal, run `torq agent run -- claude`, type /login and follow what it says. Then ask again.".into() }, Event::Done { exit: 1 }]);
+        assert_eq!(seen, [Event::Error { text: "Claude Code is not signed in for your agent. Sign it in once, in a terminal: type `claude`, then type /login and follow what it says. Then ask again. (Starting it is an administrator's command: if you are not one, ask one.)".into() }, Event::Done { exit: 1 }]);
         let t = Instant::now();
         while a.now().engine.is_some() {
             assert!(t.elapsed() < Duration::from_secs(10), "the engine that was not signed in still runs");
