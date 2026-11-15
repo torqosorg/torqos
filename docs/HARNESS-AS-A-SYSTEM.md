@@ -110,8 +110,10 @@ The person sets the engine, and the desktop's AI is Claude Code.
       ("ran a command", "read a file", "looked at the configuration"), a proposal with **Review**.
 - [ ] Not signed in, or Claude Code not installed: the window says so and says what to do.
 - [ ] Forget starts a new conversation. Stop interrupts the answer.
-- [ ] The desktop's defaults reach a person who already has their own shortcuts or panel (the bug
-      seen on the laptop: Super+Shift+A did nothing and the applet was missing).
+- [x] The desktop's defaults reach a person who already has their own shortcuts or panel (the bug
+      seen on the laptop: Super+Shift+A did nothing and the applet was missing). Done 2026-11-15: the key is in
+      COSMIC's `defaults`; the applets by `torq-desktop-defaults` (KNOWN-GAPS 6zzt). Unit tests ran; VM test
+      `tests/desktop-defaults.nix` written, not yet run.
 - [ ] Tests: a stand-in engine that speaks the same JSON, in unit tests and the VM tests; the real
       Claude Code driven once by hand on the check host, and what was seen written down here.
 - [ ] One full check. Then the laptop, and the owner looks.
