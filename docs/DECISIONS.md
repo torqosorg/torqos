@@ -3360,3 +3360,41 @@ content at the next), and a proposal must be judged on what it does, not on what
   opens the window switcher instead of closing it. The window switcher (`cosmic-launcher alt-tab`) picks a
   window when Super is let go; started from a gesture, with none held, how it behaves is to be seen on the laptop.
   A pinch that is then cancelled has still opened the app library.
+
+## ADR-055 — The machine's agent is the person's coding tool; TorqOS is the system around it
+- **Status:** accepted, 2026-11-15 (the owner). Reverses ADR-051 5's last sentence ("A tool never becomes
+  the machine's agent") and ADR-051 9 ("TorqOS is the harness" as a loop of its own); ADR-042's doctor mode
+  and session trust go with it. Being built: `docs/HARNESS-AS-A-SYSTEM.md` is the plan and says what is done.
+- **Context:** ADR-051 made TorqOS's own loop (`torq-doctor`, six read-only tools and a proposal) the agent
+  in every part of the desktop, and Claude Code a tool the person starts in a folder. The first real model
+  asked on the laptop (2026-11-15) showed the cost: the desktop's agent was a small doctor, and the capable
+  one sat beside it, unused by the system. The owner: "I wanted Claude Code to be the agent … anywhere in
+  the system if I use AI it is defaulting to that Torq Agent, which IS Claude Code or Codex or Kimi Code,
+  whatever the user sets up", and of TorqOS's loop, "it damn well better be the best in the world to justify
+  losing Claude Code". It cannot be, and what TorqOS has that no engine has is not a loop: it is the account,
+  the sandbox, the broker, the ledger and secrets.
+- **Decision:**
+  1. **The engine is a setting** (`torq agent engine`): Claude Code first, opencode second. Every AI entry
+     point of TorqOS reaches it. TorqOS writes no agent loop, prompt or model client.
+  2. **The fence is unchanged**: the engine runs as `torq-agent-<person>`, in `torq agent run`'s sandbox, and
+     can only propose a change to the system (ADR-035, ADR-041). One account per person: `torq-resident-<person>`
+     goes.
+  3. **A bridge, not a loop**: the agent's service runs the engine as one long-lived session and passes
+     questions and answers between it and the person's programs. It decides nothing and holds no credential.
+  4. **A model proxy on this machine** carries every request the engine makes to its model and records it:
+     the audit of AI on the machine (the owner: "full audit control of AI through a TorqOS proxy"). It
+     relays bytes unchanged; with an API key it adds the key (a TorqOS secret, ADR-052), with a subscription
+     it passes the person's token through and never keeps it.
+  5. **Every proposal from the engine is asked, one by one.** Session trust rested on the broker seeing all
+     the old loop read; it is removed with the loop. It may return, decided from what the proxy saw: its own
+     ADR then.
+  6. **Anthropic's terms are respected by construction** (the four rules in the plan): TorqOS never ships
+     Claude Code, never stores a subscription's token, restricts no way of signing in, and runs nothing on a
+     subscription that the person did not ask for.
+- **Consequences:** `torq doctor`, `torq agent propose`, `torq agent doctor …` and the local model's unit
+  are removed (a local model returns as opencode's provider). A machine with no engine installed has no
+  agent. What the engine reads on its own (the web, files) is seen by the proxy, not by the broker. The
+  model's key in a root-only file (`apiKeyFile`) is replaced by a secret. KNOWN-GAPS 6zzk (one key for every
+  agent) closes with it.
+- **Not decided here:** a person's own Claude Code, outside the fence; other engines; the larger desktop
+  ideas listed at the end of the plan.
