@@ -98,7 +98,7 @@ pkgs.testers.runNixOSTest {
         assert in_session("torq ask hello").strip() == "Hello alice."
         assert in_session("torq-agent-ui --check").splitlines()[0] == "Idle · a conversation of 1 question"
         # The Agent page's Forget is a torqcli line: through her own socket, and the count says so.
-        assert "forgotten the conversation" in in_session("torqcli request system agent forget")
+        assert "The conversation is deleted." in in_session("torqcli request system agent forget")
         assert in_session("torq-agent-ui --check").splitlines()[0] == "Idle · no conversation yet"
 
     with subtest("someone with no agent is told so, and reaches no one's"):

@@ -199,7 +199,7 @@ pkgs.testers.runNixOSTest {
         assert as_user("alice", "torq agent run -- ls -A /var/lib/torq-agent-memory").strip() == ""
         assert raw("alice", {"type": "status"}) == status(False, 2, 1)
         out = as_user("alice", "torq ask --forget")
-        assert "forgotten" in out, out
+        assert out.strip() == "The conversation is deleted. Your next question starts a new one.", out
         machine.fail(f"test -e {mem}/conversation.json")
         # Forget ends the engine's process; the next question starts another, with nothing to continue.
         machine.fail(engine)
@@ -250,9 +250,10 @@ pkgs.testers.runNixOSTest {
     with subtest("what it proposes: its number, alice's agent's at the broker, tainted as a coding tool's, waiting for her"):
         out = as_user("alice", "torq ask 'install htop' 2>/tmp/err")
         m = re.search(r"Proposed #(\d+)", out)
-        assert m and "request system apply" in out and "I proposed htop." in out, out
+        assert m and f"Proposed #{m.group(1)}: it waits for you" in out and f"request system apply {m.group(1)}" in out and "I proposed htop." in out, out
         err = machine.succeed("cat /tmp/err")
-        assert "agent: proposed a change" in err and "(coding-tool)" in err and "marked tainted" in err, err
+        assert "agent: proposed a change" in err and "Your agent's proposals always wait for you to read and approve them." in err, err
+        assert "coding-tool" not in err and "tainted" not in err, err
         p = [e for e in entries() if e["seq"] == int(m.group(1))][0]
         assert p["kind"] == "proposal" and p["actor"] == "agent" and p["data"]["agent"] == "torq-agent-alice" and p["data"]["agent_for"] == "alice", p
         assert p["tainted"] is True and "coding-tool" in p["data"]["session"]["tainted_by"], p

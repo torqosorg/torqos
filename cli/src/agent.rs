@@ -407,7 +407,7 @@ impl Keys {
                     let _ = rustix::termios::tcsetattr(std::io::stdin(), rustix::termios::OptionalActions::Now, &restore);
                     // Said if it can be: at a hangup the terminal is gone, and eprintln! would panic this thread and
                     // leave torq ask running, the signal taken. Whatever the write does, it ends.
-                    let _ = std::io::Write::write_fmt(&mut std::io::stderr(), format_args!("agent: ended by signal {n}, without its answer (the agent stops the task as the connection ends)\n"));
+                    let _ = std::io::Write::write_fmt(&mut std::io::stderr(), format_args!("agent: ended by signal {n}, without its answer (your agent stops answering when the terminal that asked is gone)\n"));
                     std::process::exit(128 + n);
                 }
             });
@@ -462,11 +462,35 @@ impl Drop for Keys {
     }
 }
 
+/// What a person reads where a proposal of their agent's is told (`torq ask`, the window, the applet). The
+/// broker marks every proposal of a coding tool's tainted, whatever it read; what that means to the person is this.
+pub const ALWAYS_ASKED: &str = "Your agent's proposals always wait for you to read and approve them.";
+
+/// What Forget did, as every program says it.
+pub const FORGOTTEN: &str = "The conversation is deleted. Your next question starts a new one.";
+
+/// What Forget will do, asked before it is done (the window's and the Agent page's question).
+pub const FORGET_ASKS: &str = "The conversation is deleted, from your agent's account too. Your next question starts a new one. What your agent already proposed or changed stays.";
+
+/// Said in a window that was showing a conversation deleted from somewhere else.
+pub const FORGOTTEN_ELSEWHERE: &str = "The conversation was deleted (Forget, from another window or a terminal). Your next question starts a new one.";
+
+/// What became of proposal `seq`, by the ledger: only one of the person's own agent's is theirs. The ledger
+/// unread is said as that, never taken as a yes.
+fn looked_up(seq: u64) -> conversation::Fate {
+    crate::app::agent_fates(&[seq]).ok().and_then(|f| f.first().map(|(_, fate)| *fate)).unwrap_or(conversation::Fate::Unread)
+}
+
 /// How the person reads an event: the answer and the proposals on standard output, the steps on the
 /// way on standard error, every word of the agent's cleaned of what could fool a terminal. `Some`
 /// (the exit code) when it is the last — an error is the last, too, when `error_ends` (for `forget`).
-fn show(e: torq_wire::agent::Event, error_ends: bool, failed: &mut bool, out: &mut dyn std::io::Write, err: &mut dyn std::io::Write) -> std::io::Result<Option<i32>> {
+///
+/// A proposal's number is the service's word, and so that of anything the engine ran (it can write the line
+/// the service reads the number from): `fate` looks it up in the ledger, as the agent's window does, and only
+/// a proposal of the person's own agent that waits is shown as one to apply.
+fn show(e: torq_wire::agent::Event, error_ends: bool, failed: &mut bool, fate: &dyn Fn(u64) -> conversation::Fate, out: &mut dyn std::io::Write, err: &mut dyn std::io::Write) -> std::io::Result<Option<i32>> {
     use crate::history::clean;
+    use conversation::Fate;
     use torq_wire::agent::Event;
     match e {
         Event::Say { text } => {
@@ -475,8 +499,16 @@ fn show(e: torq_wire::agent::Event, error_ends: bool, failed: &mut bool, out: &m
             }
         }
         Event::Called { tool } => writeln!(err, "agent: {}", clean(&tool))?,
-        Event::Tainted { why } => writeln!(err, "agent: this session read untrusted text ({}): anything it proposes is marked tainted", clean(&why))?,
-        Event::Proposed { seq } => writeln!(out, "Proposed #{seq}: a person applies it — `show system proposals`, `request system apply {seq}`")?,
+        // Why the broker marked it (its own word, `coding-tool`) is not a person's to read: what it means is.
+        Event::Tainted { .. } => writeln!(err, "agent: {ALWAYS_ASKED}")?,
+        Event::Proposed { seq } => match fate(seq) {
+            Fate::Waiting => writeln!(out, "Proposed #{seq}: it waits for you. To read it: `show system proposals`. To apply it: `request system apply {seq}`")?,
+            Fate::Failed => writeln!(out, "Proposed #{seq}: applying it failed once, so it waits for you again. To read it: `show system proposals`. To apply it: `request system apply {seq}`")?,
+            Fate::Applied => writeln!(out, "Proposed #{seq}: already applied (`show system ledger` has it)")?,
+            Fate::Declined => writeln!(out, "Proposed #{seq}: already declined")?,
+            Fate::NotYours => writeln!(err, "agent: your agent said it made proposal #{seq}, but that is not your agent's proposal: there is nothing to apply. `show system proposals` lists what really waits for you")?,
+            Fate::Unread => writeln!(err, "agent: your agent said it made proposal #{seq}; the record of changes could not be read to check that. `show system proposals` lists what really waits for you")?,
+        },
         Event::Error { text } => {
             *failed = true;
             writeln!(err, "agent: {}", clean(&text))?;
@@ -486,7 +518,7 @@ fn show(e: torq_wire::agent::Event, error_ends: bool, failed: &mut bool, out: &m
         }
         Event::Done { exit } => return Ok(Some(if exit == 0 && !*failed { 0 } else { 1 })),
         Event::Forgotten => {
-            writeln!(out, "Your agent has forgotten the conversation.")?;
+            writeln!(out, "{FORGOTTEN}")?;
             return Ok(Some(0));
         }
         Event::Status { .. } => {}
@@ -497,7 +529,8 @@ fn show(e: torq_wire::agent::Event, error_ends: bool, failed: &mut bool, out: &m
 /// `torq ask "<question>"` (ADR-051 4, the terminal's way to the agent): the person's own agent —
 /// its service, `torq-agent@<you>.service`, on its socket — asked through the client every UI shares
 /// (`client::Client`), the answer streamed as it comes, with the number of anything it proposed; Ctrl-C
-/// stops it. `--forget`: the conversation it keeps is erased.
+/// stops it. `--forget`: the conversation is deleted (the engine's own record of it too), and the next question
+/// starts a new one.
 pub(crate) fn ask(args: &[String]) -> Result<i32> {
     use torq_wire::agent::Event;
     let asked = parse_ask(args)?;
@@ -505,8 +538,8 @@ pub(crate) fn ask(args: &[String]) -> Result<i32> {
     let text = match asked {
         Asked::Forget => {
             return match agent.forget() {
-                Ok(()) => show(Event::Forgotten, true, &mut false, &mut std::io::stdout(), &mut std::io::stderr()).map(|c| c.unwrap_or(0)).map_err(Into::into),
-                Err(client::Unreachable::Refused(text)) => show(Event::Error { text }, true, &mut false, &mut std::io::stdout(), &mut std::io::stderr()).map(|c| c.unwrap_or(1)).map_err(Into::into),
+                Ok(()) => show(Event::Forgotten, true, &mut false, &looked_up, &mut std::io::stdout(), &mut std::io::stderr()).map(|c| c.unwrap_or(0)).map_err(Into::into),
+                Err(client::Unreachable::Refused(text)) => show(Event::Error { text }, true, &mut false, &looked_up, &mut std::io::stdout(), &mut std::io::stderr()).map(|c| c.unwrap_or(1)).map_err(Into::into),
                 Err(e) => Err(e.into()),
             };
         }
@@ -536,7 +569,7 @@ pub(crate) fn ask(args: &[String]) -> Result<i32> {
             Err(_) if failed => return Ok(if stopped() { 130 } else { 1 }),
             e => e?,
         };
-        if let Some(code) = show(e, false, &mut failed, &mut std::io::stdout(), &mut std::io::stderr())? {
+        if let Some(code) = show(e, false, &mut failed, &looked_up, &mut std::io::stdout(), &mut std::io::stderr())? {
             return Ok(if stopped() { 130 } else { code });
         }
     }
@@ -693,33 +726,76 @@ mod tests {
     /// agent's able to fool a terminal; the end, and its code, at `done`.
     #[test]
     fn how_the_answer_is_shown() {
+        use conversation::Fate;
         use torq_wire::agent::Event;
         let (mut out, mut err, mut failed) = (Vec::new(), Vec::new(), false);
-        let mut s = |e| show(e, false, &mut failed, &mut out, &mut err).unwrap();
+        let waiting = |_| Fate::Waiting;
+        let mut s = |e| show(e, false, &mut failed, &waiting, &mut out, &mut err).unwrap();
         assert_eq!(s(Event::Called { tool: "read_journal".into() }), None);
-        assert_eq!(s(Event::Tainted { why: "read_journal".into() }), None);
+        assert_eq!(s(Event::Tainted { why: "coding-tool\u{1b}[2J".into() }), None);
         assert_eq!(s(Event::Say { text: "line one\nrewrite\rd \u{1b}[2J\u{202e}".into() }), None);
         assert_eq!(s(Event::Proposed { seq: 12 }), None);
         assert_eq!(s(Event::Done { exit: 0 }), Some(0));
         let (out, err) = (String::from_utf8(out).unwrap(), String::from_utf8(err).unwrap());
-        assert!(out.starts_with("line one\n") && out.contains("Proposed #12") && out.contains("request system apply 12"), "{out}");
+        assert!(out.starts_with("line one\n") && out.contains("Proposed #12: it waits for you") && out.contains("request system apply 12"), "{out}");
         assert!(!out.contains('\u{1b}') && !out.contains('\r') && !out.contains('\u{202e}'), "{out:?}");
-        assert!(err.contains("agent: read_journal") && err.contains("untrusted text (read_journal)"), "{err}");
+        // The broker's own word for the taint is not shown: what it means to the person is.
+        assert_eq!(err, "agent: read_journal\nagent: Your agent's proposals always wait for you to read and approve them.\n");
         // An error, then done: failed, whatever the code.
         let (mut failed, mut sink) = (false, Vec::new());
-        assert_eq!(show(Event::Error { text: "a task is running already".into() }, false, &mut failed, &mut Vec::new(), &mut sink).unwrap(), None);
-        assert_eq!(show(Event::Done { exit: 0 }, false, &mut failed, &mut Vec::new(), &mut Vec::new()).unwrap(), Some(1));
-        assert_eq!(show(Event::Done { exit: 137 }, false, &mut false, &mut Vec::new(), &mut Vec::new()).unwrap(), Some(1), "stopped");
+        assert_eq!(show(Event::Error { text: "a task is running already".into() }, false, &mut failed, &waiting, &mut Vec::new(), &mut sink).unwrap(), None);
+        assert_eq!(show(Event::Done { exit: 0 }, false, &mut failed, &waiting, &mut Vec::new(), &mut Vec::new()).unwrap(), Some(1));
+        assert_eq!(show(Event::Done { exit: 137 }, false, &mut false, &waiting, &mut Vec::new(), &mut Vec::new()).unwrap(), Some(1), "stopped");
+    }
+
+    /// A proposal's number is the service's word, which anything the engine ran can forge: only a number
+    /// the ledger has as a waiting proposal of the person's own agent is shown as one to apply.
+    #[test]
+    fn a_proposal_is_shown_only_if_the_ledger_has_it_as_ones_own() {
+        use conversation::Fate;
+        use torq_wire::agent::Event;
+        let shown = |fate: Fate| {
+            let (mut out, mut err) = (Vec::new(), Vec::new());
+            assert_eq!(show(Event::Proposed { seq: 41 }, false, &mut false, &|seq| if seq == 41 { fate } else { Fate::Waiting }, &mut out, &mut err).unwrap(), None);
+            (String::from_utf8(out).unwrap(), String::from_utf8(err).unwrap())
+        };
+        // The control: one that waits, of the person's own agent.
+        let (out, err) = shown(Fate::Waiting);
+        assert!(out.contains("request system apply 41") && err.is_empty(), "{out} / {err}");
+        assert!(shown(Fate::Failed).0.contains("request system apply 41"));
+        // Another's, or none at all: nothing on standard output, no command to apply it, and said.
+        for (fate, says) in [(Fate::NotYours, "that is not your agent's proposal: there is nothing to apply"), (Fate::Unread, "could not be read to check that")] {
+            let (out, err) = shown(fate);
+            assert_eq!(out, "", "{fate:?}");
+            assert!(err.contains("proposal #41") && err.contains(says) && err.contains("`show system proposals`") && !err.contains("request system apply"), "{fate:?}: {err}");
+        }
+        // Over already: said, with no command to apply it again.
+        for (fate, says) in [(Fate::Applied, "already applied"), (Fate::Declined, "already declined")] {
+            let (out, _) = shown(fate);
+            assert!(out.contains(says) && !out.contains("request system apply"), "{fate:?}: {out}");
+        }
+        // By the ledger: a number that is another agent's, or a person's own commit, is not this agent's.
+        let entries = crate::history::parse(concat!(
+            r#"{"seq":40,"ts":"2026-11-15T12:00:00Z","kind":"proposal","actor":"agent","tier":"user","reason":"htop","data":{"agent":"torq-agent-bob"}}"#, "\n",
+            r#"{"seq":41,"ts":"2026-11-15T12:01:00Z","kind":"proposal","actor":"agent","tier":"user","reason":"jq","data":{"agent":"torq-agent-alice"}}"#, "\n",
+            r#"{"seq":42,"ts":"2026-11-15T12:02:00Z","kind":"applied","actor":"user","tier":"user","reason":"x","data":{}}"#, "\n",
+        ))
+        .unwrap();
+        let fates = conversation::fates(&entries, "torq-agent-alice", &[40, 41, 42, 99]);
+        assert_eq!(fates, [(40, Fate::NotYours), (41, Fate::Waiting), (42, Fate::NotYours), (99, Fate::NotYours)]);
     }
 
     /// `forget` ends at its error: refused while a task runs, `torq ask --forget` never waits.
     #[test]
     fn forget_ends_at_an_error() {
         use torq_wire::agent::Event;
+        let fate = |_| conversation::Fate::Unread;
         let refused = || Event::Error { text: "a task is running: stop it first, or wait".into() };
-        assert_eq!(show(refused(), true, &mut false, &mut Vec::new(), &mut Vec::new()).unwrap(), Some(1));
-        assert_eq!(show(refused(), false, &mut false, &mut Vec::new(), &mut Vec::new()).unwrap(), None, "an ask goes on to its done");
-        assert_eq!(show(Event::Forgotten, true, &mut false, &mut Vec::new(), &mut Vec::new()).unwrap(), Some(0));
+        assert_eq!(show(refused(), true, &mut false, &fate, &mut Vec::new(), &mut Vec::new()).unwrap(), Some(1));
+        assert_eq!(show(refused(), false, &mut false, &fate, &mut Vec::new(), &mut Vec::new()).unwrap(), None, "an ask goes on to its done");
+        let mut out = Vec::new();
+        assert_eq!(show(Event::Forgotten, true, &mut false, &fate, &mut out, &mut Vec::new()).unwrap(), Some(0));
+        assert_eq!(String::from_utf8(out).unwrap(), "The conversation is deleted. Your next question starts a new one.\n");
     }
 
     /// Ctrl-C asks the agent to stop; a second, or no end within GIVE_UP of the first, leaves.

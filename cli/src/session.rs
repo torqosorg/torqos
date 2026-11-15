@@ -1394,7 +1394,7 @@ impl<'a> Session<'a> {
             // The person's own agent, on their own socket: no change to the system, nothing for the broker.
             syntax::Request::AgentForget => {
                 crate::agent::client::Client::mine()?.forget()?;
-                Ok("Your agent has forgotten the conversation.\n".into())
+                Ok(format!("{}\n", crate::agent::FORGOTTEN))
             }
             syntax::Request::RemoteKey => self.machine.remote_key(),
             syntax::Request::DesktopSave => {
