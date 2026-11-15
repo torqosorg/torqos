@@ -67,6 +67,11 @@ if [ "${1-}" = --hold-frozen ]; then
   # shellcheck disable=SC2329
   thaw() {
     rc=$?
+    # From here no signal ends this: a second one arriving while the agent is being thawed (the terminal
+    # hanging up just after torqcli was killed, most of all) would run `exit` again, inside this very trap,
+    # and leave the agent frozen. Ignored, and so by `systemctl` and `sleep` below too. (Found by
+    # tests/agent-service.nix failing one run in three, 2026-11-15.)
+    trap '' INT TERM HUP PIPE
     [ -n "$frozen" ] || exit "$rc"
     for _ in 1 2 3; do
       if systemctl thaw -- "$unit"; then
