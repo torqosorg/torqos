@@ -52,6 +52,18 @@ struct Agent {
     plain: bool,
     /// The unit's `cgroup.procs`: every process of the engine is there (none outside a unit, e.g. in a test).
     procs: Option<PathBuf>,
+    /// What the engine is told of TorqOS's model proxy (`to_the_engine`), as this service was told it.
+    proxy: Vec<(String, String)>,
+}
+
+/// The settings of TorqOS's model proxy (ADR-057) that the engine is given as this service's unit has them
+/// (modules/model-proxy.nix): where its model is, and how a site is reached. The engine's environment is
+/// otherwise made here from nothing, so these are named, and nothing else of the service's passes.
+const TO_THE_ENGINE: [&str; 5] = ["ANTHROPIC_BASE_URL", "HTTPS_PROXY", "https_proxy", "NO_PROXY", "no_proxy"];
+
+/// Those of `TO_THE_ENGINE` that are set, by `get` (the service's own environment).
+fn to_the_engine(get: impl Fn(&str) -> Option<String>) -> Vec<(String, String)> {
+    TO_THE_ENGINE.iter().filter_map(|name| get(name).map(|value| (name.to_string(), value))).collect()
 }
 
 /// How the agent stands: its conversation, the engine's process if one runs, the question being answered.
@@ -361,7 +373,8 @@ impl Agent {
             // can be gained (NoNewPrivileges), and the engine is not to try them.
             .env("PATH", format!("/etc/profiles/per-user/{}/bin:/run/current-system/sw/bin", self.account))
             .env("LANG", "C.UTF-8")
-            .env("TERM", "dumb");
+            .env("TERM", "dumb")
+            .envs(self.proxy.iter().map(|(name, value)| (name, value)));
         let mut child = cmd.current_dir(&self.home).process_group(0).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::inherit()).spawn().with_context(|| format!("starting {name} ({})", self.program.display()))?;
         let (Some(input), Some(output)) = (child.stdin.take(), child.stdout.take()) else {
             // Piped both, so never so; if it were, the engine goes, and nothing is held.
@@ -664,6 +677,7 @@ fn agent(args: &[String]) -> Result<Agent> {
         home,
         kept,
         now: Mutex::new(now),
+        proxy: to_the_engine(|name| std::env::var(name).ok()),
         procs: unit_procs(&format!("/torq-agent@{person}.service")).or_else(|| {
             // Said once, at the start: without it, what the engine leaves running is not swept.
             eprintln!("torq-agent-service: this unit's processes cannot be listed (its control group's cgroup.procs): what the engine leaves running is not swept");
@@ -736,6 +750,7 @@ mod tests {
         format!(
             r#"#!/bin/sh
 printf '%s\n' "$PATH" >> "$HOME/path"
+printf '%s\n' "$ANTHROPIC_BASE_URL $HTTPS_PROXY ${{SERVICE_ONLY-unset}}" >> "$HOME/proxy"
 PATH={}
 echo "$* $(test -f "$HOME/.claude.json" && echo linked)" >> "$HOME/starts"
 say() {{ printf '{{"type":"assistant","message":{{"content":[{{"type":"text","text":"%s"}}]}},"parent_tool_use_id":null}}\n' "$1"; }}
@@ -754,13 +769,27 @@ done
         )
     }
 
+    /// Of the service's own environment the engine is given the model proxy's settings and nothing else.
+    #[test]
+    fn the_engine_is_told_of_the_model_proxy_and_nothing_else_of_the_services() {
+        let service = |name: &str| match name {
+            "ANTHROPIC_BASE_URL" | "HTTPS_PROXY" | "https_proxy" => Some("http://127.0.0.1:7801".to_string()),
+            "NO_PROXY" | "no_proxy" => Some("127.0.0.1,localhost".to_string()),
+            _ => Some("the service's own".to_string()),
+        };
+        let told = to_the_engine(service);
+        assert_eq!(told.iter().map(|(n, _)| n.as_str()).collect::<Vec<_>>(), ["ANTHROPIC_BASE_URL", "HTTPS_PROXY", "https_proxy", "NO_PROXY", "no_proxy"]);
+        assert!(told.iter().all(|(_, v)| v != "the service's own"));
+        assert_eq!(to_the_engine(|_| None), [], "a service that was told nothing tells nothing");
+    }
+
     /// The agent in `dir` (its home, and its state beside it), its engine the script there, not yet serving.
     fn agent_in(dir: &Path, uid: u32) -> Arc<Agent> {
         let state = dir.join("state");
         let _ = std::fs::create_dir(&state);
         let kept = kept::Kept::new(&state);
         let now = Now { conversation: kept.conversation(), generation: kept.generation(), starts: 0, engine: None, asking: None, early: 0 };
-        Arc::new(Agent { person: "alice".into(), uid, engine: Engine::ClaudeCode, program: dir.join("engine"), account: "torq-agent-alice".into(), home: dir.into(), kept, now: Mutex::new(now), plain: true, procs: Some(dir.join("procs")) })
+        Arc::new(Agent { person: "alice".into(), uid, engine: Engine::ClaudeCode, program: dir.join("engine"), account: "torq-agent-alice".into(), home: dir.into(), kept, now: Mutex::new(now), plain: true, procs: Some(dir.join("procs")), proxy: vec![("ANTHROPIC_BASE_URL".into(), "http://127.0.0.1:7801".into()), ("HTTPS_PROXY".into(), "http://127.0.0.1:7801".into())] })
     }
 
     fn serving(a: &Arc<Agent>, sock: &Path) {
@@ -879,6 +908,7 @@ done
         assert_eq!(status(&sock), standing(false, 2, 1), "status says how many questions the conversation has had");
         assert_eq!(lines(&d, "starts"), [format!("{STARTED} linked")], "started once, a new conversation, TorqOS's tools linked before");
         assert_eq!(lines(&d, "path"), ["/etc/profiles/per-user/torq-agent-alice/bin:/run/current-system/sw/bin"], "its PATH: the agent's own profile, then the system's; no set-id wrappers");
+        assert_eq!(lines(&d, "proxy"), ["http://127.0.0.1:7801 http://127.0.0.1:7801 unset"], "it is told where TorqOS's model proxy is (ADR-057)");
         let asked = lines(&d, "questions");
         assert_eq!(asked.len(), 2);
         let second: serde_json::Value = serde_json::from_str(&asked[1]).unwrap();
