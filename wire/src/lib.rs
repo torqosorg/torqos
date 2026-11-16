@@ -7,6 +7,7 @@
 #![forbid(unsafe_code)]
 #![forbid(dead_code)]
 
+pub mod activity;
 pub mod agent;
 pub mod clean;
 pub mod desktop;
