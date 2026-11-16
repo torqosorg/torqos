@@ -434,3 +434,32 @@ Kimi); a person's own Claude Code outside the fence.
     on a tree with a package that does not exist, `{"ok":false,"why":"\"nosuch-package-xyz\" isn't a
     package."}` in 5 seconds. Not run: `nix flake check`; every other VM test; anything on the laptop, where
     the fault was found; two agents proposing at once; a machine whose TorqOS comes from a folder in a home.
+- 2026-11-16, **the check's fix round, after an independent review and a failed full check** (ADR-056 as
+    amended, KNOWN-GAPS 6zzv and 6zzw; on `work/harness-p2`, not merged). The review found that a failure
+    that was not the change's was taken for "not valid" and, with the kept verdict on the configuration
+    (`check-base`), turned into refusals counted against the agent; that the `torq-check` assertion held
+    less than it said; four wordings; and that ADR-056 claimed too much of what an agent's data can do.
+    The full check of c866781 failed in four VM tests (`agent`, `agent-run`, `agents-per-person`, `socket`)
+    that the round before had not rerun: an agent's proposal there starts the real checker, Nix collected
+    garbage before the checker's copy into the store (a test VM is always below `min-free`), and the
+    test's client gave up after 30 seconds. Measured in a VM made for it: the same evaluation of a stub
+    repo, 40.0 seconds with TorqOS's settings, 0.4 with `min-free = 0`, 37.5 with only `fsync-store-paths`
+    off. All seven agent tests that propose now set `min-free = 0` and assert the check's outcome.
+- **What was run for it** (2026-11-16, the check host, at cb9662a; this entry is the only change
+    after it). Unit tests, each crate's whole suite, in the dev shell: torqcli 506, broker 339 (13 of them
+    `tests/check.rs`), wire 24, secrets 15, agent 59 (+2 ignored). Every check of the flake evaluates
+    (their `drvPath`s, 38). `checks.agent-assertions` built. VM tests, `--max-jobs 2`, each passed on its
+    first run: `agent`, `agent-run`, `agents-per-person`, `socket`, `agent-check`, `agent-proposals`,
+    `agent-mcp`, `agent-service`. Each new guard was broken once and a test seen to fail, then put back.
+    In the broker: the verdict kept per commit again (two tests fail), one deadline shared by both runs,
+    control characters only replaced in the checker's words, a busy check ledgered as a refusal, the
+    check lock's own words taken out. In `modules/broker.nix`, each clause of the assertion taken out and
+    its case evaluated: the three of `trusted-users`, `hashedPassword`, `password`, `hashedPasswordFile`,
+    `initialHashedPassword`, the shell, the home, `createHome`, the SSH keys and key files, and the
+    membership of another group each stop being refused. Two clauses are second guards that no case
+    proves alone: `initialPassword` (NixOS makes it the `password` where users are not mutable, so that
+    clause refuses it) and `extraGroups` (NixOS adds the account to the group's members, so that clause
+    does). Not run: `nix flake check`; any other VM test; the checker meeting a full disk, a lost daemon
+    or a signal for real (the unit tests give `nixerr::outside` Nix's words as Nix 2.34 writes them; the
+    VM test has the daemon refuse the checker's account, and the checker says so); a widened
+    `mayPropose.settings`; anything on the laptop.
