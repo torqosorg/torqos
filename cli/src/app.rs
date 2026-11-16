@@ -2184,6 +2184,33 @@ pub fn origin_said(actor: &str, marked: bool, agent_for: Option<&str>, me: &str,
     })
 }
 
+/// What a person is told of a proposal the broker could not check before it recorded it (ADR-056), from the
+/// entry's `data` (`check`, broker/src/lib.rs): for torqcli's apply prompt and TorqOS Settings' Proposals
+/// page. None: it was checked, or it is not one the broker checks (a person's own). No full stop at its end.
+pub fn not_checked_said(data: &serde_json::Value) -> Option<String> {
+    let check = data.get("check")?;
+    if check["result"] == "valid" {
+        return None;
+    }
+    let why = history::one_line(check["why"].as_str().unwrap_or("no reason was recorded"), 200);
+    Some(format!("TorqOS could not check this change beforehand ({why}): if it is not valid, applying it fails and changes nothing"))
+}
+
+#[cfg(test)]
+#[test]
+fn a_change_that_was_not_checked_is_said_so() {
+    use serde_json::json;
+    assert_eq!(not_checked_said(&json!({ "files": [] })), None, "a person's own names no check");
+    assert_eq!(not_checked_said(&json!({ "check": { "tree": "ab", "result": "valid", "warnings": [] } })), None);
+    assert_eq!(
+        not_checked_said(&json!({ "check": { "tree": "ab", "result": "not checked", "why": "the check did not finish in time" } })).as_deref(),
+        Some("TorqOS could not check this change beforehand (the check did not finish in time): if it is not valid, applying it fails and changes nothing")
+    );
+    let entries = history::parse(r#"{"seq":9,"ts":"2026-11-16T12:00:00Z","kind":"proposal","actor":"agent","tier":"user","tainted":true,"reason":"htop","data":{"caller":"torq-agent-casey","agent_for":"casey","check":{"tree":"ab","result":"not checked","why":"this machine has no checker"}}}"#).unwrap();
+    let shown = proposals_of(&entries, "casey");
+    assert!(shown[0].facts().is_some_and(|f| f.ends_with("TorqOS could not check this change beforehand (this machine has no checker): if it is not valid, applying it fails and changes nothing")), "{:?}", shown[0].facts());
+}
+
 /// A proposal waiting for a person.
 #[derive(Debug, Clone)]
 pub struct Proposal {
@@ -2195,6 +2222,8 @@ pub struct Proposal {
     pub origin: Option<String>,
     /// Its apply failed once: it waits for a person again (ADR-008), who may apply it again or decline it.
     pub failed: bool,
+    /// The broker could not check it before recording it (ADR-056): `not_checked_said`'s words.
+    pub not_checked: Option<String>,
     /// Whether Settings and the applets offer this person Decline: their own agent proposed it (the ledger's
     /// `agent_for`). Narrower than the broker on purpose: it also lets a person decline, with no password, a proposal
     /// wholly in their own folder, and an administrator anyone's with their password; those are torqcli's
@@ -2222,6 +2251,9 @@ impl Proposal {
         }
         if let Some(origin) = &self.origin {
             facts.push(format!("⚠ {origin}"));
+        }
+        if let Some(not_checked) = &self.not_checked {
+            facts.push(not_checked.clone());
         }
         (!facts.is_empty()).then(|| facts.join(" · "))
     }
@@ -2305,6 +2337,7 @@ fn proposals_of(entries: &[history::Entry], me: &str) -> Vec<Proposal> {
                 origin_said(&e.actor, e.tainted, e.data["agent_for"].as_str(), me, &sources)
             },
             failed: history::failed_once(entries, e.seq),
+            not_checked: not_checked_said(&e.data),
             yours: yours(e, me),
         })
         .collect()
@@ -4184,7 +4217,7 @@ mod proposal_shown {
     use super::*;
 
     fn proposal(reason: &str) -> Proposal {
-        Proposal { seq: 7, reason: reason.into(), by: "torq-agent-casey".into(), origin: None, failed: false, yours: true }
+        Proposal { seq: 7, reason: reason.into(), by: "torq-agent-casey".into(), origin: None, failed: false, not_checked: None, yours: true }
     }
 
     /// ADR-051 4: the agent's words are never drawn as TorqOS's own. Nothing the proposer wrote is in what the broker

@@ -1248,6 +1248,10 @@ fn apply_warning(body: &serde_json::Value, me: &str) -> (String, Option<u32>) {
     }
     let cuts: Vec<String> = body["data"]["cuts_off"].as_array().into_iter().flatten().filter_map(|s| s.as_str()).map(|s| history::one_line(s, 80)).collect();
     let confirm = (!cuts.is_empty()).then_some(CUTS_OFF_MINUTES);
+    // The broker could not check it first (ADR-056): said, so that a failed apply is no surprise.
+    if let Some(not_checked) = crate::app::not_checked_said(&body["data"]) {
+        why.push_str(&format!("{not_checked}. "));
+    }
     // What of it makes a secret without-asking: the broker's word for it, whatever reason the change gives.
     why.push_str(&torq_wire::secrets::standing_said(&body["data"]));
     if body["tier"] != "user" {
@@ -1270,6 +1274,10 @@ fn a_person_is_told_why_before_applying() {
     use serde_json::json;
     let (w, c) = apply_warning(&json!({"tier": "user", "tainted": false, "actor": "user", "data": {}}), "casey");
     assert_eq!((w.as_str(), c), ("", None));
+    let (w, _) = apply_warning(&json!({"tier": "user", "tainted": true, "actor": "agent", "data": {"agent_for": "casey", "check": {"tree": "ab", "result": "not checked", "why": "the check did not finish in time"}}}), "casey");
+    assert!(w.contains("TorqOS could not check this change beforehand (the check did not finish in time): if it is not valid, applying it fails and changes nothing. "), "{w}");
+    let (w, _) = apply_warning(&json!({"tier": "user", "tainted": true, "actor": "agent", "data": {"agent_for": "casey", "check": {"tree": "ab", "result": "valid", "warnings": []}}}), "casey");
+    assert!(!w.contains("could not check"), "{w}");
     // An agent's: said so, with what it reported reading in plain words; never the record's own words.
     let (w, c) = apply_warning(&json!({"tier": "user", "tainted": true, "actor": "agent", "data": {"agent_for": "casey", "session": {"id": "s", "tainted_by": ["agent-program", "read_journal", "show_ledger"]}}}), "casey");
     assert_eq!(w, "Your agent proposed this. Before proposing it, it read text that anyone could have written (the system's log, the record of changes): a log line, a device's name or a web page can carry instructions meant for it. Judge the change itself, shown above, not the reason given for it. ");
