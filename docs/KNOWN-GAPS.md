@@ -2025,3 +2025,59 @@ Its §5 lists claims without a test.
      no secret now): it stops counting at once, and no `trust_expired` entry is written for it, so the ledger
      shows such a grant given and never ended. Someone who types the old `request system secret allow all
      for <minutes>` is told that allowing every secret at once is gone, and to name the secret.
+
+6zzx. **The model proxy and the agents' closed network: what they do not do (ADR-057, 2026-11-16).**
+   - **The record is not tamper-evident.** It is not in the broker's ledger (it is far too large), nothing
+     chains its lines, and root and the proxy's own account (`torq-model-proxy`) can change or remove any of
+     it. A person can only read theirs. What it proves is what happened if no one with root altered it.
+   - **Whether a first sign-in completes inside the fence is not known.** `platform.claude.com`, where the
+     sign-in is exchanged and renewed, is always allowed. Claude Code 2.1.316 also names addresses at
+     `api.anthropic.com` that it asks after signing in, and a direct connection there is refused. A Claude
+     Code already signed in answers with them refused (measured, 2026-11-16); signing in from nothing could
+     not be tried without the owner's own account. If it fails, the way through today is to list
+     `api.anthropic.com` for the sign-in (`set torq agent network hosts api.anthropic.com`) and take it
+     off again, which for that time opens a way to the model past the record.
+   - **Claude Code's claude.ai connectors are off for the agents** unless the owner lists both
+     `api.anthropic.com` (where Claude Code learns which connectors the account has) and
+     `mcp-proxy.anthropic.com` (where it uses them). Listing the first also lets any program run as an
+     agent ask the model directly, unrecorded. There is no setting that allows the connectors alone.
+   - **The proxy passes any credential through**, as the terms require of a sign-in. So a program run as an
+     agent can ask the model's service with a key that is not the person's (one it was given in a web page,
+     say), for any of the service's addresses, a file upload included. Each such request is a line of the
+     record (what, when, how many bytes; for a request for messages, what was asked), but the record does
+     not say whose key it was.
+   - **What goes to an allowed site is not seen.** The record has the site's name and the time. An agent
+     can send anything it can read to a listed site, and to any site where the web is on.
+   - **A name is judged, then the address it turns out to be.** A listed name that an attacker's DNS points
+     at a private address is reached (the owner listed it); under the web setting a private address is
+     refused. An address in numbers is allowed under the web setting if it is a public one.
+   - **An agent cannot reach a server it started itself on this machine** (a development server it then
+     wants to test): every loopback port but the proxy's and the secrets daemon's is closed to it, since
+     the packet filter cannot tell whose program listens there. Nothing reaches a program an agent leaves
+     listening either. Not built: a way to allow an agent its own.
+   - **Only HTTPS on port 443, and only through a program that honours `HTTPS_PROXY`.** git over SSH, plain
+     HTTP and anything that connects by itself do not work as an agent, the web on or off.
+   - **The name services are closed where an agent runs, not for the bare account.** nscd and
+     systemd-resolved's own sockets are hidden inside the agent's service and under `torq agent run`, the
+     only two ways anything is started as an agent; the system bus refuses the account itself. A process of
+     an agent's started some other way (root running `su` to it) could still have nscd look a name up.
+     Other services of the machine that fetch for whoever asks are not surveyed.
+   - **An owner who lets the agents propose networking settings lets them propose the fence's end.** With
+     `networking` in `torq.agent.mayPropose.settings`, an agent could propose a packet filter that empties
+     every table (`networking.nftables.flushRuleset`; the assertion refuses that one) or one that changes
+     the rules another way. A person would have to approve it. Not reachable with the default list.
+   - **Lines can be lost when the record cannot be written.** The proxy refuses everything for a person
+     whose record it cannot write, but the requests under way at that moment have passed: they are counted
+     in a line when writing works again, not recovered. A proxy that is killed loses the lines of the
+     requests under way.
+   - **What the record leaves out by design:** the conversation before the new part (it is in earlier
+     lines), the model's private reasoning, pictures, anything past the bounds (each said in the line), and
+     the content of anything asked of the service that is not a request for messages.
+   - **Noise.** Claude Code makes about a dozen direct connections to `api.anthropic.com` and one to its
+     usage reports' host for each question; each is refused and is a line. A setting of Claude Code's
+     (`CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC`) cut them to two when tried, and also stopped it loading
+     a plugin's tools: not set by TorqOS.
+   - **Not run:** the real Claude Code inside the unit or under `torq agent run` with the fence (the proxy
+     was driven by the real Claude Code on the check host, in a network of its own with nothing but the
+     proxy, as the machine's user); opencode; an IPv6-only network; many agents at once; a full disk for
+     real.

@@ -3720,3 +3720,130 @@ content at the next), and a proposal must be judged on what it does, not on what
   torqcli; one who is no administrator is refused at the daemon as an agent is (open, below).
 - **Open:** a person who is not an administrator cannot commit their own packages on a real machine for the
   same reason (their torqcli's `nix eval` is refused): not changed here, on the open list (KNOWN-GAPS 6zzv).
+
+## ADR-057 — The model proxy, its record, and the agents' closed network
+- **Status:** accepted and built, 2026-11-16, on `work/harness-p3` (the first half of phase 3 of
+  `docs/HARNESS-AS-A-SYSTEM.md`, which says what was run). Not built here: showing the record (`show system
+  agent activity`, the page in TorqOS Settings), which is the second half.
+- **Context:** The machine's agent is the person's coding tool (ADR-055). It runs fenced: its own account,
+  a sandbox, proposals only. Two things the fence did not have. Nobody could see what an agent asked its
+  model or what it had read when it asked, and the agent's account had the whole network: anything it could
+  read it could send anywhere, and Claude Code's claude.ai connectors (tools that run at Anthropic and act in
+  a person's accounts, such as Gmail) reached it without TorqOS seeing them. Measured on the check host with
+  Claude Code 2.1.316: a subscription sign-in works through a local address named by `ANTHROPIC_BASE_URL`,
+  only requests for the model's messages go there, the answer comes back compressed (gzip) as a stream,
+  and with every other connection refused an ordinary question is still answered.
+- **Decision:**
+  1. **`torq-model-proxy`, a small service with a locked account of its own** (`proxy/`,
+     `modules/model-proxy.nix`), wherever a person has an agent account. It listens on 127.0.0.1, port
+     7801, and nowhere else (it refuses to serve any other address). Its account is held as the checker's is
+     (ADR-056): a system account alone in its own group, no password, shell, home or SSH key, each asserted
+     (`tests/agent-assertions.nix`). Its unit can write the record and nothing else.
+  2. **A request to the model is passed on as it came.** Whatever arrives that is not a request for a site
+     (below) is sent to `https://api.anthropic.com`, a constant of the program and no setting, over TLS
+     checked against the machine's own list of authorities (`/etc/ssl/certs/ca-certificates.crt`; an empty
+     list is refused, not taken as "everyone"). The request line, every header and the body go as they came,
+     and the answer comes back piece by piece as the service writes it, never held to its end. Three things
+     are not passed, because HTTP says they belong to one connection and not to the request: the headers
+     named in RFC 9110 7.6.1 (`connection`, `keep-alive`, `proxy-*`, `te`, `trailer`, `transfer-encoding`,
+     `upgrade`), in both directions; and `host` is the service's own name instead of the proxy's address.
+     `Authorization`, `x-api-key`, `anthropic-version`, `anthropic-beta` and cookies pass untouched. The
+     proxy keeps no credential, logs none and puts none in an error: it never reads their values.
+  3. **HTTP and TLS are not written here.** hyper (HTTP/1.1, server and client) and rustls with the *ring*
+     provider, through tokio. Why not hand-parsing as the secrets daemon does (which gives each request to
+     `curl`): this proxy must stream both ways, keep a connection for several requests and carry `CONNECT`,
+     and a mistake in framing here is a request smuggled past the record. Why hyper and rustls: both are
+     maintained, widely used and memory-safe, and need no C library but *ring*'s arithmetic. The cost is 72
+     crates in the lock file where the other TorqOS daemons have a handful; each is fetched by its checksum
+     (`cargoLock.lockFile`), so the build works in the Nix sandbox. One connection to the service is made
+     for each request and closed after it: simple to reason about, a TLS handshake slower than reuse.
+  4. **Who is calling is the kernel's word.** One port for every agent, and for each connection the proxy
+     reads the kernel's table of TCP connections (`/proc/net/tcp`, and `tcp6` for a program that came from
+     an IPv6 socket) and takes the uid of the socket at the other end, as the broker does for the secrets
+     daemon (ADR-052). That uid must be an agent account's by the proxy's settings and `/etc/passwd` (a
+     system account named `torq-agent-<person>`, never root): the person is that account's. Anyone else,
+     root and the person themselves included, is answered "this is the way out for the agents' accounts"
+     and nothing is passed on or recorded. No header says who is asking. *Departure from the first design*
+     (a port for each agent, and firewall rules deciding who reaches which): with those, who a request is
+     recorded as would rest on the packet filter being loaded and right; this way it rests on the proxy
+     alone, the filter is only the fence (6), and one address serves every agent, so Claude Code's settings
+     are one file.
+  5. **The record** (`wire/src/activity.rs` is its definition, shared with torqcli): for each request the
+     agent's account and person, the time and how long it took, the engine's conversation
+     (`x-claude-code-session-id`) and its helpers (`x-claude-code-agent-id`, `x-claude-code-parent-agent-id`:
+     phase 6 needs them), the method and path (never the part after `?`), the model, how it ended and the
+     service's status, the bytes each way, the tokens the service counted (input, read from and written to
+     its cache, output), why the model stopped, and **what was new**: every part of each message after the
+     model's last one (the person's question, or each tool's result with the tool's name, found from the
+     call it answers), and from the answer its text and each tool call's name and input. Only requests for
+     the model's messages (`POST /v1/messages…`) are read; anything else asked of the service is one line
+     that says what, when and how much. And one line for each site asked for (below). The answer is read as
+     it passes, gzip undone where the service used it; another compression is passed on and said to be
+     unread. **Bounded, each bound a named constant:** 8 KiB of each text, 48 things from each side of a
+     request, 16 MiB of a request and 8 MiB of an answer read, 8 MiB a file, 256 MiB a person (the oldest
+     files removed first, each removal a line), 64 requests at once for each agent. Where a bound cuts, the
+     line says so (`cut_from`, `left_out`, `unread`).
+     **Where:** `/var/lib/torq-model-proxy/<person>/<UTC day>.<part>.jsonl`, one line of JSON each
+     (`{"v":1,"kind":"request"|"connect"|"removed"|"lost",…}`), oldest first, a new part when a file is
+     full. The folders are the proxy's; the person reads theirs by an access rule for them alone (their
+     own group is everyone's), so torqcli reads it as the person, with no service asked. No other person
+     reads it and no agent's account reads or writes it.
+     **It is not in the broker's ledger and is not tamper-evident:** it is too large for the ledger, nothing
+     chains its lines, and root and the proxy's own account can change or remove it (KNOWN-GAPS 6zzx).
+     **If it cannot be written** (a full disk, a missing folder) nothing more is passed on for that person's
+     agent until it can; the lines lost are the requests under way at that moment, and are counted.
+  6. **An agent's account reaches the proxy and nothing else.** A table of its own in the kernel's packet
+     filter (`inet torq_agents`, loaded by `torq-agent-network.service`), by the account a socket belongs
+     to: a packet of an agent's is let through to 127.0.0.1 on the proxy's port (and the secrets daemon's,
+     ADR-052, which names its caller the same way and asks the person) and refused otherwise: any other
+     address, IPv4 or IPv6, another port of this machine, UDP, DNS. Nothing reaches a program an agent
+     leaves listening either. Other accounts' packets are not judged at all. DNS is closed in the other
+     ways a name can be asked too: nscd and systemd-resolved's own sockets are hidden where an agent runs,
+     and the system bus refuses an agent's account at systemd-resolved. **Nothing runs as an agent while the
+     fence is not up:** the agent's service requires its unit (starting the service puts the fence up; where
+     it cannot be put up the service does not start; taking it down stops the service), and `torq agent run`
+     refuses.
+  7. **The proxy is also the agents' way to a site**, as an HTTPS proxy (`CONNECT`, port 443 only). Allowed:
+     (a) signing in to the engine's service and renewing the sign-in (`platform.claude.com`); (b) the
+     owner's list, `torq agent network hosts` (a name, or `*.name`); (c) every site where the owner turns
+     on `torq agent network web` (off by default; its description says what it costs). Each site asked for
+     is a line of the record, allowed or refused; a refusal answers in words that name the setting. What
+     passes to an allowed site is encrypted between the agent and the site: carried, not seen. The proxy
+     never connects to this machine itself, and to an address of a private network only where the owner
+     listed the site by name: "the web" is the internet, not the network the machine sits on. **The model's
+     own service is refused as a site** unless the owner lists it by name, the web setting on or off: an
+     engine that lost its setting then fails in words instead of running unrecorded.
+  8. **Claude Code is told by settings its account cannot change, and only an agent sees them.** Claude Code
+     reads `/etc/claude-code/managed-settings.json` before every other settings file. TorqOS keeps that
+     file at `/etc/torq/claude-code/` and shows it as `/etc/claude-code` only inside an agent's sandbox: in
+     the agent's service (`BindReadOnlyPaths`) and under `torq agent run`, which `claude` typed plainly is.
+     A person's own Claude Code sees an `/etc/claude-code` with a note in it and no settings. The same
+     values are in the environment of every program run as an agent (`ANTHROPIC_BASE_URL`, `HTTPS_PROXY`,
+     `NO_PROXY`). Tried with the real Claude Code: the managed file's values were used although the
+     environment named another address. **This is advice; 6 and 7 are the enforcement:** a program that
+     ignores it reaches nothing.
+  9. **No agent can change any of it.** The settings are `torq.*`, which is never an agent's to propose
+     (the broker's rule, with a test for these names); `torq.modelProxy.*` is not the configuration
+     tree's at all (`modules/settings-fence.nix`).
+  10. **Anthropic's terms** (the four rules of `docs/HARNESS-AS-A-SYSTEM.md`): TorqOS ships no Claude Code;
+      the sign-in is the person's own, passed through and never kept; and no way of signing in is removed
+      by design (`platform.claude.com` is always allowed). One thing is not known: see Open.
+- **Considered and not chosen:** *a network namespace for the agent* (closed by construction, and its own
+  loopback for the agent's own servers; but TorqOS's tools read the machine's interfaces as the agent, and
+  would see an empty network); *decrypting what goes to a site* (a certificate authority of TorqOS's in the
+  agent's account: the record would hold everything, and TorqOS would stand between a person and every
+  site); *`/etc/claude-code/managed-settings.json` for the machine* (it would manage a person's own Claude
+  Code); *the record in the ledger* (its size); *a fingerprint of the credential in the record, to tell
+  accounts apart* (a value made from a credential is still one kept).
+- **Consequences:** Claude Code's claude.ai connectors do not work in an agent's account unless the owner
+  lists `api.anthropic.com` and `mcp-proxy.anthropic.com`, and the first of those is also a way to the model
+  past the record. A program run as an agent that does not use `HTTPS_PROXY`, or needs anything but HTTPS on
+  port 443 (git over SSH, plain HTTP), does not reach the network. An agent cannot reach a server it
+  started itself on this machine (KNOWN-GAPS 6zzx). Each question of Claude Code's leaves a dozen refused
+  lines in the record (its own calls past the base address, its usage reports). The record holds what the
+  agent read: it is as private as the person's files.
+- **Open:** whether signing in from inside the fence completes. The sign-in's exchange and renewal go to
+  `platform.claude.com`, which is allowed; the binary also names addresses at `api.anthropic.com` it asks
+  after a sign-in, which are refused. A signed-in Claude Code answers with those refused (measured); a first
+  sign-in could not be tried without the owner's own account. If it does not complete, rule 3 of the terms
+  is touched, and the owner decides how it is opened (KNOWN-GAPS 6zzx).

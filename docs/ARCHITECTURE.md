@@ -64,6 +64,11 @@ every proposal names its actor, tiers decide what needs a person. Now (ADR-034):
   person's coding tool, Claude Code first (ADR-055: TorqOS writes no agent of its own). It reads the system through
   typed tools (`torq-mcp`), *proposes* changes. Its identity is the kernel's word (`SO_PEERCRED`, ADR-035), never
   a flag.
+- **Model proxy** (`torq-model-proxy`, an account of its own; ADR-057): the one thing an agent's account
+  reaches on the network. Each request the engine makes of its model passes through it unchanged and is
+  recorded for the person (who, when, which model, what was asked and answered); each site the agent asks
+  for is allowed by the owner's settings (`torq agent network`) or refused, and recorded either way. A rule
+  of the kernel's packet filter closes everything else to the agents' accounts.
 - Proposals go to the broker like anyone's; what an agent may propose is a default-deny
   allow-list by identity (KNOWN-GAPS 6m). A person approves system changes — at a terminal, or on a
   desktop in a dialog — with their password, the one thing a program in their shell does not have.

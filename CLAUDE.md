@@ -52,6 +52,7 @@ modules/               the distribution, as NixOS modules (torq.* options)
   settings-fence.nix   what the configuration tree may never change
   dev.nix              development mode (ADR-009) — and the assertion that guards a path: source
   secrets.nix          torq-secrets: a program uses a secret and never reads it (ADR-052)
+  model-proxy.nix      torq-model-proxy and the fence around the agents' network: what an agent asks its model, recorded; the sites it may reach, `torq.agent.network` (ADR-057)
   agent.nix            each person's agent account torq-agent-<person>, what it may propose, `torq agent run`, the engine (`torq agent engine`) and torq-agent@<person>, the bridge to it, `torq agent journal` (ADR-041, ADR-051 3, ADR-055)
 hosts/
   image/               the release image's own system (`.#image`, `.#image-vmdk`)
@@ -63,7 +64,8 @@ broker/                Rust crate: torq-broker (ledger, policy, git, rebuild, ro
 cli/                   Rust crate: torqcli — the grammar, the candidate, the tree (ADR-025)
 agent/                 Rust crate: torq-agent-service — each person's agent on its socket: the bridge to their engine, Claude Code (ADR-055);
                        torq-mcp — TorqOS's tools for a coding tool, an MCP server (ADR-051 7)
-wire/                  Rust crate: torq-wire — the socket's types and the ledger's words, shared by the three (ADR-044)
+proxy/                 Rust crate: torq-model-proxy — the relay to the model, its record, the sites an agent may reach (ADR-057; modules/model-proxy.nix)
+wire/                  Rust crate: torq-wire — the socket's types and the ledger's words, shared by the three (ADR-044); the record's words (`activity`, ADR-057)
 tests/                 NixOS VM tests
 release/               allowed_signers: the keys a machine trusts a release from
 .github/workflows/     test (pull requests, by hand, each release), image (by hand, each release), weekly nixpkgs bump, release on a v* tag
@@ -93,6 +95,7 @@ nix develop --command bash -c 'cd cli    && cargo test'   # the grammar, candida
 nix develop --command bash -c 'cd agent  && cargo test'   # the agent's service against a stand-in engine; torq-mcp
 nix develop --command bash -c 'cd wire   && cargo test'   # torq-wire: the socket's bytes (ledger fixtures: the broker's)
 nix develop --command bash -c 'cd secrets && cargo test'  # torq-secrets
+nix develop --command bash -c 'cd proxy  && cargo test'   # torq-model-proxy, against a stand-in for the model's service
 # settings/ has no tests of its own; it is type-checked in its own shell: nix develop .#torq-settings
 
 # Nix — x86_64 only: aarch64 is neither built nor tested during development (ADR-030, amended)
@@ -138,6 +141,12 @@ removed TorqOS's own loop: `torq-doctor`, `torq doctor`, `torq agent propose`,
 the settings under `torq agent doctor` and `torq agent model` with the local model's unit, the
 `torq-resident-<person>` accounts, the broker's resident rule and session trust. Every proposal of an agent's
 waits for its person. Do not bring any of it back as a stub: a local model returns with opencode (phase 4).
+
+Being built on `work/harness-p3` (ADR-057, 2026-11-16; not merged, no full check): the first half of phase 3.
+The model proxy (`torq-model-proxy`: every request an agent makes of its model passes through it and is
+recorded for the person, in `/var/lib/torq-model-proxy/<person>/`), and the agents' accounts' network closed
+but for it and the sites the owner allows (`torq agent network hosts`, `torq agent network web`). Not built
+yet: showing the record (`show system agent activity`, the page in TorqOS Settings).
 
 Milestones as built (`docs/ROADMAP.md`'s checkboxes are the most current record): M1, M1.5, M2 and M3
 are done. M3.5 (the install on real hardware) is partly done: the offline first build, network-first
@@ -210,13 +219,15 @@ removed since phase 2; the agent as it is now (ADR-055) is unreleased.
   full `nix flake check` for development: it runs on the check host. The last full `nix flake check`
   passed on 2026-11-16 at f82d281 (phase 2 of `docs/HARNESS-AS-A-SYSTEM.md`, its third run: what the first two failed for
   is in that file); the Secrets page and the agent's UIs
-  are type-checked only, and no test presses a button in the approval dialog (a VM test has the applet see a waiting use and send its yes). Say what was actually run; do not write that
+  are type-checked only. On `work/harness-p3` (2026-11-16, no full check): wire 28, torq-model-proxy 37 (+1 ignored: the
+  by-hand entry) and the VM test `model-proxy` ran; the real Claude Code 2.1.316 was put through the proxy by hand on
+  the check host, outside any unit. No test presses a button in the approval dialog (a VM test has the applet see a waiting use and send its yes). Say what was actually run; do not write that
   something is tested when it only exists.
 - **The dev host** is torq5, "the check host" (user `viper`, repo `~/torq`), an x86_64 ESXi VM with KVM, since 2026-11-15: development and every heavy build (`nix flake check`, VM tests, the images) run there. The owner's laptop (hostname `torqlaptop`, user `cwdavis`) is a TorqOS machine, the only one the desktop runs on, and is the try-it-out machine: it follows the `tested` branch and nothing is developed on it. Session worktrees live beside
   `~/torq`; do not edit in another session's.
 - **Known limits** are in `docs/KNOWN-GAPS.md` (the desktop and launcher items 6zx and 6zy, and 6zz,
   `torq agent run`'s set-id sweep, are fixed; the agents' own are 6zzk to 6zzo, the approval flow's 6zzs, the bridge's 6zzt,
-  the old loop's removal 6zzu, the check of an agent's proposal 6zzv, what that check does not bound 6zzw).
+  the old loop's removal 6zzu, the check of an agent's proposal 6zzv, what that check does not bound 6zzw, the model proxy and the agents' network 6zzx).
 
 ## Working here
 

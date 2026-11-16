@@ -70,6 +70,44 @@ tell a person from a program at a root shell — nothing can.
 - **Dev mode** (the machine TorqOS is built on) is the labelled exception: passwordless `sudo` and an
   AI coding agent with root. Customer images ship with it off.
 
+## What an agent reaches, and the record of what it asked (ADR-057)
+
+Built on `work/harness-p3` (2026-11-16); what was run is in `HARNESS-AS-A-SYSTEM.md`. Wherever a person has
+an agent account:
+
+- **The agent's account reaches one thing on the network: TorqOS's model proxy**, on this machine
+  (127.0.0.1, port 7801), and the secrets daemon beside it. A rule of the kernel's packet filter, by the
+  account a connection belongs to, refuses every other packet of an agent's: any other address, IPv4 or
+  IPv6, any other port of this machine, DNS. The services that would look a name up for anyone (nscd,
+  systemd-resolved) are closed to it as well. A person's own account is not touched. Nothing is started as
+  an agent while that rule is not loaded.
+- **Every request to the model passes through the proxy and is recorded**: whose agent (named by the
+  kernel, never by the request), when, which model, how many tokens, what was new in the conversation (the
+  question, each tool's result) and what the model answered (its text, each tool it called and with what).
+  The proxy passes the request on as it came, the person's sign-in included, and keeps no credential: the
+  record, the journal and its error messages hold none.
+- **A site is reached only through the proxy, as HTTPS, and only if it is allowed**: signing in to the
+  engine's service; the sites the owner lists (`torq agent network hosts`); every site if the owner turns
+  the web on (`torq agent network web`, off by default). Each site asked for is recorded, allowed or
+  refused. What passes to an allowed site is encrypted and is not seen.
+- **The record is the person's to read and no one else's** (`/var/lib/torq-model-proxy/<person>/`): not
+  another person's, not any agent's account, to read or to write. It is kept within a bound, and says where
+  something was cut.
+- **No agent can change these settings**: they are `torq.*`, which the broker never lets an agent propose.
+
+What this does not do, said plainly (KNOWN-GAPS 6zzx):
+
+- **The record is not the ledger.** Nothing chains its lines: root, and the proxy's own account, can change
+  or remove it without a trace. It shows what happened if no one with root altered it.
+- **With the web on, or a site listed, the agent can send what it can read to that site**, and the record
+  shows only that the site was reached. The fence around what the agent can *read* (its own home, the
+  folders shared with it) is what limits the loss.
+- **The model's service itself receives whatever the agent sends it.** A request is recorded, not judged.
+  And the proxy passes any credential through, so a program run as an agent could ask the service with
+  another account's key: the record shows the request, not whose key it carried.
+- **The record holds what the agent read**, cut to 8 KiB a text: file contents, command output. It is as
+  private as the person's own files, and is kept as such.
+
 ## Accounts and passwords (agreed for M2, 2026-11-01; built: INSTALL.md)
 
 - A new image has no user account: only the locked `root`. **First-boot setup** creates the owner's
@@ -126,6 +164,7 @@ Status (2026-11-11): **built** = in the code and tested; **opt-in** = built and 
 | Malware during a session | read-only /nix/store, few services, sandboxed services | partly: the store is read-only and few services run (built); sandboxed services not built | The broker's units are not sandboxed (KNOWN-GAPS N5) |
 | Malware persistence across boots | Signed UKIs only; config rebuilt from repo | config rebuilt from the repository: built. Signed UKIs: not built | Optional impermanence later |
 | Prompt injection steering the AI | Broker tiers; every proposal of an agent's waits for a person | built, with limits | The broker cannot see what an agent reads, so it trusts none of it: each proposal is approved by a person, shown as the broker's diff, with what the agent reported reading (ADR-055 phase 2; KNOWN-GAPS 6zzu). A person can still be talked into approving |
+| An agent sending what it read to a stranger | The agent's account reaches only the model proxy; sites by the owner's list; each request and each site recorded | built (ADR-057) | Open where the owner lists a site or turns the web on; the model's own service receives what the agent sends it. The record is not tamper-evident (KNOWN-GAPS 6zzx) |
 | Compromised signing key on device | Only the db key lives on device (broker-only, TPM-sealed); PK/KEK exported offline then deleted | not built | Needs Secure Boot and the TPM |
 | Secure Boot bypass vulns (BlackLotus, LogoFAIL class) | fwupd firmware + dbx updates, applied via broker | not built | |
 | A ledger rewritten by root on the machine | Pushing the configuration and ledger to a remote | opt-in | Off by default; without it the hash chain only detects partial edits (KNOWN-GAPS 2) |

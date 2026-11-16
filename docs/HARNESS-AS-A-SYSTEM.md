@@ -154,18 +154,24 @@ One consistent deletion, so nothing dead is left behind.
 - [x] One full check: passed on the check host on 2026-11-16 at f82d281, on its third run (the first two, and why they failed, are under "As built"). Then the laptop, and the owner looks (not yet).
 
 ### Phase 3: the model proxy and the audit
-- [ ] `torq-model-proxy`: a small Rust service, an account of its own, listening on this machine only.
+- [x] `torq-model-proxy`: a small Rust service, an account of its own, listening on this machine only.
       A byte-for-byte relay that streams; it knows the calling account from the kernel, not from what
-      the caller says.
-- [ ] The record: for each request, the person's agent, the time, the engine's session, the model,
+      the caller says. (Built 2026-11-16 on `work/harness-p3`, ADR-057: unit tests, the VM test
+      `model-proxy`, and the real Claude Code through it by hand, outside a unit. Below.)
+- [x] The record: for each request, the person's agent, the time, the engine's session, the model,
       the tokens in and out, and what was new in the conversation (the question, each tool's name and
-      what it returned), kept where only root and the person read it, bounded in size.
+      what it returned), kept where only root and the person read it, bounded in size. (Built with it;
+      also the answer, the engine's helper ids, and each site asked for. Not tamper-evident: KNOWN-GAPS 6zzx.)
 - [ ] `show system agent activity` in torqcli, and the same in TorqOS Settings: what the agent did,
       asked and read, by day and by conversation.
-- [ ] Claude Code is told to use the proxy by settings its account cannot change, seen only by the
-      agent's account (a person's own Claude Code is not touched: later).
-- [ ] The agent account's network is closed except to the proxy, sign-in, and a list the owner sets;
-      the web (WebFetch) is a setting, said plainly, with what it costs the audit.
+- [x] Claude Code is told to use the proxy by settings its account cannot change, seen only by the
+      agent's account (a person's own Claude Code is not touched: later). (Built: the VM test has a
+      stand-in read them in each of the three ways the engine starts; the real Claude Code was seen to
+      follow such a file over its environment, by hand.)
+- [x] The agent account's network is closed except to the proxy, sign-in, and a list the owner sets;
+      the web (WebFetch) is a setting, said plainly, with what it costs the audit. (Built: `torq agent
+      network hosts`, `torq agent network web`. Whether a first sign-in completes inside the fence has not
+      been tried: KNOWN-GAPS 6zzx.)
 - [ ] One full check.
 
 ### Phase 4: opencode, API keys and local models
@@ -471,3 +477,65 @@ Kimi); a person's own Claude Code outside the fence.
     applet up in 14 seconds, and the cause was not found. At f82d281: every check passed (everything but
     `installer` was already built from the run before, `desktop-defaults` from its run alone). Merged to `main`
     after that. Not run on any machine yet: the proposal checker with a real configuration outside a VM.
+- 2026-11-16, **phase 3, its first half: the model proxy, its record, and the agents' closed network**, built
+    on `work/harness-p3` (ADR-057, KNOWN-GAPS 6zzx; not merged, no full check). The second half, showing the
+    record (`show system agent activity`, the page in TorqOS Settings), is not built. In short:
+  - *The proxy* (`proxy/`, `modules/model-proxy.nix`): `torq-model-proxy`, a locked account of its own,
+    listening on 127.0.0.1 port 7801. A request for the model goes to `api.anthropic.com` as it came (hyper
+    and rustls; certificates checked against the machine's authorities) and the answer streams back. The
+    caller is named from the kernel's table of connections, as the broker names the secrets daemon's: one
+    port for every agent, not one each (ADR-057 4 says why).
+  - *The record* (`wire/src/activity.rs`): `/var/lib/torq-model-proxy/<person>/<UTC day>.<part>.jsonl`, a line
+    for each request (whose agent, when, the engine's session and helper ids, model, tokens, how it ended,
+    what was new, what was answered) and for each site asked for. Bounded, and it says where it cut. The
+    person reads it by an access rule; no agent's account reads or writes it. Not in the ledger.
+  - *The fence*: a table of the kernel's packet filter by the account a socket belongs to
+    (`torq-agent-network.service`); nscd and systemd-resolved closed to the agents; nothing started as an
+    agent while it is not up.
+  - *Sites*: `torq agent network hosts` (a name, or `*.name`) and `torq agent network web` (off), through
+    the proxy as HTTPS only; `platform.claude.com` always (signing in).
+  - *Claude Code's settings for the agents*: `/etc/torq/claude-code/managed-settings.json`, shown as
+    `/etc/claude-code` only inside an agent's sandbox, and the same values in the environment.
+- **The real Claude Code, by hand, for phase 3** (2026-11-16, the check host, 2.1.316, signed in as the
+    machine's user; eight short questions in all, each `claude -p --model haiku`, in a scratch folder, inside
+    a network of its own (`unshare -rn`: nothing but a loopback) with one door to a proxy outside it).
+    Nothing here printed or kept the sign-in: the measuring proxy wrote down hosts, paths and the names of
+    headers only.
+  - *What Claude Code contacts* (four questions through a measuring proxy written for it, which let every
+    site through or refused them):
+    1. Everything allowed, "Reply with only the word OK.": one `POST /v1/messages?beta=true` to the base
+       address (the answer `text/event-stream`, `content-encoding: gzip`); and by `CONNECT`, past the base
+       address: `api.anthropic.com:443` (16 connections), `mcp-proxy.anthropic.com:443` (4: the claude.ai
+       connectors), `http-intake.logs.us5.datadoghq.com:443` (1: usage reports), and `mcp.zoom.us` and
+       `mcp-us.zoom.us` (3: a plugin of this user's own, not Claude Code's).
+    2. Every `CONNECT` refused: the question is still answered. Asked which MCP servers it had tools from,
+       it said none.
+    3. Only `mcp-proxy.anthropic.com` allowed: still none. So the connectors need `api.anthropic.com`
+       directly as well (where it learns which the account has), and `mcp-proxy.anthropic.com` to use them.
+    4. Every `CONNECT` refused and `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1`: answered, and only two
+       attempts at `api.anthropic.com` instead of thirteen, none at the usage reports' host or the plugin's.
+    - *Not seen:* a sign-in or a renewal of one (none happened in these runs); an update check (this Claude
+      Code is NixOS's package). From the program's own text, not from the network: the sign-in is exchanged
+      and renewed at `https://platform.claude.com/v1/oauth/token`, a person signs in on a page at
+      `claude.com/cai/oauth/authorize` or `platform.claude.com/oauth/authorize` (their own browser), and
+      after a sign-in it asks `api.anthropic.com/api/oauth/…`; updates are named at `downloads.claude.ai`
+      and `storage.googleapis.com`; usage reports also at `api.anthropic.com/api/event_logging/…`.
+  - *Through TorqOS's own proxy* (the crate's by-hand entry, `cargo test --test proxy by_hand -- --ignored`:
+    the real service, the machine's authorities, whoever runs it as alice's agent; four questions):
+    5. "Run the shell command: echo torq-$((6*7)) and tell me exactly what it printed." → "The command
+       printed exactly: `torq-42`". The record: two request lines (the model named, status 200, complete,
+       tokens with the cache's counts, `stop` `tool_use` then `end_turn`; the first's answer the tool call
+       `Bash` with its input, the second's new part the tool's result `torq-42` named `Bash` and its answer
+       the text), and a line for each refused site (`api.anthropic.com` as `the-model`, the others
+       `not-listed`). No credential in the file (searched for).
+    6. and 7. The first request's new part was empty: Claude Code 2.1.316 ends a request with a message of
+       its own (role `system`, some 30 KB) after the person's. Two more questions to see the shape (roles and
+       lengths only); the record now takes everything after the model's last message.
+    8. The settings an account cannot change: in a mount namespace with `/etc/claude-code/managed-settings.json`
+       holding the proxy's address in its `env`, and the environment naming another address
+       (`ANTHROPIC_BASE_URL=http://127.0.0.1:9`) and no proxy at all: the question was answered through the
+       proxy, the refused sites were asked of it, and the record's new part held the question. So the
+       managed file's values are the ones used.
+  - *Not tried with the real one:* inside the agent's unit or under `torq agent run` with the fence (the VM
+    test has a stand-in there); a sign-in from inside the fence; a claude.ai connector used; a long session;
+    more than one conversation at once.

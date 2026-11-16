@@ -24,8 +24,12 @@ could be added without a bypass. Each person's agent is an *account* of its own,
    it), the hardware, the ledger and the alarms, and proposes changes, through tools TorqOS gives it.
 3. **The bridge** (`torq-agent@<person>.service`). It hands a question from the desktop or `torq ask` to the
    engine and brings the answer back as it is written. It decides nothing.
-4. **The model proxy** (not built: phase 3). Every request the engine makes to its model will go through a
-   TorqOS service that records it.
+4. **The model proxy** (`torq-model-proxy`, ADR-057; built on `work/harness-p3`, the record not yet shown
+   anywhere). Every request the engine makes to its model goes through a TorqOS service on the machine that
+   passes it on unchanged and records it for the person: when, which model, how much, what was asked and
+   what the agent had read. It is also the only thing the agent's account reaches on the network: a site
+   is reached through it, if the owner allows that site (`torq agent network hosts`, `torq agent network
+   web`), and each site asked for is recorded.
 
 ## One agent per person (ADR-051 3)
 
@@ -101,9 +105,10 @@ in the owner's shell does not have; in a terminal it is torqcli's prompt, the sa
 | `torq-mcp` (`agent/`), as `torq-agent-<person>` | unprivileged, the same sandbox | Rust | TorqOS's tools for the engine (ADR-051 7): an MCP server on standard input and output with a closed set of tools, six that read and `propose_change`; linked into Claude Code's settings in the agent's home at each start |
 | `torq-broker` | privileged (root, minimal) | Rust | Only writer of the config repo; tiers, commits, rebuild, rollback, ledger |
 | The checker: `torq --check-tree`, as `torq-check` (ADR-056) | unprivileged, a locked account of its own, in a transient unit with no network, no home and bounded memory and time | Rust (torqcli's own check) | Evaluates the tree an agent's proposal leaves, before the broker records it: valid, not valid (refused), or not checked (recorded, and said) |
+| `torq-model-proxy` (`proxy/`), as `torq-model-proxy` (ADR-057) | unprivileged, a locked account of its own; a unit that can write the record and nothing else; listens on 127.0.0.1 only | Rust (hyper, rustls) | Passes each request of an agent's to the model's service as it came and records it for the person; allows or refuses each site an agent asks for, by the owner's settings; names its caller from the kernel |
 | torqcli | the person's | Rust | Shows proposals, diffs and the ledger; a person approves at a terminal |
 
-There is no model runtime on the machine: the engine asks its maker's service itself. A local model returns
+There is no model runtime on the machine: the engine asks its maker's service, through the model proxy. A local model returns
 with opencode (phase 4 of `docs/HARNESS-AS-A-SYSTEM.md`).
 
 ## Permission tiers

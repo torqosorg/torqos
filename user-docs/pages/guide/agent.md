@@ -139,6 +139,52 @@ it marked as something attached to read, not as instructions.
 Every one of these is your own program: it talks only to your own agent, runs nothing as root, and
 holds no secret.
 
+## What your agent can reach, and the record of what it asked
+
+Your agent's account reaches one thing on the network: a TorqOS service on your own machine, the **model
+proxy**. Nothing else: no website, no other machine, no other program on this one. Your own account is not
+affected at all.
+
+- **Its model.** When your agent asks its model (Claude, for Claude Code), the request goes through the
+  proxy, which passes it on unchanged, your sign-in included, and keeps none of your sign-in. It writes
+  down what happened: when, which model, how many tokens, what was new in the conversation (your question,
+  or what each tool returned) and what the model answered (its words, and each tool it called).
+- **Sites.** A program run as your agent reaches a site only as HTTPS, through the proxy, and only if the
+  owner allows that site:
+
+    ```
+    configure
+    set torq agent network hosts github.com
+    commit
+    ```
+
+    `*.github.com` allows every site under a name. Each site your agent asks for is written down, allowed or
+    refused; what it then exchanges with an allowed site is encrypted and is not. A site you list is one your
+    agent can read, and can send anything it can read to.
+
+- **The whole web** is one setting, off by default: `set torq agent network web true`. Your agent can then
+  read any website, and send anything it can read to any website; the record shows only which sites it
+  reached. Claude Code's own web search works without it (the search runs at Anthropic); fetching a page
+  you name does not.
+
+**The record** is kept for you in `/var/lib/torq-model-proxy/<you>/`, a file for each day, one line for
+each request. You can read it; no one else can but an administrator acting as root, and no agent can read
+or change it. A command and a page that show it are not built yet. It holds what your agent read (the
+contents of files, the output of commands), so it is as private as your files. It is kept to a quarter of a
+gigabyte for each person: the oldest days go first.
+
+Two things to know about Claude Code:
+
+- Its **claude.ai connectors** (tools that run at Anthropic and act in your accounts, such as Gmail) do not
+  work for your agent unless the owner lists `api.anthropic.com` and `mcp-proxy.anthropic.com`. Listing the
+  first also lets a program run as your agent ask the model past the record.
+- **Signing in** from inside the agent's account has not been tried since this was built. If `/login`
+  does not finish, an administrator can allow `api.anthropic.com` while you sign in (`set torq agent network
+  hosts api.anthropic.com`, `commit`) and take it off again after (`delete torq agent network hosts
+  api.anthropic.com`).
+
+Your agent cannot change any of these settings: no agent can propose them.
+
 ## Your agent's proposals always wait for you
 
 Logs, device names, web pages, files and configuration values are text anyone could have written, and a
