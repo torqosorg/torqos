@@ -59,10 +59,6 @@ pub struct Facts {
     /// A signature for SSH to the host, not an HTTPS request to it.
     pub ssh: bool,
     pub session: Option<String>,
-    /// Whether the session read untrusted text (a use that names none: yes).
-    pub tainted: bool,
-    /// Why a person is asked, in the broker's words.
-    pub why: String,
 }
 
 /// A person's answer.
@@ -93,8 +89,8 @@ pub struct Ask {
 /// How a use that waited ended.
 #[derive(Debug, PartialEq, Eq)]
 pub enum Outcome {
-    /// As the person was shown it: whether its session had read untrusted text then.
-    Approved { tainted: bool },
+    /// By the person it was asked of.
+    Approved,
     Denied(String),
     TimedOut,
 }
@@ -145,7 +141,15 @@ fn read(state_dir: &Path, n: u64) -> Option<Ask> {
     let f = std::fs::OpenOptions::new().read(true).custom_flags(rustix::fs::OFlags::NOFOLLOW.bits() as i32).open(dir(state_dir).join(format!("{n}.json"))).ok()?;
     let mut s = String::new();
     f.take(64 * 1024).read_to_string(&mut s).ok()?;
-    serde_json::from_str::<Ask>(&s).ok().filter(|a| a.n == n)
+    // One kept by the broker of before 2026-11-16 says two things more of its facts, which are left out before it
+    // is read as strictly as ever: whether its session had read untrusted text (every use of an agent's counts as
+    // that now) and why it asked (there is one reason now). It is still a use that waits, or one to end on the record.
+    let mut v: serde_json::Value = serde_json::from_str(&s).ok()?;
+    if let Some(facts) = v.get_mut("facts").and_then(|f| f.as_object_mut()) {
+        facts.remove("tainted");
+        facts.remove("why");
+    }
+    serde_json::from_value::<Ask>(v).ok().filter(|a| a.n == n)
 }
 
 /// A file of the store written whole: a new one beside it, then renamed over it.
@@ -237,7 +241,8 @@ impl Broker {
             approved_by: answer.map(|w| w.by.clone()),
             kind: kind.into(),
             tier: f.owner.tier().to_string(),
-            tainted: f.tainted,
+            // An asked use is an agent's: marked, as everything an agent does is.
+            tainted: true,
             reason,
             data,
         })
@@ -324,7 +329,7 @@ impl Broker {
         }
         let outcome = match &a.answer {
             None => return Ok(None),
-            Some(w) if w.approved => Outcome::Approved { tainted: a.facts.tainted },
+            Some(w) if w.approved => Outcome::Approved,
             Some(w) => Outcome::Denied(w.by.clone()),
         };
         std::fs::remove_file(dir(&self.state_dir).join(format!("{n}.json")))?;
@@ -401,7 +406,7 @@ mod tests {
     /// is not answered.
     #[test]
     fn a_use_waits_only_within_its_time() {
-        let facts = Facts { person: "alice".into(), agent: "torq-agent-alice".into(), caller: "torq-agent-alice".into(), owner: Owner::System, secret: "gh".into(), host: "api.github.com".into(), ssh: false, session: None, tainted: true, why: String::new() };
+        let facts = Facts { person: "alice".into(), agent: "torq-agent-alice".into(), caller: "torq-agent-alice".into(), owner: Owner::System, secret: "gh".into(), host: "api.github.com".into(), ssh: false, session: None };
         let ask = |asked: &str, until: &str| Ask { n: 1, asked: asked.into(), until: until.into(), facts: facts.clone(), agent_says: String::new(), answer: None };
         let now = parsed("2026-11-13T12:01:00Z").unwrap();
         assert!(ask("2026-11-13T12:00:00Z", "2026-11-13T12:02:00Z").live(now));

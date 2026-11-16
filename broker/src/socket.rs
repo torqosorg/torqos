@@ -58,7 +58,7 @@ pub enum Gate {
 pub struct Change {
     pub tier: Tier,
     pub files: Vec<String>,
-    /// Whether it newly makes a secret of a person's own `never-even-tainted` (a proposal's `standing`): theirs to
+    /// Whether it newly makes a secret of a person's own `without-asking` (a proposal's `standing`): theirs to
     /// do, with their password.
     pub standing: bool,
 }
@@ -179,7 +179,7 @@ pub fn gate(who: &Caller, cmd: &str, change: Option<&Change>, user: Option<&str>
             None => Gate::Refused("no such change".into()),
             Some(c) if c.tier == Tier::Forbidden => Gate::Refused("that change touches what no one may change".into()),
             // A person's own settings are theirs: no password (KNOWN-GAPS 6a — someone else's are not).
-            // But for making a secret of theirs `never-even-tainted`: it outlives the moment, as a grant does, and
+            // But for making a secret of theirs `without-asking`: it outlives the moment, as a grant does, and
             // no program running as them says it quietly.
             Some(c) if theirs(&who.name, c) && c.standing => Gate::Password,
             Some(c) if theirs(&who.name, c) => Gate::Open,
@@ -770,11 +770,11 @@ mod tests {
         }
     }
 
-    /// `never-even-tainted` outlives the moment, as a grant does: a person's own change that newly says it of a
+    /// `without-asking` outlives the moment, as a grant does: a person's own change that newly says it of a
     /// secret of theirs asks their password, where any other change of their own rules asks nothing. Never an
     /// administrator's to make for them.
     #[test]
-    fn making_a_secret_never_even_tainted_asks_the_persons_password() {
+    fn making_a_secret_without_asking_asks_the_persons_password() {
         let mut c = change(Tier::User, &["users/sam/secrets.json"]);
         assert_eq!(gate(&who(1001), "apply", Some(&c), None), Gate::Open);
         c.standing = true;

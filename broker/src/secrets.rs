@@ -380,22 +380,15 @@ pub fn may_use<'a>(rules: &'a torq_wire::secrets::Rules, u: &Use, agent: Option<
     Ok(r)
 }
 
-/// Why a person is asked before the agent's use of `whose` under rule `r`, unless a grant covers it (ADR-052 4,
-/// amended 2026-11-13), or None: it goes without asking. `tainted`: whether the agent's session read untrusted text
-/// (None: the use names no session, which is asked as a tainted one is). `first`: no use of the secret in this
-/// session has gone through yet. Only the person's own standing word, `never-even-tainted`, lets a tainted use
-/// through unasked.
-pub fn asks(whose: &str, r: &torq_wire::secrets::Rule, tainted: Option<bool>, first: bool) -> Option<String> {
-    use torq_wire::secrets::Approve;
-    match (r.approve, tainted) {
-        (Approve::NeverEvenTainted, _) => None,
-        (_, None) => Some("the agent's request names no session (X-Torq-Session): a person approves such a use".into()),
-        (_, Some(true)) => Some("the agent's session read untrusted text: a person approves each of its uses".into()),
-        (Approve::EachUse, Some(false)) => Some(format!("{whose} is used by the agent with a person's approval ({})", r.approve.word())),
-        (Approve::FirstUse, Some(false)) if first => Some(format!("{whose} is used by the agent with a person's approval ({})", r.approve.word())),
-        (Approve::FirstUse | Approve::Never, Some(false)) => None,
-    }
+/// Whether a person is asked before their agent's use under rule `r`, unless a grant of theirs covers it
+/// (ADR-052 4, amended 2026-11-16). The broker cannot see what an agent has read, so every use of an agent's
+/// is asked, each time; only the person's own standing word for the secret, `without-asking`, lets it through.
+pub fn asks(r: &torq_wire::secrets::Rule) -> bool {
+    r.approve != torq_wire::secrets::Approve::WithoutAsking
 }
+
+/// Why a use is asked, as the agent is told when no one answered.
+const ASKED_BECAUSE: &str = "TorqOS cannot see what an agent has read, so its person approves each use of a secret, unless they said otherwise for that secret";
 
 impl Broker {
     /// Whose agent `account` is, by the broker's map (`agent.agents`). None: a person, or an account that is
@@ -449,7 +442,6 @@ impl Broker {
         let of = self.agent_of(&u.actor);
         let agent = of.is_some();
         let session = self.session_of(u, of.as_ref())?;
-        let tainted = session.as_ref().map(|s| s.tainted);
         let rules = self.rules_of(&u.owner)?;
         let whose = u.owner.whose(&u.name);
         let key = Self::use_key(u);
@@ -460,7 +452,7 @@ impl Broker {
             let why: String = said(&format!("{e:#}"));
             let recorded = (|| -> Result<()> {
                 if agent && rules.contains_key(&u.name) && seen.first(&format!("refused|{key}")) && seen.refusal_allowed() {
-                    self.note_use(u, tainted, "secret_use_refused", format!("The agent's use of {whose} refused"), json!({ "error": why }))?;
+                    self.note_use(u, "secret_use_refused", format!("The agent's use of {whose} refused"), json!({ "error": why }))?;
                 }
                 seen.write(&self.state_dir)
             })();
@@ -472,63 +464,43 @@ impl Broker {
         };
         // The grant the use goes under, if a person's lets it go unasked.
         let mut under = None;
-        if let Some(why) = of.as_ref().and_then(|_| asks(&whose, &rule, tainted, !seen.has(&format!("first|{key}")))) {
-            let a = of.as_ref().context("an agent's use")?;
+        if let Some(a) = of.as_ref().filter(|_| asks(&rule)) {
             // Said for this session, it holds whatever is granted after: the person's no outlasts a later yes
             // to the secret at large, until the session is over.
             if session.as_ref().is_some_and(|s| s.denied.contains(&u.owner.key(&u.name))) {
                 return Err(refused(&mut seen, anyhow::anyhow!("refused: {} said not to be asked again in this session about {whose}", a.person)));
             }
-            under = crate::session::covering(self, &a.person, u.owner == Owner::System, &u.name, tainted.unwrap_or(true), session.as_ref().map(|s| s.started.as_str()))?;
+            under = crate::session::covering(self, &a.person, u.owner == Owner::System, &u.name)?;
             if under.is_none() {
-                let facts = crate::ask::Facts {
-                    person: a.person.clone(),
-                    agent: a.account.clone(),
-                    caller: u.actor.clone(),
-                    owner: u.owner.clone(),
-                    secret: u.name.clone(),
-                    host: u.host.clone(),
-                    ssh: u.ssh,
-                    session: u.session.clone(),
-                    tainted: tainted.unwrap_or(true),
-                    why,
-                };
+                let facts = crate::ask::Facts { person: a.person.clone(), agent: a.account.clone(), caller: u.actor.clone(), owner: u.owner.clone(), secret: u.name.clone(), host: u.host.clone(), ssh: u.ssh, session: u.session.clone() };
                 return match self.open_ask(&lock, facts, agent_says) {
                     Ok(n) => Ok(Used::Waiting(n)),
                     Err(e) => Err(refused(&mut seen, e.context("refused"))),
                 };
             }
         }
-        let used = self.granted(u, tainted, rule, seen, under, false).map(Used::Granted);
+        let used = self.granted(u, rule, seen, under, false).map(Used::Granted);
         drop(lock);
         used
     }
 
     /// `u` asks again about the number it waits under: still `Waiting`, or how it ended. Approved, it is judged
-    /// again as things stand now (what a person approved is the use they were shown: a rule changed meanwhile,
-    /// or a session that has since read untrusted text, is not it), and granted, once: the answer is spent.
+    /// again by its rule as that stands now (what a person approved is the use they were shown: a rule changed
+    /// meanwhile is not it), and granted, once: the answer is spent.
     /// `u` must be the very use that waits as `n`, by the broker's own facts of it.
     pub fn resume_use(&self, u: &Use, n: u64) -> Result<Used> {
         let lock = self.asks_lock()?;
         let of = self.agent_of(&u.actor).context("refused: only an agent's use waits for a person")?;
         let same = |f: &crate::ask::Facts| f.agent == of.account && f.caller == u.actor && f.owner == u.owner && f.secret == u.name && f.host == u.host && f.ssh == u.ssh && f.session == u.session;
         let whose = u.owner.whose(&u.name);
-        let tainted = self.session_of(u, Some(&of))?.map(|s| s.tainted);
-        let shown = match self.look_at_ask(&lock, n, same)? {
+        match self.look_at_ask(&lock, n, same)? {
             None => return Ok(Used::Waiting(n)),
             Some(crate::ask::Outcome::Denied(by)) => bail!("refused: {by} denied this use of {whose}"),
-            Some(crate::ask::Outcome::TimedOut) => {
-                // Why it asked, as it would be said now: the use that waited is gone with its own word for it.
-                let why = self.rules_of(&u.owner).ok().and_then(|r| r.get(&u.name).and_then(|r| asks(&whose, r, tainted, true))).unwrap_or_else(|| "a person approves this use".into());
-                bail!("refused: no one answered in time ({why})")
-            }
-            Some(crate::ask::Outcome::Approved { tainted }) => tainted,
-        };
-        if tainted.unwrap_or(true) != shown {
-            bail!("refused: the agent's session read untrusted text while this use waited: it is asked again");
+            Some(crate::ask::Outcome::TimedOut) => bail!("refused: no one answered in time ({ASKED_BECAUSE})"),
+            Some(crate::ask::Outcome::Approved) => {}
         }
         let rule = may_use(&self.rules_of(&u.owner)?, u, Some(&of))?.clone();
-        let used = self.granted(u, tainted, rule, Seen::read(&self.state_dir), None, true).map(Used::Granted);
+        let used = self.granted(u, rule, Seen::read(&self.state_dir), None, true).map(Used::Granted);
         drop(lock);
         used
     }
@@ -538,8 +510,9 @@ impl Broker {
         format!("{}|{}", u.owner.key(&u.name), u.session.as_deref().unwrap_or("-"))
     }
 
-    /// An entry of a use: the agent's first in a session, or its refusal.
-    fn note_use(&self, u: &Use, tainted: Option<bool>, kind: &str, reason: String, extra: serde_json::Value) -> Result<Entry> {
+    /// An entry of a use: the agent's first in a session, or its refusal. An agent's is marked in the ledger
+    /// (`tainted`, the ledger's word), as everything an agent does is; a person's own is not.
+    fn note_use(&self, u: &Use, kind: &str, reason: String, extra: serde_json::Value) -> Result<Entry> {
         let agent = self.agent_of(&u.actor).is_some();
         let mut data = u.owner.data(&u.name);
         data["session"] = json!(u.session);
@@ -549,13 +522,13 @@ impl Broker {
                 data[k] = v;
             }
         }
-        self.ledger.append(NewEntry { actor: if agent { "agent".into() } else { "user".into() }, approved_by: None, kind: kind.into(), tier: u.owner.tier().to_string(), tainted: tainted.unwrap_or(agent), reason, data })
+        self.ledger.append(NewEntry { actor: if agent { "agent".into() } else { "user".into() }, approved_by: None, kind: kind.into(), tier: u.owner.tier().to_string(), tainted: agent, reason, data })
     }
 
     /// A use that goes through, its caller holding the secrets' lock: on the record where it is the agent's first in its
     /// session, and its value. `under`: the grant it goes under. `asked`: a person approved it, which is on the
     /// record as that already.
-    fn granted(&self, u: &Use, tainted: Option<bool>, rule: torq_wire::secrets::Rule, mut seen: Seen, under: Option<u64>, asked: bool) -> Result<Granted> {
+    fn granted(&self, u: &Use, rule: torq_wire::secrets::Rule, mut seen: Seen, under: Option<u64>, asked: bool) -> Result<Granted> {
         if self.agent_of(&u.actor).is_some() {
             // The first use in a session is on the record once; under a grant, once for that grant, naming it.
             let key = Self::use_key(u);
@@ -569,7 +542,7 @@ impl Broker {
                         Some(g) => (format!(" under grant #{g}"), json!({ "grant": g })),
                         None => (String::new(), json!({})),
                     };
-                    self.note_use(u, tainted, "secret_first_use", format!("The agent used {} for the first time in its session{how}", u.owner.whose(&u.name)), extra)?;
+                    self.note_use(u, "secret_first_use", format!("The agent used {} for the first time in its session{how}", u.owner.whose(&u.name)), extra)?;
                 }
                 seen.write(&self.state_dir)?;
             }
@@ -612,11 +585,6 @@ impl Seen {
         fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(&part)?.write_all(&serde_json::to_vec(self)?)?;
         fs::rename(&part, Self::path(dir))?;
         Ok(())
-    }
-
-    /// Whether `key` is remembered.
-    fn has(&self, key: &str) -> bool {
-        self.keys.iter().any(|k| k == key)
     }
 
     /// Whether `key` is new (and now remembered).
@@ -731,28 +699,6 @@ mod tests {
         assert!(may_use(&r, &ssh("key", "github.com"), Some(&sams)).is_ok());
         assert!(may_use(&r, &ssh("key", "gitlab.com"), Some(&sams)).is_err());
         assert!(may_use(&r, &ssh("gh", "api.github.com"), Some(&sams)).is_err());
-    }
-
-    /// When a person is asked (ADR-051 and ADR-052 4, amended 2026-11-13): the rule says each use; or the first, and it is; or
-    /// the use names no session; or its session is tainted, whatever the rule says, but for the person's own
-    /// standing word. What was refused while approving was not built is asked now.
-    #[test]
-    fn a_person_is_asked_in_these_cases_and_no_others() {
-        use torq_wire::secrets::{Approve, Kind, Rule};
-        let rule = |approve| Rule { approve, ..Rule::new(Kind::Token) };
-        let asked = |approve, tainted, first| asks("sam's secret gh", &rule(approve), tainted, first).is_some();
-        assert!(asked(Approve::EachUse, Some(false), true) && asked(Approve::EachUse, Some(false), false), "each use");
-        assert!(asked(Approve::FirstUse, Some(false), true), "the first use in the session");
-        assert!(!asked(Approve::FirstUse, Some(false), false), "not the ones after");
-        assert!(!asked(Approve::Never, Some(false), true) && !asked(Approve::Never, Some(false), false));
-        for approve in [Approve::EachUse, Approve::FirstUse, Approve::Never] {
-            assert!(asked(approve, None, false), "no session: {approve:?}");
-            assert!(asked(approve, Some(true), false), "a tainted session: {approve:?}");
-        }
-        for (tainted, first) in [(Some(false), true), (Some(true), true), (None, true), (Some(true), false)] {
-            assert!(!asked(Approve::NeverEvenTainted, tainted, first), "never-even-tainted: {tainted:?}");
-        }
-        assert!(asks("x", &rule(Approve::Never), Some(true), false).unwrap().contains("untrusted text"));
     }
 }
 

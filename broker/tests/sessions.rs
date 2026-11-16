@@ -76,7 +76,7 @@ fn an_agents_proposal_without_a_session_is_tainted() {
 fn every_session_and_proposal_of_an_agents_is_tainted() {
     let (dir, b) = setup(&[]);
     let s = session::start(&b).unwrap();
-    assert!(s.tainted && s.tainted_by == [session::UNSEEN], "{s:?}");
+    assert!(s.tainted_by == [session::UNSEEN], "{s:?}");
     let p = propose(&b, &htop(dir.path()), Actor::Agent, false, Some(&s.id)).unwrap();
     assert!(p.body.tainted, "{:?}", p.body);
     assert_eq!(p.body.data["session"], json!({ "id": s.id, "started": s.started, "tainted_by": [session::UNSEEN] }));
@@ -105,7 +105,7 @@ fn the_broker_holds_the_record_and_nothing_clears_it() {
     session::taint(&b, &s.id, "show_ledger").unwrap();
     session::taint(&b, &s.id, "read_journal").unwrap();
     let r = session::read(&b, &s.id).unwrap().unwrap();
-    assert!(r.tainted && r.tainted_by == [session::UNSEEN, "read_journal", "show_ledger"], "{r:?}");
+    assert!(r.tainted_by == [session::UNSEEN, "read_journal", "show_ledger"], "{r:?}");
     let p = propose(&b, &htop(dir.path()), Actor::Agent, false, Some(&s.id)).unwrap();
     assert!(p.body.tainted);
     assert_eq!(p.body.data["session"]["tainted_by"], json!([session::UNSEEN, "read_journal", "show_ledger"]), "the ledger keeps what it read");
@@ -181,10 +181,10 @@ fn a_clean_session_from_before_is_tainted_now() {
     let old = format!("{:032x}", 9);
     fs::write(sessions.join(format!("{old}.json")), json!({"id": old, "started": "2026-11-14T10:00:00Z", "tainted": false, "tainted_by": [], "agent": "torq-agent-casey", "proposals": [{"proposal": 3, "applied": 4}], "resident": true, "asks": 0, "denied": []}).to_string()).unwrap();
     let r = session::read(&b, &old).unwrap().expect("still read");
-    assert!(r.tainted && r.tainted_by == [session::UNSEEN], "{r:?}");
+    assert!(r.tainted_by == [session::UNSEEN], "{r:?}");
     let p = propose(&b, &htop(dir.path()), Actor::Agent, false, Some(&old)).unwrap();
     assert!(p.body.tainted && p.body.data["session"]["tainted_by"] == json!([session::UNSEEN]), "{:?}", p.body);
-    assert!(session::taint(&b, &old, "read_journal").unwrap().tainted, "and reported into as any");
+    assert_eq!(session::taint(&b, &old, "read_journal").unwrap().tainted_by, [session::UNSEEN, "read_journal"], "and reported into as any");
 }
 
 /// The review of ADR-051 step 1: a record from before agents had names is no one's (none may report
@@ -325,19 +325,29 @@ fn a_grant_of_trust_from_before_applies_nothing() {
     b.ledger.verify().unwrap();
 }
 
-/// ADR-051 and ADR-052 4, amended 2026-11-13: a grant covers secret uses, and nothing else. Under one, however
-/// wide, no proposal applies: a change stays a proposal a person applies.
+/// ADR-051 and ADR-052 4, amended 2026-11-13: a grant covers a secret's uses, and nothing else. Under one
+/// no proposal applies: a change stays a proposal a person applies.
 #[test]
 fn a_grant_of_secret_uses_applies_no_proposal() {
-    let (dir, b) = setup(&[]);
-    let secrets = session::grant_secret(&b, "casey", session::Covers::AllSecrets, session::Scope::Minutes(480), false, false).unwrap();
+    // A machine as `setup` makes one, with a rule for casey's secret gh in its first commit: a grant is of a secret
+    // that has a rule.
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path().join("config");
+    fs::create_dir_all(repo.join("users/casey")).unwrap();
+    fs::write(repo.join("desktop.nix"), "{ }\n").unwrap();
+    fs::write(repo.join("users/casey/secrets.json"), r#"{"gh":{"kind":"token","https":{"hosts":["api.github.com"]},"actors":["torq-agent"],"approve":"each-use"}}"#).unwrap();
+    let limits = Limits { agents: agents(&["casey"]), settings: vec![] };
+    let b = by_socket(Broker::new(&repo, dir.path().join("state"), "true").with_agent_limits(&limits).as_agent(Some("torq-agent-casey")), "torq-agent-casey");
+    b.init().unwrap();
+    let gh = || session::Covers { name: "gh".into(), system: false };
+    let secrets = session::grant_secret(&b, "casey", gh(), 480, false).unwrap();
     let s = session::start(&b).unwrap();
     let p = propose(&b, &htop(dir.path()), Actor::Agent, false, Some(&s.id)).unwrap();
     assert_eq!(b.ledger.read_all().unwrap().last().unwrap().body.seq, p.body.seq, "it waits for a person");
     assert_eq!(kinds(&b, "applied"), 0);
     assert_eq!(session::active(&b.ledger.read_all().unwrap()).iter().map(|g| g.seq).collect::<Vec<_>>(), [secrets.body.seq]);
     // No agent of theirs: nothing to let it use.
-    assert!(format!("{:#}", session::grant_secret(&b, "pat", session::Covers::AllSecrets, session::Scope::Minutes(10), false, false).unwrap_err()).contains("has no agent"));
+    assert!(format!("{:#}", session::grant_secret(&b, "pat", gh(), 10, false).unwrap_err()).contains("has no agent"));
 }
 
 /// A ledger an older broker wrote, with session trust in it (granted, revoked, expired, and a grant from

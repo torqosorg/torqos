@@ -1899,7 +1899,7 @@ impl Broker {
     /// (`policy::user_leaf_ok`), at most `USER_DATA_MAX` bytes. Deleting one is always fine. The
     /// NixOS module reading the file is still the authority on what the data means; this makes sure
     /// it is the right kind of data, refused now rather than failing the rebuild.
-    /// What it gives back: each secret of a person's own rules the change newly makes `never-even-tainted`
+    /// What it gives back: each secret of a person's own rules the change newly makes `without-asking`
     /// (`users/<p>/secrets.json: <name>`), which a person's own apply asks their password for (socket.rs).
     fn check_user_data(&self, diff_path: &Path, files: &[String]) -> Result<Vec<String>> {
         let (paths, most) = Self::data_files(files);
@@ -2431,7 +2431,7 @@ impl Broker {
         if !cuts_off.is_empty() {
             data["cuts_off"] = cuts_off.into();
         }
-        // What of it newly lets the agent use a secret unasked even from a tainted session: its apply asks a password.
+        // What of it newly lets the agent use a secret without asking: its apply asks a password.
         if !standing.is_empty() {
             data["standing"] = standing.into();
         }
@@ -3021,7 +3021,7 @@ impl Broker {
         let said: std::collections::BTreeSet<&str> = p.body.data["files"].as_array().into_iter().flatten().filter_map(|f| f.as_str()).collect();
         let does: std::collections::BTreeSet<&str> = files.iter().map(String::as_str).collect();
         let stood: Vec<String> = p.body.data["standing"].as_array().into_iter().flatten().filter_map(|s| s.as_str().map(String::from)).collect();
-        // And what the gate asked a password for: a rule made `never-even-tainted` here that the proposal was not
+        // And what the gate asked a password for: a rule made `without-asking` here that the proposal was not
         // judged to make is one no password was asked for.
         if said != does || p.body.tier != tier.to_string() || stood != standing {
             let _ = fs::remove_file(&tmp);
@@ -3463,14 +3463,14 @@ impl Broker {
         // Two cases, each said with what to do: the file is already one TorqOS no longer takes (a desktop an earlier
         // TorqOS saved, with another program's settings, not yet saved again), or the undo would make it one.
         let already = self.check_user_data_at_head(&files).is_err();
-        // And never a `never-even-tainted` that is not there now. An undo of a person's own change asks no password,
+        // And never a `without-asking` that is not there now. An undo of a person's own change asks no password,
         // and that word is set only with one. Judged by what the undo leaves against what is there now, not by the
         // change undone: a change that only moved the word has it on both its sides.
         let standing = || -> Result<()> {
             for f in files.iter().filter(|f| f.rsplit('/').next() == Some(torq_wire::secrets::PERSON_RULES)) {
                 let at = |rev: &str| -> Result<Option<Vec<u8>>> { Ok(self.repo.file_at(rev, f, torq_wire::secrets::MAX_FILE)?.map(|x| x.content)) };
                 if let Some(n) = torq_wire::secrets::standing_added(at(&before)?.as_deref(), at("HEAD")?.as_deref()).first() {
-                    bail!("refused: undoing change {applied_seq} would make secret {n} never-even-tainted again: set it anew (request system secret approve {n} never-even-tainted), which asks your password");
+                    bail!("refused: undoing change {applied_seq} would make secret {n} without-asking again: set it anew (request system secret approve {n} without-asking), which asks your password");
                 }
             }
             Ok(())

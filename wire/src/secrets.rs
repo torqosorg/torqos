@@ -48,31 +48,50 @@ pub enum Kind {
     SshKey,
 }
 
-/// When a person is asked before the agent uses the secret. A tainted session is always asked, but under the last:
-/// `never-even-tainted`, a person's own standing word for one secret of theirs (never the system's), which a commit
-/// sets only with their password.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+/// When a person is asked before their agent uses the secret. TorqOS cannot see what an agent has read (a web
+/// page or a log line can carry instructions meant for it), so a use is asked each time, unless the person
+/// said otherwise for this secret: `without-asking`, a person's own standing word for one secret of theirs
+/// (never the system's), which a commit sets only with their password.
+///
+/// Rules written before 2026-11-16 used four words (ADR-052 4, amended): they are read as what they did in
+/// practice once every agent's use counted as one that follows untrusted text, never as anything looser.
+/// `first-use` and `never` asked at every use: they read as `each-use`. `never-even-tainted` was the one
+/// that did not ask: it reads as `without-asking`. A rule is written back in today's words.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Approve {
-    EachUse,
     #[default]
-    FirstUse,
-    Never,
-    NeverEvenTainted,
+    EachUse,
+    WithoutAsking,
 }
 
 impl Approve {
     pub fn word(self) -> &'static str {
         match self {
             Approve::EachUse => "each-use",
-            Approve::FirstUse => "first-use",
-            Approve::Never => "never",
-            Approve::NeverEvenTainted => "never-even-tainted",
+            Approve::WithoutAsking => "without-asking",
         }
     }
 
+    /// A word a person types, or a rule written today says.
     pub fn from_word(w: &str) -> Option<Approve> {
-        [Approve::EachUse, Approve::FirstUse, Approve::Never, Approve::NeverEvenTainted].into_iter().find(|a| a.word() == w)
+        [Approve::EachUse, Approve::WithoutAsking].into_iter().find(|a| a.word() == w)
+    }
+
+    /// A word as a stored rule may say it: today's, or one from before (the type's words say what each reads as).
+    fn from_stored(w: &str) -> Option<Approve> {
+        match w {
+            "first-use" | "never" => Some(Approve::EachUse),
+            "never-even-tainted" => Some(Approve::WithoutAsking),
+            w => Approve::from_word(w),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for Approve {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let w = String::deserialize(d)?;
+        Approve::from_stored(&w).ok_or_else(|| serde::de::Error::custom(format!("{w:?} is not when a person is asked (each-use, without-asking)")))
     }
 }
 
@@ -246,26 +265,26 @@ pub fn parse(bytes: &[u8]) -> Result<Rules, String> {
     if let Some((name, _)) = rules.iter().find(|(_, r)| r.actors.iter().any(|a| a == AGENT)) {
         return Err(format!("secret {name}: {AGENT:?} says no one's agent in the system's rules: name each agent that may use it by its account, {AGENT}-<person>"));
     }
-    // Whether a tainted session's use is asked is the person's own to give up, for a secret of their own: an
+    // Whether an agent's use is asked is the person's own to give up, for a secret of their own: an
     // administrator's rule cannot give it up for the people whose agents it names.
-    if let Some((name, _)) = rules.iter().find(|(_, r)| r.approve == Approve::NeverEvenTainted) {
-        return Err(format!("secret {name}: \"{}\" is a person's own to say, of their own secret: not the system's", Approve::NeverEvenTainted.word()));
+    if let Some((name, _)) = rules.iter().find(|(_, r)| r.approve == Approve::WithoutAsking) {
+        return Err(format!("secret {name}: \"{}\" is a person's own to say, of their own secret: not the system's", Approve::WithoutAsking.word()));
     }
     Ok(rules)
 }
 
-/// The secrets of a person's own rules that are `never-even-tainted` in `after` and are not in `before`: what a
-/// change to the rules newly lets the agent use unasked from a session that read untrusted text. A file that is not
+/// The secrets of a person's own rules that are `without-asking` in `after` and are not in `before`: what a
+/// change to the rules newly lets the agent use unasked. A file that is not
 /// a rules file names none: nothing is used by it.
 pub fn standing_added(before: Option<&[u8]>, after: Option<&[u8]>) -> Vec<String> {
     let standing = |b: Option<&[u8]>| -> Vec<String> {
-        b.and_then(|b| parse_person(b).ok()).unwrap_or_default().into_iter().filter(|(_, r)| r.approve == Approve::NeverEvenTainted).map(|(n, _)| n).collect()
+        b.and_then(|b| parse_person(b).ok()).unwrap_or_default().into_iter().filter(|(_, r)| r.approve == Approve::WithoutAsking).map(|(n, _)| n).collect()
     };
     let was = standing(before);
     standing(after).into_iter().filter(|n| !was.contains(n)).collect()
 }
 
-/// What a change's entry says it makes `never-even-tainted` (its `standing`, as the broker recorded it), said for
+/// What a change's entry says it makes `without-asking` (its `standing`, as the broker recorded it), said for
 /// the person about to approve it, in words that are not the proposer's: empty when it makes nothing so. The one
 /// wording, for the dialog and the terminal.
 pub fn standing_said(data: &serde_json::Value) -> String {
@@ -282,7 +301,7 @@ pub fn standing_said(data: &serde_json::Value) -> String {
     if which.is_empty() {
         return String::new();
     }
-    format!("THE AGENT WILL USE {} WITHOUT ASKING, EVEN FROM A SESSION THAT READ UNTRUSTED TEXT. ", which.join(", "))
+    format!("YOUR AGENT WILL USE {} WITHOUT ASKING YOU, WHATEVER IT HAS READ. ", which.join(", "))
 }
 
 /// A person's own rules file: as the system's, and only the agent besides them may use their secrets. Another
@@ -430,7 +449,7 @@ mod tests {
     fn a_rule_as_written() {
         let r = one(r#"{"github-ci":{"kind":"token","https":{"hosts":["api.github.com"]},"actors":["torq-agent-alice"]}}"#).unwrap();
         let g = &r["github-ci"];
-        assert_eq!(g.approve, Approve::FirstUse, "asked the first time, unless the rule says otherwise");
+        assert_eq!(g.approve, Approve::EachUse, "asked each time, unless the rule says otherwise");
         let h = g.https.as_ref().unwrap();
         assert_eq!((h.header.as_str(), h.prefix.as_str()), ("Authorization", "Bearer "));
         assert_eq!(parse(render(&r).as_bytes()).unwrap(), r, "what is written reads back the same");
@@ -506,22 +525,48 @@ mod tests {
         assert!(e.contains("no one's agent") && e.contains("torq-agent-<person>"), "{e}");
     }
 
-    /// `never-even-tainted` is a person's own, of their own secret: the system's rules cannot say it; and a change
+    /// `without-asking` is a person's own, of their own secret: the system's rules cannot say it; and a change
     /// that newly says it is known for what it is, whatever else it changes.
     #[test]
-    fn never_even_tainted_is_a_persons_own_word() {
-        let net = br#"{"t":{"kind":"token","actors":["torq-agent"],"approve":"never-even-tainted"}}"#;
-        let never = br#"{"t":{"kind":"token","actors":["torq-agent"],"approve":"never"}}"#;
-        assert_eq!(parse_person(net).unwrap()["t"].approve, Approve::NeverEvenTainted);
-        let e = parse(br#"{"t":{"kind":"token","actors":["torq-agent-sam"],"approve":"never-even-tainted"}}"#).unwrap_err();
+    fn without_asking_is_a_persons_own_word() {
+        let unasked = br#"{"t":{"kind":"token","actors":["torq-agent"],"approve":"without-asking"}}"#;
+        let asked = br#"{"t":{"kind":"token","actors":["torq-agent"],"approve":"each-use"}}"#;
+        assert_eq!(parse_person(unasked).unwrap()["t"].approve, Approve::WithoutAsking);
+        let e = parse(br#"{"t":{"kind":"token","actors":["torq-agent-sam"],"approve":"without-asking"}}"#).unwrap_err();
         assert!(e.contains("not the system's"), "{e}");
-        assert_eq!(Approve::from_word("never-even-tainted"), Some(Approve::NeverEvenTainted));
-        assert_eq!(standing_added(Some(never), Some(net)), ["t"]);
-        assert_eq!(standing_added(None, Some(net)), ["t"], "a new file");
-        assert!(standing_added(Some(net), Some(net)).is_empty(), "said already: nothing new");
-        assert!(standing_added(Some(net), Some(never)).is_empty() && standing_added(Some(net), None).is_empty(), "taken back");
-        let two = br#"{"t":{"kind":"token","approve":"never-even-tainted"},"u":{"kind":"token","approve":"never-even-tainted"}}"#;
-        assert_eq!(standing_added(Some(net), Some(two)), ["u"]);
+        assert_eq!(standing_added(Some(asked), Some(unasked)), ["t"]);
+        assert_eq!(standing_added(None, Some(unasked)), ["t"], "a new file");
+        assert!(standing_added(Some(unasked), Some(unasked)).is_empty(), "said already: nothing new");
+        assert!(standing_added(Some(unasked), Some(asked)).is_empty() && standing_added(Some(unasked), None).is_empty(), "taken back");
+        let two = br#"{"t":{"kind":"token","approve":"without-asking"},"u":{"kind":"token","approve":"without-asking"}}"#;
+        assert_eq!(standing_added(Some(unasked), Some(two)), ["u"]);
+        assert_eq!(standing_said(&serde_json::json!({"standing": ["users/dev/secrets.json: gh"]})), "YOUR AGENT WILL USE secret gh (users/dev/secrets.json) WITHOUT ASKING YOU, WHATEVER IT HAS READ. ");
+    }
+
+    /// A rules file written before 2026-11-16 says when a person is asked in four words. Each reads as what it
+    /// did then, never as anything looser: `first-use` and `never` asked at every use of an agent's, so they are
+    /// `each-use`; only `never-even-tainted` did not ask, so only it is `without-asking` (and, as then, the
+    /// system's rules may not say it, and a change that newly says it is known as one). Written back, a rule
+    /// says today's words; a person types only today's.
+    #[test]
+    fn a_rule_from_before_is_never_looser() {
+        let rule = |w: &str| format!(r#"{{"t":{{"kind":"token","actors":["torq-agent"],"approve":"{w}"}}}}"#);
+        for (old, now) in [("first-use", Approve::EachUse), ("never", Approve::EachUse), ("each-use", Approve::EachUse), ("never-even-tainted", Approve::WithoutAsking), ("without-asking", Approve::WithoutAsking)] {
+            let r = parse_person(rule(old).as_bytes()).unwrap();
+            assert_eq!(r["t"].approve, now, "{old}");
+            assert!(render(&r).contains(&format!("\"approve\": \"{}\"", now.word())), "{old}: written back in today's words");
+        }
+        assert!(parse_person(rule("always").as_bytes()).is_err() && parse_person(rule("sometimes").as_bytes()).is_err());
+        assert!(parse(rule("never-even-tainted").replace("torq-agent", "torq-agent-sam").as_bytes()).unwrap_err().contains("not the system's"));
+        assert!(parse(rule("never").replace("torq-agent", "torq-agent-sam").as_bytes()).is_ok());
+        // Moving between an old word and today's for the same thing is no change of what is asked.
+        assert!(standing_added(Some(rule("never-even-tainted").as_bytes()), Some(rule("without-asking").as_bytes())).is_empty());
+        assert_eq!(standing_added(Some(rule("never").as_bytes()), Some(rule("without-asking").as_bytes())), ["t"]);
+        assert!(standing_added(Some(rule("each-use").as_bytes()), Some(rule("never").as_bytes())).is_empty());
+        for typed in ["first-use", "never", "never-even-tainted"] {
+            assert_eq!(Approve::from_word(typed), None, "{typed}: not a word to type any more");
+        }
+        assert_eq!((Approve::from_word("each-use"), Approve::from_word("without-asking")), (Some(Approve::EachUse), Some(Approve::WithoutAsking)));
     }
 
     /// A throwaway key, made for this test alone (ssh-keygen -t ed25519 -N ""), and its public half as ssh-keygen wrote it.

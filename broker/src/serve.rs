@@ -229,14 +229,10 @@ fn answer(reply: &Reply) -> std::result::Result<i32, Refusal> {
                 return Err(refused(anyhow::anyhow!("from the desktop a system change is approved in its dialog, not by a password in the request")));
             }
             let secret = sub.try_get_one::<String>("name").ok().flatten().map(|n| (n.as_str(), user.as_deref()));
-            // A grant's dialog says all of what is granted: for how long, and whether it holds under taint.
-            let grant = (name == "secret-grant").then(|| {
-                let how_long = sub.try_get_one::<u32>("minutes").ok().flatten().map_or("in its sessions running now".to_string(), |m| format!("for {m} minutes"));
-                let even = if sub.try_get_one::<bool>("tainted-too").ok().flatten().copied().unwrap_or(false) { ", EVEN FROM A SESSION THAT READ UNTRUSTED TEXT" } else { "" };
-                format!("{how_long}{even}")
-            });
+            // A grant's dialog says all of what is granted: which secret, and for how long.
+            let grant = (name == "secret-grant").then(|| sub.try_get_one::<u32>("minutes").ok().flatten().map_or(String::new(), |m| format!("for {m} minutes, whatever it reads meanwhile")));
             let text = match grant {
-                Some(g) => crate::printable(&format!("Let your agent use {} without asking, {g}", secret.map_or("all your own secrets".to_string(), |(n, u)| if u.is_some() { format!("your secret {n}") } else { format!("the system's secret {n}") }))),
+                Some(g) => crate::printable(&format!("Let your agent use {} without asking, {g}", secret.map_or("a secret".to_string(), |(n, u)| if u.is_some() { format!("your secret {n}") } else { format!("the system's secret {n}") }))),
                 None => approval_text(name, &settings.state_dir, seq, secret),
             };
             approve_in_dialog(pid, uid, &text).map_err(&refused)?;
@@ -309,7 +305,7 @@ fn approval_text(cmd: &str, state_dir: &Path, seq: Option<u64>, secret: Option<(
 }
 
 /// What the dialog says of a change: the broker's facts of it first, among them what of it makes a secret
-/// `never-even-tainted` (the reason given for a change is its proposer's to word, and a program running as the
+/// `without-asking` (the reason given for a change is its proposer's to word, and a program running as the
 /// person can propose one); then that reason, as theirs. Cut to what a dialog shows.
 fn change_text(verb: &str, e: &torq_broker::ledger::Entry) -> String {
     let by = e.body.data["caller"].as_str().unwrap_or(&e.body.actor);
@@ -525,7 +521,7 @@ impl Drop for Scratch {
 mod tests {
     use super::*;
 
-    /// A change that makes a secret never-even-tainted says so in the dialog, in the broker's words and before
+    /// A change that makes a secret without-asking says so in the dialog, in the broker's words and before
     /// the proposer's own, whatever those are and however long: they are cut, never the broker's.
     #[test]
     fn the_dialog_says_what_never_asks_before_the_proposers_reason() {
@@ -537,7 +533,7 @@ mod tests {
         let reason = format!("Secret gh: one more host{}", " and nothing else at all".repeat(40));
         let said = change_text("Apply", &entry(json!({ "files": ["users/sam/secrets.json"], "caller": "sam", "standing": ["users/sam/secrets.json: gh"] }), &reason));
         let (facts, theirs) = said.split_once("It says: ").expect("the proposer's words, after");
-        assert!(facts.contains("THE AGENT WILL USE secret gh (users/sam/secrets.json) WITHOUT ASKING, EVEN FROM A SESSION THAT READ UNTRUSTED TEXT"), "{said}");
+        assert!(facts.contains("YOUR AGENT WILL USE secret gh (users/sam/secrets.json) WITHOUT ASKING YOU, WHATEVER IT HAS READ"), "{said}");
         assert!(theirs.starts_with("\"Secret gh: one more host") && said.chars().count() == 400, "{said}");
     }
 }
