@@ -45,6 +45,8 @@
         torq-agent = pkgs.callPackage ./agent/package.nix { };
         # The secrets daemon (ADR-052): a secret used, never read.
         torq-secrets = pkgs.callPackage ./secrets/package.nix { };
+        # The model proxy (ADR-057): every request an agent makes of its model, recorded; the sites it may reach.
+        torq-model-proxy = pkgs.callPackage ./proxy/package.nix { };
         default = self.packages.${pkgs.stdenv.hostPlatform.system}.torq-broker;
       })) (forSystems linuxSystems (pkgs: {
         # The TorqOS image (docs/INSTALL.md): a disk to download and boot; first-boot setup on its
@@ -74,6 +76,7 @@
         torq.cli.package = lib.mkDefault self.packages.${pkgs.stdenv.hostPlatform.system}.torq;
         torq.agent.package = lib.mkDefault self.packages.${pkgs.stdenv.hostPlatform.system}.torq-agent;
         torq.secrets.package = lib.mkDefault self.packages.${pkgs.stdenv.hostPlatform.system}.torq-secrets;
+        torq.modelProxy.package = lib.mkDefault self.packages.${pkgs.stdenv.hostPlatform.system}.torq-model-proxy;
       };
 
       # Helper used by per-machine config repos (see templates/config).
@@ -214,6 +217,8 @@
         desktop-defaults = import ./tests/desktop-defaults.nix { inherit pkgs self; };
         tunnels = import ./tests/tunnels.nix { inherit pkgs self; };
         secrets = import ./tests/secrets.nix { inherit pkgs self; };
+        # The model proxy and the agents' closed network (ADR-057): what an agent's account can reach, and the record.
+        model-proxy = import ./tests/model-proxy.nix { inherit pkgs self; };
         image = import ./tests/image.nix { inherit pkgs self; };
         # Nothing nixpkgs marks unfree in what TorqOS distributes (ADR-039), for every platform it
         # releases (evaluation only, so x86_64's CI checks aarch64's too). nixpkgs refuses to
@@ -261,7 +266,7 @@
             # has settings of its own, out of the check above. So nixpkgs' tree is not reached at all
             # (`pkgs.path`, `<nixpkgs>`, NixOS's modules' parent), however it is spelled. And no
             # licence set but TorqOS's own packages': a package relabelled free passes nixpkgs' check.
-            src="${./modules} ${./hosts} ${./broker/package.nix} ${./cli/package.nix} ${./agent/package.nix}"
+            src="${./modules} ${./hosts} ${./broker/package.nix} ${./cli/package.nix} ${./agent/package.nix} ${./proxy/package.nix}"
             if grep -rnE 'pkgs\.path|<nixpkgs>|import[[:space:]]*\(?[[:space:]]*(inputs\.)?nixpkgs([[:space:]]|\))|modulesPath[[:space:]]*\+[[:space:]]*"/\.\.|NIXPKGS_ALLOW' $src; then
               echo "nixpkgs' tree is reached above: a nixpkgs of its own would be out of the check (ADR-039)."
               exit 1

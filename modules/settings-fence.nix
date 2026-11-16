@@ -38,6 +38,9 @@ rec {
     [ "torq" "packages" ]
     [ "torq" "cli" "package" ]
     [ "torq" "agent" "package" ]
+    # The model proxy's own (ADR-057): what it is built from, where it listens. The owner's settings for it
+    # are `torq.agent.network.*`, which are the tree's.
+    [ "torq" "modelProxy" ]
     [ "torq" "schema" ]
     [ "torq" "nixosSchema" ]
     [ "torq" "releases" ]

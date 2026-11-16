@@ -65,6 +65,8 @@ let
     "networking defaultGateway address" = v4;
     "networking defaultGateway6 address" = v6;
     "networking nameservers" = { name = "listOf"; elem = matching "an IP address" "(${ipv4})|(${ipv6})"; };
+    # The sites the agents may reach (modules/model-proxy.nix, the same pattern): said in words.
+    "torq agent network hosts" = { name = "listOf"; elem = matching "a site's name (github.com), or *.name for every site under it (*.github.com)" "([*][.])?[A-Za-z0-9_-]+([.][A-Za-z0-9_-]+)*"; };
   };
   # Where a set's entries are named after something on the machine (`names`): torqcli offers those.
   names = {

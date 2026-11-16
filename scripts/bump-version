@@ -47,7 +47,7 @@ pre=${BASH_REMATCH[2]}
 tag=v$new$pre
 
 cd "$(git rev-parse --show-toplevel)"
-crates=(cli broker agent wire)
+crates=(cli broker agent wire proxy)
 cargo_files=("${crates[@]/%//Cargo.toml}" "${crates[@]/%//Cargo.lock}")
 
 # The version in a Cargo.toml's [package] section.
@@ -91,7 +91,7 @@ if [ "$old" = "$new" ]; then
   echo "TorqOS is already $new."
 else
   [ -z "$commit" ] || git diff --quiet HEAD -- "${cargo_files[@]}" \
-    || die "cli/, broker/, agent/ or wire/'s Cargo files have changes not committed: commit or drop them first."
+    || die "cli/, broker/, agent/, wire/ or proxy/'s Cargo files have changes not committed: commit or drop them first."
   for c in "${crates[@]}"; do
     name=$(toml_name "$c/Cargo.toml")
     # [package]'s version line only, never a dependency's.
@@ -121,7 +121,7 @@ if [ $bad -ne 0 ]; then
   [ "$old" = "$new" ] || [ -z "$release" ] || git checkout -q -- "${cargo_files[@]}"
   exit 1
 fi
-[ "$old" = "$new" ] || echo "TorqOS is $new (was $old): cli, broker, agent and wire, their Cargo.toml and Cargo.lock, and their packages."
+[ "$old" = "$new" ] || echo "TorqOS is $new (was $old): cli, broker, agent, wire and proxy, their Cargo.toml and Cargo.lock, and their packages."
 
 bumped=
 if [ -n "$commit" ] && [ "$old" != "$new" ]; then

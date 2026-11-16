@@ -15,6 +15,7 @@
     ./cosmic/cosmic-greeter.nix
     ./broker.nix
     ./agent.nix
+    ./model-proxy.nix
     ./strict.nix
     ./dev.nix
     ./packages.nix

@@ -30,7 +30,7 @@ let
     torq.agent.engine = "claude-code";
     torq.agent.claudeCode = pkgs.hello;
   };
-  ours = ms: lib.filter (m: lib.hasInfix "torq.agent" m || lib.hasInfix "torq-agent" m || lib.hasInfix "torq-check" m || lib.hasInfix "ptrace_scope" m) ms;
+  ours = ms: lib.filter (m: lib.hasInfix "torq.agent" m || lib.hasInfix "torq-agent" m || lib.hasInfix "torq-check" m || lib.hasInfix "torq-model-proxy" m || lib.hasInfix "torq_agents" m || lib.hasInfix "ptrace_scope" m) ms;
   # `name` fails evaluation with a message holding `text`.
   refuses = name: extra: text:
     let ms = failing extra; in
@@ -115,10 +115,16 @@ let
     # The unit is the bridge, as the person's one agent account, in the launcher's sandbox and more: who it
     # runs as, what it runs, what it may write, what it cannot see. (The whole text is held by the rule below
     # and tests/agent-units.nix; this says the lines the fence is.)
-    (let sc = (configOf (withEngine { })).systemd.services."torq-agent@dev".serviceConfig; in
+    (let unit = (configOf (withEngine { })).systemd.services."torq-agent@dev"; sc = unit.serviceConfig; in
       if sc.User == "torq-agent-dev" && sc.Group == "torq-agent-dev" && lib.hasSuffix "/bin/torq-agent-service dev claude-code" sc.ExecStart
         && sc.ProtectHome == true && sc.PrivateTmp && sc.NoNewPrivileges && sc.CapabilityBoundingSet == "" && sc.AmbientCapabilities == ""
-        && sc.ProtectSystem == "strict" && sc.ReadWritePaths == [ "/var/lib/torq-agent-dev" ] && sc.InaccessiblePaths == [ "-/run/credentials" ]
+        && sc.ProtectSystem == "strict" && sc.ReadWritePaths == [ "/var/lib/torq-agent-dev" ] && sc.InaccessiblePaths == [ "-/run/credentials" "-/run/nscd" "-/run/systemd/resolve" ]
+        # The model proxy and the fence (ADR-057): never started without the fence that closes the account's
+        # network, told where its model is, Claude Code's own settings for it bound where Claude Code reads
+        # them, and the services that look a name up for anyone hidden.
+        && builtins.elem "torq-agent-network.service" unit.requires && builtins.elem "torq-agent-network.service" unit.after
+        && unit.environment.ANTHROPIC_BASE_URL == "http://127.0.0.1:7801" && unit.environment.HTTPS_PROXY == "http://127.0.0.1:7801"
+        && sc.BindReadOnlyPaths == [ "/etc/torq/claude-code:/etc/claude-code" ]
         && sc.StateDirectory == "torq-agent-memory/dev" && sc.RestrictNamespaces && sc.ProtectControlGroups
         && !(sc ? LoadCredential) && !(sc ? ExecStartPre) && !(sc ? Delegate) && !(sc ? RemoveIPC)
         # Decided, not forgotten (2026-11-15): no MemoryDenyWriteExecute. Claude Code 2.1.316 itself runs with it,
@@ -200,6 +206,48 @@ let
       (refuses "a home made for the checker" { users.users.torq-check.createHome = lib.mkForce true; } said)
       (refuses "an SSH key for the checker" { users.users.torq-check.openssh.authorizedKeys.keys = [ "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAsQmVpCCIItKDMwqNcgAQIAJH9uMP0VsxjvXJkusubc x" ]; } said)
       (refuses "an SSH key file for the checker" { users.users.torq-check.openssh.authorizedKeys.keyFiles = [ ./removed-settings/nixos/torq.json ]; } said)
+    ])
+    # The model proxy's account (ADR-057), held as the checker's is: a locked system account alone in its own
+    # group, each way it could become more refused. And what the agents are told, and what no one may set.
+    (let said = "users.users.torq-model-proxy: the model proxy's account (ADR-057) is a system account in its own group and no other, alone in that group, with no password, no shell, no home and no SSH key"; in lib.concatStringsSep ", " [
+      (let c = configOf { }; u = c.users.users.torq-model-proxy; unit = c.systemd.services.torq-model-proxy.serviceConfig; in
+        if u.hashedPassword == "!" && lib.hasSuffix "/bin/nologin" u.shell && u.home == "/var/empty" && !u.createHome && u.group == "torq-model-proxy"
+          && unit.User == "torq-model-proxy" && unit.CapabilityBoundingSet == "" && unit.ProtectSystem == "strict" && unit.ReadWritePaths == [ "/var/lib/torq-model-proxy" ]
+          && c.systemd.services ? torq-agent-network
+          # Closed by default, and the agents' settings for Claude Code are not the machine's.
+          && c.torq.agent.network.hosts == [ ] && !c.torq.agent.network.web
+          && !(c.environment.etc ? "claude-code/managed-settings.json")
+          && (builtins.fromJSON c.environment.etc."torq/claude-code/managed-settings.json".text).env.ANTHROPIC_BASE_URL == "http://127.0.0.1:7801"
+        then "the proxy's account is locked, its unit fenced, the agents' network closed"
+        else throw "agent-assertions: the model proxy is not as TorqOS's module sets it")
+      # No person with an agent, no proxy and no fence: nothing of it on such a machine.
+      (let c = configOf { torq.agent.people = [ ]; }; in
+        if !(c.systemd.services ? torq-model-proxy) && !(c.systemd.services ? torq-agent-network) && !(c.users.users ? torq-model-proxy)
+        then "no agents, no proxy" else throw "agent-assertions: a machine with no agent has the model proxy")
+      (refuses "the proxy in another group" { users.users.torq-model-proxy.extraGroups = [ "wheel" ]; } said)
+      (refuses "the proxy a member of another group" { users.groups.wheel.members = [ "torq-model-proxy" ]; } said)
+      (refuses "another account in the proxy's group, as a member" { users.groups.torq-model-proxy.members = [ "torq-agent-dev" ]; } said)
+      (refuses "another account in the proxy's group, as its own" { users.users.dev.group = lib.mkForce "torq-model-proxy"; } said)
+      (refuses "the proxy's group changed" { users.users.torq-model-proxy.group = lib.mkForce "users"; } said)
+      (refuses "the proxy a person" { users.users.torq-model-proxy = { isSystemUser = lib.mkForce false; isNormalUser = true; }; } said)
+      (refuses "a password for the proxy" { users.users.torq-model-proxy.hashedPassword = lib.mkForce "$6$x$y"; } said)
+      (refuses "a password for the proxy, in the clear" { users.users.torq-model-proxy.password = "x"; } said)
+      (refuses "a password file for the proxy" { users.users.torq-model-proxy.hashedPasswordFile = "/etc/torq-model-proxy.pw"; } said)
+      (refuses "a first password for the proxy" { users.users.torq-model-proxy.initialPassword = "x"; } said)
+      (refuses "a first password's hash for the proxy" { users.users.torq-model-proxy.initialHashedPassword = "$6$x$y"; } said)
+      (refuses "a shell for the proxy" ({ pkgs, ... }: { users.users.torq-model-proxy.shell = lib.mkForce pkgs.bash; }) said)
+      (refuses "a home for the proxy" { users.users.torq-model-proxy.home = lib.mkForce "/var/lib/torq-model-proxy"; } said)
+      (refuses "a home made for the proxy" { users.users.torq-model-proxy.createHome = lib.mkForce true; } said)
+      (refuses "an SSH key for the proxy" { users.users.torq-model-proxy.openssh.authorizedKeys.keys = [ "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAsQmVpCCIItKDMwqNcgAQIAJH9uMP0VsxjvXJkusubc x" ]; } said)
+      (refuses "an SSH key file for the proxy" { users.users.torq-model-proxy.openssh.authorizedKeys.keyFiles = [ ./removed-settings/nixos/torq.json ]; } said)
+      (refuses "the packet filter emptied whole" { networking.nftables = { enable = true; flushRuleset = true; }; } "the fence that closes the agents' accounts' network")
+      # The owner's settings for the agents' network are torq.*, never an agent's to propose.
+      (refuses "the agents' network as something an agent may propose" { torq.agent.mayPropose.settings = [ "torq.agent.network" ]; } "torq.* is never the agent's")
+      # And where the proxy listens, or what it is built from, is not the configuration tree's at all.
+      (let fence = import ../modules/settings-fence.nix { inherit lib; }; in
+        if fence.fenced [ "torq" "modelProxy" "package" ] && fence.fenced [ "torq" "modelProxy" "port" ] && !(fence.fenced [ "torq" "agent" "network" "hosts" ]) && !(fence.fenced [ "torq" "agent" "network" "web" ])
+        then "the proxy's own settings are fenced, the owner's are the tree's"
+        else throw "agent-assertions: the settings fence does not hold torq.modelProxy, or holds the owner's own settings")
     ])
     (refuses "SETENV in sudoers text" ({ config, ... }: {
       security.sudo.extraConfig = "%wheel ALL=(root) NOPASSWD: SETENV: ${config.torq.agent.launcher}/bin/torq-agent-run";

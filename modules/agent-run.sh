@@ -134,6 +134,12 @@ if [ "${1-}" = --hold-frozen ]; then
   cat >/dev/null || true
   exit 0
 fi
+# Nothing runs as an agent while the fence that closes its network is not up (ADR-057,
+# modules/model-proxy.nix): the account would reach the whole network, unrecorded.
+if ! systemctl is-active --quiet torq-agent-network.service; then
+  echo "torq agent run: the fence that closes your agent's network is not up, and nothing is run as your agent without it. An administrator can look: systemctl status torq-agent-network" >&2
+  exit 2
+fi
 share="" fd=""
 if [ "${1-}" = --share-fd ]; then
   fd=${2-} share=${3-}
@@ -195,15 +201,26 @@ exec unshare --mount --propagation private -- bash -euo pipefail -c '
   mkdir -p -m 0755 /var/lib/torq-agent-memory
   # The credentials systemd gives units: hidden as well, made first so that it is there to hide.
   mkdir -p -m 0755 /run/credentials
+  # The services that look a name up for anyone who asks (nscd, systemd-resolved): hidden too. A name
+  # looked up is a message sent, and the network of the agent is closed, DNS included (ADR-057).
+  mkdir -p -m 0755 /run/nscd /run/systemd/resolve
   # The sandbox, as the agent: every program the launcher runs as the agent runs in it (the link below too).
   sandbox=(setpriv --reuid "$agent" --regid "$agent" --init-groups --no-new-privs --inh-caps=-all --bounding-set=-all --
     bwrap --die-with-parent --unshare-pid --dev-bind / / --proc /proc
       --tmpfs /run/user --tmpfs /tmp --tmpfs /root --tmpfs /var/lib/torq-agent-memory --tmpfs /run/credentials
+      --tmpfs /run/nscd --tmpfs /run/systemd/resolve
+      --ro-bind /etc/torq/claude-code /etc/claude-code
       --clearenv
       --setenv HOME "$home" --setenv USER "$agent" --setenv LOGNAME "$agent"
       --setenv SHELL /run/current-system/sw/bin/bash
       --setenv PATH "/run/wrappers/bin:/etc/profiles/per-user/$agent/bin:/run/current-system/sw/bin"
       --setenv TERM "${TERM:-dumb}")
+  # Where the model of the engine is and how a site is reached: the model proxy of TorqOS (ADR-057), told to
+  # every program run here, one NAME=value a line. For Claude Code the settings bound above (/etc/claude-code)
+  # say the same, and it cannot override those.
+  while IFS="=" read -r name value; do
+    sandbox+=(--setenv "$name" "$value")
+  done < /etc/torq/agent-environment
   # TorqOS linked into the coding tools the owner chose (torq agent tools; ADR-051 5 and 7): its MCP server and
   # skill in the settings of Claude Code, in the home of the agent — done as the agent in its sandbox (the
   # memory of the services and the credentials hidden), never as root, so nothing is written there with

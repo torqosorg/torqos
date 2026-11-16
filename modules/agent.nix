@@ -19,6 +19,8 @@
 
 let
   cfg = config.torq.agent;
+  # The model proxy and the fence around the agents' network (ADR-057, modules/model-proxy.nix).
+  proxy = config.torq.modelProxy;
   agentOf = person: "torq-agent-${person}";
   # Each agent account, and the person it serves: the broker's map (broker.json), and the accounts below.
   # (Only names that fit: one too long is the assertion's to say, below, not NixOS's abort.)
@@ -103,8 +105,16 @@ let
   }) agents;
   ownServices = lib.mapAttrs' (agent: person: lib.nameValuePair "torq-agent@${person}" {
     description = "${person}'s TorqOS agent (proposes; a person applies)";
-    requires = [ "torq-agent@${person}.socket" ];
-    after = [ "torq-agent@${person}.socket" "torq-broker.socket" ];
+    # Never without the fence that closes the account's network (ADR-057, modules/model-proxy.nix): the unit
+    # is not started where it is not up, and is stopped where it goes. The model proxy is wanted, not
+    # required: without it the engine reaches no model and says so.
+    requires = [ "torq-agent@${person}.socket" proxy.fence ];
+    wants = [ "torq-model-proxy.service" ];
+    after = [ "torq-agent@${person}.socket" "torq-broker.socket" proxy.fence "torq-model-proxy.service" ];
+    # Where the engine's model is and how a site is reached: TorqOS's model proxy (ADR-057). Said here for
+    # every program the engine starts; for Claude Code itself the settings below say the same, and it cannot
+    # override those.
+    environment = proxy.agentEnvironment;
     # No limit on how often it may be started. systemd's own (5 starts in 10 s) would otherwise be reached by a
     # person asking a few times while its start fails, and a socket whose service has reached it is stopped
     # for good ("service-start-limit-hit"): what was wrong put right, the agent would still not answer until an
@@ -136,7 +146,13 @@ let
       # conversations), and the one other place it may write (the system is read-only, below).
       ReadWritePaths = [ "/var/lib/${agent}" ];
       # What systemd gives other units as credentials: hidden, as `torq agent run` hides it.
-      InaccessiblePaths = [ "-/run/credentials" ];
+      # And the services that look a name up for anyone who asks (nscd, systemd-resolved): a name looked up is
+      # a message sent, and the agent's network is closed, DNS included (ADR-057). The account's own name is
+      # still found, in /etc/passwd.
+      InaccessiblePaths = [ "-/run/credentials" "-/run/nscd" "-/run/systemd/resolve" ];
+      # Claude Code's settings for the agents, where Claude Code looks for the settings an account cannot
+      # override (/etc/claude-code): shown there in this unit only, never to a person's own Claude Code.
+      BindReadOnlyPaths = [ "/etc/torq/claude-code:/etc/claude-code" ];
       # The launcher's sandbox: every home (and /root, and the people's runtime directories in
       # /run/user) out of reach, /tmp its own, no privilege at all.
       ProtectHome = true;
