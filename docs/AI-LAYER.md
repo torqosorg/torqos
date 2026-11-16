@@ -195,7 +195,8 @@ honoured). Failures and restores carry `restored: true|false` (ADR-008).
    daemon, so its torqcli evaluates nothing; the broker writes the scratch index as a git tree and has
    `torq --check-tree <tree>` evaluate it as the account `torq-check`, the broker's lock let go meanwhile
    and everything vetted again after. Valid: recorded, with the tree and the warnings. Not valid (and the
-   configuration as it is valid): refused, ledgered, one plain line back. Could not be checked: recorded,
+   configuration as it is valid, asked again each time: nothing is kept between checks): refused, ledgered,
+   one plain line back. Could not be checked (a failure that is not the change's among them): recorded,
    and the agent and the person are both told. A person's own change is checked by their own torqcli, as
    before.
 3. Preview shown; approval collected (torqcli at a terminal, or the desktop's dialog). Who approves is the uid the kernel reports on the broker's socket, never a flag; `--approved-by` is taken only on the root recovery path (`sudo torq-broker`).

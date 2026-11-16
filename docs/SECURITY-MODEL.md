@@ -170,13 +170,17 @@ Hardware guidance: integrated-graphics machines are lowest risk for removing Mic
   refused by the daemon, and so is a person who is no administrator (`tests/agent-check.nix`).
 - `torq-check` is the account an agent's proposal is evaluated as (ADR-056): the one account besides root and
   the administrators that the Nix daemon answers, because an evaluation needs it. Allowed, never trusted
-  (asserted); no home, no shell, no password, no group but its own; nothing runs as it but the broker's
-  check, in a transient unit with no capabilities, no network, a read-only system, no home and bounded
-  memory, tasks and time. An allowed client can add files to the store and have the daemon build a
+  (by its name, its group or `*`); no home, no shell, a locked password, no SSH key, no group but its own:
+  each set by TorqOS's module and asserted (`tests/agent-assertions.nix`). Nothing runs as it but the
+  broker's check, in a transient unit with no capabilities, no network, a read-only system, no home and
+  bounded memory, tasks and time. An allowed client can add files to the store and have the daemon build a
   derivation it describes; what the checker is given is an agent's change, which the broker's policy admits
-  only as JSON data (package names for its person, values in the subtrees the owner listed), so the
-  agent describes no derivation. That bound is the policy's, not the daemon's: listing a subtree whose values
-  become scripts widens it. Not chosen: a private store for the checker with no daemon at all (491 MB a
+  only as JSON data (package names for its person, values in the subtrees the owner listed). With the
+  default list that names no derivation of the agent's choosing. That bound is the policy's, not the
+  daemon's, and not a property of data: a listed setting whose type is a package lets the agent name any
+  nixpkgs attribute, a listed subtree whose values become scripts puts its text into a derivation, and a
+  build the daemon starts during an evaluation (import-from-derivation stays on) is outside the unit's
+  limits (KNOWN-GAPS 6zzw). Not chosen: a private store for the checker with no daemon at all (491 MB a
   machine, and a seeding step at every change of the lock).
 - The boot menu's entries cannot be edited (systemd-boot's editor off, `modules/security.nix`): a
   kernel command line typed at boot is a root shell. A system-tier commit can turn it on,

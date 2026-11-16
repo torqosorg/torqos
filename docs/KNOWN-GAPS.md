@@ -1949,19 +1949,23 @@ Its §5 lists claims without a test.
      connection to remote store". The VM test records it (`nix store info` as a non-administrator fails). Not
      changed here: it needs its own decision (their commit checked by the broker's checker too, or the people
      the configuration declares admitted to the daemon).
-   - **`torq-check` may talk to the Nix daemon.** Allowed, not trusted; what that gives and what bounds it is
-     ADR-056 5: the bound is the policy (an agent's change is JSON data in the person's packages and the
-     subtrees the owner listed), not the daemon. `allow-import-from-derivation` stays on (TorqOS's own
-     `modules/host.nix` reads tzdata while it evaluates). A build the daemon starts during an evaluation is
-     outside the unit's time and memory limits.
+   - **`torq-check` may talk to the Nix daemon.** Allowed, not trusted; what that gives, what bounds it and
+     what does not is ADR-056 5 and item 6zzw.
    - **A `path:` source under a home** (a development machine) is hidden from the checker (`ProtectHome`): the
      evaluation works while the store holds that source under the lock's hash, and otherwise every proposal
      there is "not checked". Not seen on such a machine.
    - **The checker's errors are kept nowhere.** A proposal "not checked" says why in the broker's words (no
-     checker, not started, not in time, no answer, the configuration as it is fails too), not Nix's: to see
-     Nix's, an administrator runs `torq --check-tree <tree>` themselves (the tree is in the proposal's entry).
-   - **One check at a time for the whole machine.** A second agent's proposal waits 30 seconds for its turn
-     and is then told to try again. No test holds two at once.
+     checker, not started, not in time, no answer, or "the check could not be made on this machine right
+     now": the change and the configuration as it is both failed), not Nix's: to see Nix's, an administrator
+     runs `torq --check-tree <tree>` themselves (the tree is in the proposal's entry).
+   - **What tells a failure that is not the configuration's is Nix's words** (`cli/src/nixerr.rs` `outside`):
+     Nix exits 1 for a daemon it cannot reach or a full disk as for a wrong configuration. The checker reads
+     only how Nix's last error begins or how the system's own words end it, in English (the unit sets
+     `LANG=C.UTF-8`); a Nix that words these otherwise is not recognised, and then the broker's second
+     evaluation (the configuration as it is, every time: nothing is kept between checks) is what keeps a
+     change from being refused for it. A change whose own error happens to end in those words ("… No space
+     left on device") would be recorded "not checked" instead of refused: it then fails when applied.
+   - **One check at a time for the whole machine**: see 6zzw.
    - **A proposal applied on a moved configuration (ADR-053) was checked on the one it was prepared on.**
    - **Each check leaves a copy of the config repo and the system's derivations in the store**, as a person's
      commit does, until a garbage collection.
@@ -1970,15 +1974,54 @@ Its §5 lists claims without a test.
    - **torqcli's own word for a name that is no package** (`set … packages nosuch`: "is not a package in
      this machine's nixpkgs (`show packages <word>` searches them)") is the same for an agent; its search
      answers by name only (the names torqcli has, no descriptions).
-   - **The other agent VM tests still use stub repos**: the real checker runs there on every proposal and
-     finds the stub not valid as it is, so each is recorded "not checked", which those tests do not assert.
+   - **The other agent VM tests still use stub repos** (an empty `flake.nix`): the real checker runs there on
+     every agent's proposal and finds the stub not valid changed and as it is, so each is recorded "not
+     checked" ("the check could not be made on this machine right now"), which each of them now asserts
+     once: `agent`, `agent-run`, `agents-per-person`, `socket`, `agent-proposals`, `agent-mcp`,
+     `agent-service`.
    - **Where the store has less free room than `min-free`** (1 GiB by default) Nix collects garbage before it
-     adds anything, a check's copy of the config repo included: in a test VM that took half a minute for each
-     check, and the three agent VM tests set `nix.settings.min-free = 0` for it. On a real machine that
-     short of room a check is as slow as any other use of Nix there, and a slow check ends as "not checked".
+     adds anything, a check's copy of the config repo included. Measured in a test VM (2026-11-16): the
+     same evaluation of a stub repo took 40 seconds with TorqOS's settings, 0.4 with `min-free = 0`, and
+     37.5 with only `fsync-store-paths` off, so it is the collection, not the syncing. A test VM has under
+     half a gigabyte to write its store in (a tmpfs over the host's store), so it is always below
+     `min-free` and no collection can get it above: every check there collects again, and the client (30
+     seconds in these tests) gave up first. The first round set `min-free = 0` in three of the agent tests
+     and missed four that also have an agent propose (`agent`, `agent-run`, `agents-per-person`, `socket`):
+     the full check of c866781 failed in those four; all seven set it now. **On a real machine** this is
+     Nix doing what `min-free` asks: one collection when the store first drops under 1 GiB free, which
+     frees up to `max-free` (5 GiB) and is then not repeated; a check that meets it is slow once and, past
+     320 seconds, ends as "not checked". Only a machine whose store cannot be brought above 1 GiB free at
+     all would collect at every check, and at every person's commit and every other use of Nix too. Note
+     that the collection is started by the checker's copy, as it would be by any allowed account's.
    - **In a VM the evaluation is slow**: 78 seconds for the first check in `tests/agent-check.nix` (29 of
      CPU; the store is read over 9p), against about 16 on the check host. With `fsync-store-paths` on, as
      TorqOS sets it, it took 4 minutes 10 there, near the unit's 300 seconds, so the test turns it off for
      its VM. On a slow disk a real machine's first check after an update could come near the limit too: it
      would be recorded "not checked", not refused.
    - **Not seen on the laptop** with the real Claude Code, where the fault was found.
+
+6zzw. **What the check of an agent's proposal does not bound (ADR-056 5, corrected 2026-11-16 after an
+  independent review; nothing here changed behaviour).**
+   - **An owner who widens `torq.agent.mayPropose.settings` widens what is evaluated unseen.** The checker
+     evaluates an agent's change before any person has read it. With the default list (a person's packages
+     only, names from the machine's own nixpkgs, which `modules/packages.nix` restricts) the agent's data
+     names no derivation of its choosing. That is the list's doing, not a property of data: a setting whose
+     type is a package takes a name and resolves it anywhere in nixpkgs (`modules/nixos-settings.nix`
+     `package`, `attrByPath` at any depth), so a listed setting of that type lets the agent name any nixpkgs
+     attribute to be evaluated; a listed subtree whose values become a script (`systemd.services`) puts the
+     agent's text into a derivation written to the store. Import-from-derivation stays on (TorqOS's own
+     `modules/host.nix` reads tzdata while it evaluates), so an evaluation that reads a derivation's output
+     has the daemon build it, and **a build the daemon starts is outside the checker's unit**: not its 300
+     seconds, not its 3 GB, not its lack of network. Not reachable with the default list. Not tested with a
+     widened one.
+   - **One agent can keep the single checker busy.** There is one checker for the machine, and a proposal
+     waits 30 seconds for its turn before it is told "another proposal is being checked: try again shortly".
+     An agent whose changes are slow to evaluate holds it for up to 300 seconds a run (two runs for a change
+     found not valid), for as many proposals as it may have waiting (20) and refusals it may collect in an
+     hour (30): meanwhile another person's agent is told to try again. Nothing is ledgered against the one
+     that waited. No fairness between agents is built.
+   - **A grant from before 2026-11-16 ends without a word in the ledger.** A ledger that holds an old
+     `all-secrets` grant, or a session's grant from before phase 2 (ADR-055), reads it as nothing (it covers
+     no secret now): it stops counting at once, and no `trust_expired` entry is written for it, so the ledger
+     shows such a grant given and never ended. Someone who types the old `request system secret allow all
+     for <minutes>` is told that allowing every secret at once is gone, and to name the secret.

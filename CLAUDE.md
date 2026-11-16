@@ -201,9 +201,9 @@ removed since phase 2; the agent as it is now (ADR-055) is unreleased.
   Each use of a secret by an agent asks its
   person, unless the secret's rule says `without-asking` or a grant of that one secret covers it (ADR-052,
   amended 2026-11-16: two words, one kind of grant; a person reads no word about taint or sessions for it).
-- **Tests.** Unit tests are `#[test]` functions: torqcli 505, broker 334 (across its test binaries), wire 24,
+- **Tests.** Unit tests are `#[test]` functions: torqcli 506, broker 339 (across its test binaries), wire 24,
   secrets 15, agent 59 (+2 ignored) (run 2026-11-16 on `work/harness-p2`, after phase 2 removed the old loop
-  and its tests, after secrets were reduced to what they do, and after ADR-056). The
+  and its tests, after secrets were reduced to what they do, and after ADR-056 and its fix round). The
   `settings/` crate has no tests of its own; it is type-checked with `nix develop .#torq-settings`.
   VM tests are `checks` in `flake.nix`, one file each in `tests/`. CI's `test` workflow runs on pull
   requests, by hand and inside each release, **not on pushes to `main`**, and GitHub does not run the
@@ -216,7 +216,7 @@ removed since phase 2; the agent as it is now (ADR-055) is unreleased.
   `~/torq`; do not edit in another session's.
 - **Known limits** are in `docs/KNOWN-GAPS.md` (the desktop and launcher items 6zx and 6zy, and 6zz,
   `torq agent run`'s set-id sweep, are fixed; the agents' own are 6zzk to 6zzo, the approval flow's 6zzs, the bridge's 6zzt,
-  the old loop's removal 6zzu, the check of an agent's proposal 6zzv).
+  the old loop's removal 6zzu, the check of an agent's proposal 6zzv, what that check does not bound 6zzw).
 
 ## Working here
 

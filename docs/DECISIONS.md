@@ -3635,46 +3635,76 @@ content at the next), and a proposal must be judged on what it does, not on what
      What it can read is the world-readable system, the store and the config repo: nothing an agent's
      account cannot read, so nothing in its answer tells an agent what it could not have read itself.
   5. **`torq-check` may talk to the Nix daemon: the one deliberate change to who may.** The daemon decides
-     by the account, so the checker's is in `allowed-users` (never `trusted-users`: asserted, with its
-     having no group but its own). It has no home, no shell, no password, and nothing runs as it but the
-     broker's check. What this gives, said plainly: an allowed, untrusted client can add files to the store,
-     write derivations, and ask the daemon to build any derivation it can describe; it cannot write a store
-     path of its choosing, change the daemon's settings or alter what is there. What reaches the checker is
-     an agent's change, which is JSON data the policy admitted (the person's package names, values in the
-     subtrees the owner listed): data, in the machine's own Nix, cannot describe a derivation of the
-     agent's. That is the bound, and it is the policy's, not the daemon's. What does not bound it: the
-     unit's limits hold the checker, not a build the daemon starts for it (those run as the daemon's
-     builders, with the daemon's network); `substitute = false` is the client's own setting; and
-     `allow-import-from-derivation = false` cannot be set, because TorqOS's own `modules/host.nix` reads
-     tzdata while it evaluates (measured: with it the machine's own configuration fails). An owner who
-     lists a settings subtree whose values become a derivation's script (`systemd.services`, say) lets the
-     agent's data into what is written to the store as a derivation; evaluating the system's `drvPath`
-     builds none of it, and applying it is still the person's.
+     by the account, so the checker's is in `allowed-users`, never `trusted-users` (asserted: by its name,
+     by its group `@torq-check`, or as `*`). It has no group but its own, no home, no shell, a locked
+     password and no SSH key: each set by `modules/broker.nix` and asserted, not left to what NixOS gives a
+     system account (`tests/agent-assertions.nix` has each case). Nothing runs as it but the broker's
+     check. What this gives, said plainly: an allowed, untrusted client can add files to the store, write
+     derivations, and ask the daemon to build any derivation it can describe; it cannot write a store path
+     of its choosing, change the daemon's settings or alter what is there. What reaches the checker is an
+     agent's change, which is JSON data the policy admitted (the person's package names, values in the
+     subtrees the owner listed). **With the default list, that data names no derivation of the agent's
+     choosing and writes none**: a person's packages are names from the machine's own nixpkgs, which
+     `modules/packages.nix` restricts. That is the bound, and it is the policy's, not the daemon's.
+     **It is not a property of data as such** (corrected 2026-11-16, after review; the first text said an
+     agent's data "cannot describe a derivation" and that evaluation "builds none of it", which is too
+     strong). A setting whose type is a package takes a name and resolves it anywhere in nixpkgs
+     (`modules/nixos-settings.nix` `package`: `attrByPath`, at any depth), so an owner who lists such a
+     setting in `torq.agent.mayPropose.settings` lets the agent name any nixpkgs attribute to be
+     evaluated; one who lists a subtree whose values become a derivation's script (`systemd.services`,
+     say) lets the agent's data into what is written to the store as a derivation. And evaluation can
+     build: import-from-derivation stays on (`allow-import-from-derivation = false` cannot be set, because
+     TorqOS's own `modules/host.nix` reads tzdata while it evaluates; measured: with it the machine's own
+     configuration fails), so an evaluation that reads a derivation's output has the daemon build it, and
+     such a build is outside the unit's limits (it runs as the daemon's builders, with the daemon's
+     network and no time or memory limit of the unit's). `substitute = false` is the client's own setting.
+     So: not reachable with the default list; an owner who widens the list widens what is evaluated, and
+     possibly built, before any person has seen it (KNOWN-GAPS 6zzw). Applying is still the person's.
   6. **Three outcomes.** *Valid*: recorded, with `check: { tree, result: "valid", warnings }` in the
      entry. *Not valid*: refused and ledgered as every refusal of an agent's is, one clean line back
      ("refused: with this change the configuration is not valid: "nosuch" isn't a package."). *Could not be
-     checked* (no checker, it did not start, no answer in time, anything but the one line, or the
-     configuration as it is fails too): recorded, with `check: { tree, result: "not checked", why }`, and
-     both are told, the agent in torqcli's answer ("It could not be checked first (…): it may fail when
-     applied.") and the person before applying and on the Proposals page ("TorqOS could not check this
-     change beforehand (…): if it is not valid, applying it fails and changes nothing."). **Not valid only
-     if the same checker finds the configuration as it is valid**: where checking cannot work (the account
-     kept from the daemon, a `path:` source under /home that the unit cannot see and the store does not
-     hold) every proposal would otherwise be refused; it degrades to "not checked". That a commit's
-     configuration is valid is kept (`check-base` in the state folder), so it is evaluated once per commit,
-     and only when a change first fails on it. The checker's exit status is never read: a unit killed for
-     its time or memory ends as any failure does.
+     checked* (no checker, it did not start, no answer in time, anything but the one line, or the check
+     could not be made on this machine right now): recorded, with `check: { tree, result: "not checked",
+     why }`, and both are told, the agent in torqcli's answer ("It could not be checked first (…): it may
+     fail when applied.") and the person before applying and on the Proposals page ("TorqOS could not check
+     this change beforehand (…): if it is not valid, applying it fails and changes nothing."). **Not valid
+     only if the same checker, asked in the same check, finds the configuration as it is valid**: where
+     checking cannot work (the account kept from the daemon, a `path:` source under /home that the unit
+     cannot see and the store does not hold, a daemon that is down, a full disk) every proposal would
+     otherwise be refused; it degrades to "not checked", in the words "the check could not be made on this
+     machine right now" (not "this machine's configuration … does not pass the check either", which read
+     as a broken machine). **Nothing of an earlier check is kept** (amended 2026-11-16, after review). The
+     first version kept that a commit's configuration was valid (`check-base` in the state folder) and did
+     not ask again for that commit; then one legitimate refusal, followed by a daemon restart, a full disk
+     or a missing source, made every proposal on that commit "refused: … not valid: cannot open
+     connection…", ledgered and counted against the agent's hourly refusals. Now every change found not
+     valid has the configuration as it is asked again: a refusal costs two evaluations, and they are
+     bounded as refusals are (7). A `check-base` file an earlier broker left in the state folder is
+     ignored: nothing reads it. **The checker itself gives no verdict for what is plainly not the
+     configuration's**: Nix ended by a signal, Nix not reaching its daemon or its store, no space, no
+     memory (`cli/src/nixerr.rs` `outside`). Nix exits 1 for these as for a wrong configuration, so only
+     its words tell them apart, and as little of them is read as will do: how Nix's own last error begins
+     (the daemon, the store) or how the system's words for a failed call end it, never a word inside the
+     message, where a configuration's own text can be quoted. What that misses is taken for the
+     configuration's, and the second evaluation above is what catches it. A person's own `commit` says
+     what it said before. The checker's exit status is never read by the broker: a unit killed for its
+     time or memory ends as any failure does.
   7. **Locks and limits.** Vetted under the broker's lock; an agent that already has its refusals for the
      hour (30) starts no check, so checks are bounded as refusals are (and waiting proposals by 20); the
      lock is let go; the check runs under a lock of its own (`check.lock`: one at a time; another proposal
-     waits 30 seconds for its turn, then is told to try again), bounded at 320 seconds for the change and
-     the configuration together; the broker's lock is taken again, everything is vetted again from scratch,
-     and the tree must be the same one (a configuration that moved meanwhile is refused as stale, as
-     before). The broker reads at most 64 KiB of the checker's output, parses it strictly, keeps at most 8
-     warnings, cuts every string at 300 characters and replaces control characters as a refusal's reason
-     has them replaced. `--check-cmd` is one of the arguments no caller of the socket may send. A unit left
-     over by a broker that died is stopped before the next check starts, which only the holder of
-     `check.lock` does.
+     waits 30 seconds for its turn, then is told "another proposal is being checked: try again shortly",
+     which is busy, not a refusal, and ledgers nothing). Each run of the checker is waited for 320 seconds
+     (the unit stops itself at 300): the change, and, only if it is found not valid, the configuration as
+     it is, with a time of its own, so that a change slow to fail is not taken for one that could not be
+     checked. A check is so at most 30 + 2 × 320 seconds. The broker's lock is taken again, everything is
+     vetted again from scratch, and the tree must be the same one (a configuration that moved meanwhile is
+     refused as stale, as before). The broker reads at most 64 KiB of the checker's output, parses it
+     strictly, keeps at most 8 warnings, cuts every string at 300 characters and replaces with `?` every
+     control character and every character that hides or reorders text (bidirectional controls,
+     zero-width and other invisible characters: torq-wire's one table, `clean::hidden`, which torqcli's
+     and the broker's own printing now share). `--check-cmd` is one of the arguments no caller of the
+     socket may send. A unit left over by a broker that died is stopped before the next check starts,
+     which only the holder of `check.lock` does.
 - **Considered and not chosen:** *the agent's account in `allowed-users`* (the fence, given up); *the broker
   evaluating as root* (agent-influenced Nix evaluated by root, and the broker stops being small); *a private
   store for the checker, seeded with what an evaluation reads* (no daemon at all, which is cleaner: 491 MB
@@ -3682,7 +3712,8 @@ content at the next), and a proposal must be judged on what it does, not on what
   proves too wide); *no check for an agent's proposals* (a person approves what cannot build; the build
   fails and nothing changes, so it is safe, and it is what "not checked" still means).
 - **Consequences:** an agent's proposal takes as long as an evaluation (about 17 seconds on the check host,
-  a gigabyte of memory at its peak); torq-mcp gives a proposal 10 minutes. A proposal applied on a
+  a gigabyte of memory at its peak), and one that is refused as not valid takes two; torq-mcp gives a
+  proposal 12 minutes (more than the broker's 30 + 2 × 320 seconds). A proposal applied on a
   configuration that has moved since (ADR-053) was checked on the one it was prepared on: its entry names
   the tree. Each check leaves the copy of the config repo and the system's derivations in the store, as a
   person's commit does, for the garbage collector. A person's own commit is checked as before, by their own
