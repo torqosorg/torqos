@@ -291,7 +291,8 @@ let
       (foreignOnly { name = "another-instance"; files = pair; brought = { "torq-agent@mallory.service" = ours; }; } "torq-agent@mallory.service: named as the agent's units are")
       (foreignOnly { name = "a-timer"; files = pair; brought = { "torq-agent@alice.timer" = "[Timer]\nOnBootSec=1\n"; }; } "torq-agent@alice.timer: named as the agent's units are")
       (foreignOnly { name = "a-socket-template"; files = pair; brought = { "torq-agent@.socket" = socket; }; } "torq-agent@.socket: named as the agent's units are")
-      (foreignOnly { name = "a-link-to-nothing-so-named"; files = pair; extra = "ln -s /nix/store/nothing-here $out/torq-agent@bob.service"; } "torq-agent@bob.service: named as the agent's units are")
+      # (Refused under the Delegate rule as well, which cannot read it: `a-link-to-nothing`, above.)
+      (foreign { name = "a-link-to-nothing-so-named"; files = pair; extra = "ln -s /nix/store/nothing-here $out/torq-agent@bob.service"; } "torq-agent@bob.service: named as the agent's units are")
     ];
 
   # The check as a configuration carries it: a real configuration's unit directory, as NixOS builds it.
