@@ -151,7 +151,7 @@ One consistent deletion, so nothing dead is left behind.
       and records it as valid, refuses it as not valid, or records it as not checked and tells the agent and
       the person. The agent stays refused at the daemon. (Built; the crates' unit tests and the VM test
       `agent-check`, with a real evaluation, ran: below. Not seen on the laptop yet.)
-- [ ] One full check.
+- [x] One full check: passed on the check host on 2026-11-16 at f82d281, on its third run (the first two, and why they failed, are under "As built"). Then the laptop, and the owner looks (not yet).
 
 ### Phase 3: the model proxy and the audit
 - [ ] `torq-model-proxy`: a small Rust service, an account of its own, listening on this machine only.
@@ -463,3 +463,11 @@ Kimi); a person's own Claude Code outside the fence.
     or a signal for real (the unit tests give `nixerr::outside` Nix's words as Nix 2.34 writes them; the
     VM test has the daemon refuse the checker's account, and the checker says so); a widened
     `mayPropose.settings`; anything on the laptop.
+- **Phase 2's full checks** (2026-11-16, the check host, `nix flake check --keep-going --max-jobs 2`). Three runs.
+    At c866781: failed in four agent VM tests (above). At 04a87e0: failed in two. `installer` was cut off by its
+    own one-hour limit in its last step, and again when run alone: the test takes 3530 to 3650 seconds there, so
+    its limit is now ninety minutes (f82d281, the only change after 04a87e0). `desktop-defaults` waited 90
+    seconds for the agent's applet after login and did not see it; run alone at the same commit it passed, the
+    applet up in 14 seconds, and the cause was not found. At f82d281: every check passed (everything but
+    `installer` was already built from the run before, `desktop-defaults` from its run alone). Merged to `main`
+    after that. Not run on any machine yet: the proposal checker with a real configuration outside a VM.

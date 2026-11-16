@@ -133,8 +133,8 @@ The agent's plan (ADR-055, 2026-11-15; `docs/HARNESS-AS-A-SYSTEM.md` is the plan
 machine's agent is the person's coding tool, Claude Code first; TorqOS writes no agent. Phase 1, on `main`, is
 the bridge: `torq agent engine claude-code`, the agent's service running that engine as `torq-agent-<person>`,
 `claude` typed in a terminal (`torq agent claude`), and a person's standing instructions for their agent (`torq
-agent instructions`). Phase 2 (2026-11-16, built on `work/harness-p2`; on `main` only once the controller has
-merged it after its full check) removed TorqOS's own loop: `torq-doctor`, `torq doctor`, `torq agent propose`,
+agent instructions`). Phase 2 (2026-11-16, on `main` since its full check passed at f82d281)
+removed TorqOS's own loop: `torq-doctor`, `torq doctor`, `torq agent propose`,
 the settings under `torq agent doctor` and `torq agent model` with the local model's unit, the
 `torq-resident-<person>` accounts, the broker's resident rule and session trust. Every proposal of an agent's
 waits for its person. Do not bring any of it back as a stub: a local model returns with opencode (phase 4).
@@ -208,8 +208,8 @@ removed since phase 2; the agent as it is now (ADR-055) is unreleased.
   VM tests are `checks` in `flake.nix`, one file each in `tests/`. CI's `test` workflow runs on pull
   requests, by hand and inside each release, **not on pushes to `main`**, and GitHub does not run the
   full `nix flake check` for development: it runs on the check host. The last full `nix flake check`
-  passed on 2026-11-16 at bf07824 (phase 1 of `docs/HARNESS-AS-A-SYSTEM.md`); phase 2 has not had one yet
-  (what was run for it is in that file); the Secrets page and the agent's UIs
+  passed on 2026-11-16 at f82d281 (phase 2 of `docs/HARNESS-AS-A-SYSTEM.md`, its third run: what the first two failed for
+  is in that file); the Secrets page and the agent's UIs
   are type-checked only, and no test presses a button in the approval dialog (a VM test has the applet see a waiting use and send its yes). Say what was actually run; do not write that
   something is tested when it only exists.
 - **The dev host** is torq5, "the check host" (user `viper`, repo `~/torq`), an x86_64 ESXi VM with KVM, since 2026-11-15: development and every heavy build (`nix flake check`, VM tests, the images) run there. The owner's laptop (hostname `torqlaptop`, user `cwdavis`) is a TorqOS machine, the only one the desktop runs on, and is the try-it-out machine: it follows the `tested` branch and nothing is developed on it. Session worktrees live beside
