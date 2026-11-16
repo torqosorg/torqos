@@ -188,23 +188,20 @@ released (doctor mode, proposals, session trust); the resident agent and its des
   proposals, session trust, the resident agent (`torq-agent@<person>`, as `torq-resident-<person>`) and
   `torq-mcp` exist on `main`. Doctor is off by default, no model ships, and no real model has ever been
   tried with TorqOS's own loop (the tests use a scripted endpoint and a stand-in MCP client). The
-  default allow-list is the owner's own packages. On `work/harness` the agent's service is the bridge to
+  default allow-list is the owner's own packages. Since 2026-11-16 the agent's service on `main` is the bridge to
   Claude Code instead (`torq agent engine`): the real Claude Code 2.1.316 was driven through it once, by
   hand, outside its unit, on the check host (2026-11-15); inside the unit only a stand-in has run.
 - **Tests.** Unit tests are `#[test]` functions: torqcli 473, broker 338 (+1 ignored, across its test
-  binaries), wire 23, secrets 15, agent 72 (+1 ignored) (run 2026-11-15; on `work/harness`: torqcli 498,
+  binaries), wire 23, secrets 15, agent 72 (+1 ignored) (run 2026-11-15; with the bridge, before its fix round: torqcli 498,
   wire 23, agent 87 (+2 ignored); the broker's and the secrets daemon's ran as their packages were built). The
   `settings/` crate has no tests of its own; it is type-checked with `nix develop .#torq-settings`.
   VM tests are `checks` in `flake.nix`, one file each in `tests/`. CI's `test` workflow runs on pull
   requests, by hand and inside each release, **not on pushes to `main`**, and GitHub does not run the
   full `nix flake check` for development: it runs on the check host. The last full `nix flake check`
-  passed on 2026-11-14 (`docs/HANDOFF-agents.md` has the commits); the Secrets page and the agent's UIs
+  passed on 2026-11-16 at bf07824 (phase 1 of `docs/HARNESS-AS-A-SYSTEM.md`); the Secrets page and the agent's UIs
   are type-checked only, and no test presses a button in the approval dialog (a VM test has the applet see a waiting use and send its yes). Say what was actually run; do not write that
   something is tested when it only exists.
-- **The dev host** is the owner's laptop (hostname `torqlaptop`, user `cwdavis`, repo `~/torq`), a
-  TorqOS machine that is also the machine the desktop runs on. It is shared and throttled: heavy
-  builds (`nix flake check`, VM tests, the images) go to the second machine, "the check host", an
-  x86_64 ESXi VM with KVM. On the laptop use one job at a time. Session worktrees live beside
+- **The dev host** is torq5, "the check host" (user `viper`, repo `~/torq`), an x86_64 ESXi VM with KVM, since 2026-11-15: development and every heavy build (`nix flake check`, VM tests, the images) run there. The owner's laptop (hostname `torqlaptop`, user `cwdavis`) is a TorqOS machine, the only one the desktop runs on, and is the try-it-out machine: it follows the `tested` branch and nothing is developed on it. Session worktrees live beside
   `~/torq`; do not edit in another session's.
 - **Known limits** are in `docs/KNOWN-GAPS.md` (the desktop and launcher items 6zx and 6zy, and 6zz,
   `torq agent run`'s set-id sweep, are fixed; the agents' own are 6zzk to 6zzo, the approval flow's 6zzs, the bridge's 6zzt).

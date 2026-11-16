@@ -126,7 +126,7 @@ The person sets the engine, and the desktop's AI is Claude Code.
 - [x] Tests: a stand-in engine that speaks the same JSON, in unit tests and the VM tests; the real
       Claude Code driven once by hand on the check host, and what was seen written down here. (The VM
       tests `agent-service` and `desktop-agent` were run; the others that changed only evaluate so far.)
-- [ ] One full check. Then the laptop, and the owner looks.
+- [x] One full check: passed on the check host on 2026-11-16 at bf07824 (`nix flake check`, every VM test). Then the laptop, and the owner looks (not yet).
 
 ### Phase 2: TorqOS's own loop is removed
 One consistent deletion, so nothing dead is left behind.
