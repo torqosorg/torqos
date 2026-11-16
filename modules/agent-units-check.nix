@@ -25,22 +25,18 @@
 #      configuration's becomes its `overrides.conf`), and an alias (`aliases`) replaces the link with another
 #      unit's name: neither link is then the expected one;
 #    - nothing else is named as the agent's units are (`torq-agent@…`: another instance, the template, a timer
-#      or a path unit of that name; and `torq-agent-key@…`, the name the old loop's key unit had, which nothing
-#      writes any more and which stays refused, so that a unit so named is never taken for TorqOS's), but a mask
-#      (a link that ends at /dev/null: it can only keep a unit from starting);
+#      or a path unit of that name), but a mask (a link that ends at /dev/null: it can only keep a unit from
+#      starting);
 #    - no other name is a link to one of the agent's units (an alias of it: `other.service ->
 #      torq-agent@<person>.service`). systemd applies an alias's own drop-ins (`other.service.d`) to the unit
 #      it names, so an alias would be a way round the next line. The module gives its units no other name;
 #    - none of the agent's units has a drop-in directory, and none of the other directories systemd applies to
 #      them is there. The list is systemd's own search, read in the source of the systemd this flake builds
-#      (260.5, src/shared/dropin.c, unit_file_find_dirs), for `torq-agent@<person>.service` and the socket
-#      (and for a unit named `torq-agent-key@<person>.service`, the old loop's, refused as above):
+#      (260.5, src/shared/dropin.c, unit_file_find_dirs), for `torq-agent@<person>.service` and the socket:
 #        the unit's own                      torq-agent@<person>.service.d
 #        its template's                      torq-agent@.service.d
 #        the name cut at each dash of the part before the `@`, as a template and with the instance kept
 #                                            torq-.service.d, torq-@.service.d, torq-@<person>.service.d
-#                                            (and for the old key unit's name torq-agent-.service.d,
-#                                            torq-agent-@.service.d, torq-agent-@<person>.service.d)
 #        every unit's of the type            service.d, socket.d
 #      A dash in the person's name cuts nothing: only the part before the `@` is cut. The module writes no
 #      drop-in, so any that is there is someone else's: NixOS's `overrides.conf` included, which is there only
@@ -105,20 +101,19 @@ pkgs.runCommand "torq-agent-units-its-own"
     case "$name" in
       # Only links to other units, by name: nothing is read from them as settings (see above).
       *.wants | *.requires | *.upholds) continue ;;
-      service.d | socket.d | torq-.service.d | torq-.socket.d | torq-agent-.service.d | torq-agent-.socket.d \
-      | torq-@*.service.d | torq-@*.socket.d | torq-agent-@*.service.d | torq-agent-@*.socket.d)
+      service.d | socket.d | torq-.service.d | torq-.socket.d | torq-@*.service.d | torq-@*.socket.d)
         echo "$name: a drop-in directory systemd also applies to the agent's units; this configuration writes none" >> "$foreign"
         holds "$entry" >> "$foreign"
         generic=1
         continue
         ;;
-      torq-agent@* | torq-agent-key@*) ;;
+      torq-agent@*) ;;
       *)
         # Another name that is a link to one of the agent's units: an alias, whose drop-ins would be the agent's.
         if [ -L "$entry" ]; then
           to=$(readlink -- "$entry")
           case "''${to##*/}" in
-            torq-agent@* | torq-agent-key@*)
+            torq-agent@*)
               echo "$name: another name for the agent's unit ''${to##*/} (a link to it; systemd would apply $name.d to the agent's unit); this configuration gives the agent's units no other name" >> "$foreign"
               ;;
           esac

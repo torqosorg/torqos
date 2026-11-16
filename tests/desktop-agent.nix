@@ -6,7 +6,7 @@
 # with no agent is told so; and the window is one a person — started again, the one open stays the only one.
 # Step 4's entry points: `ask` in the login shell, the launcher's plugin where pop-launcher looks, a crash offered
 # with nothing sent until the person asks, Super+Shift+A opening the window (Super+A still the App Library's). The
-# agent's engine is Claude Code, standing in (as in tests/agent-service.nix); doctor mode is off.
+# agent's engine is Claude Code, standing in (as in tests/agent-service.nix).
 { pkgs, self }:
 
 let

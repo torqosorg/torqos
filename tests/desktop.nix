@@ -287,7 +287,7 @@ pkgs.testers.runNixOSTest {
         assert code == 0, (code, p)
         code, v = in_her_session({"args": ["--json", "apply", str(p["seq"])]})
         assert code == 0, (code, v)
-        # Her agent's account (a coding tool's, so its session is one the broker cannot see into) uses it: it waits.
+        # Her agent's account (its session is one the broker cannot see into) uses it: it waits.
         code, s = as_account("torq-agent-alice", {"args": ["--json", "session-start"]})
         assert code == 0, (code, s)
         use = f"curl -s -o /tmp/use.body -w '%{{http_code}}' -H 'X-Torq-Session: {s['session']}' -H 'X-Torq-Reason: listing the repositories' http://127.0.0.1:7800/user/alice/gh/api.example.test/echo > /tmp/use.status"

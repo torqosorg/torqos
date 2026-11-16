@@ -180,17 +180,17 @@ pkgs.testers.runNixOSTest {
         machine.wait_until_succeeds(f"test -s /tmp/s-{user}{tag}", timeout=60)
         return int(machine.succeed(f"cat /tmp/s-{user}{tag}").strip()), machine.succeed(f"cat /tmp/b-{user}{tag}")
 
-    with subtest("dev's agent account (a coding tool's, not the resident agent) starts tainted: each use waits for dev, and only dev answers"):
-        # One agent per person (ADR-051 3): `torq-agent` in dev's rules is dev's agent, torq-agent-dev. Only the
-        # resident agent starts a session untainted; every other program of the agent account is tainted from its
-        # first request (`not-the-resident-agent`), so its use waits at the broker for dev (ADR-052 4,
-        # amended 2026-11-13), under a number, and sends nothing until dev says yes.
+    with subtest("a session of dev's agent's starts tainted: each use waits for dev, and only dev answers"):
+        # One agent per person (ADR-051 3): `torq-agent` in dev's rules is dev's agent, torq-agent-dev. Every
+        # session of an agent account's is tainted from its start (the broker cannot see what its programs
+        # read), so its use waits at the broker for dev (ADR-052 4, amended 2026-11-13), under a number, and
+        # sends nothing until dev says yes.
         code, s = ask("torq-agent-dev", {"args": ["--json", "session-start"]})
         assert code == 0, (code, s)
         session = s["session"]
         n = len(requests())
         begin("torq-agent-dev", "/user/dev/gh/api.example.test/echo", "-H", f"X-Torq-Session: {session}", "-H", "X-Torq-Reason: listing the repositories")
-        machine.wait_until_succeeds("su - dev -c 'torqcli show system secrets waiting' | grep -q 'ITS SESSION READ UNTRUSTED TEXT'", timeout=30)
+        machine.wait_until_succeeds("su - dev -c 'torqcli show system secrets waiting' | grep -q 'so it counts as having READ UNTRUSTED TEXT'", timeout=30)
         w = waiting("dev")
         assert len(w) == 1 and w[0]["facts"]["secret"] == "gh" and w[0]["facts"]["host"] == "api.example.test" and w[0]["facts"]["tainted"] and w[0]["agent_says"] == "listing the repositories", w
         assert waiting("sam") == [], "asked of dev alone"
@@ -295,10 +295,9 @@ pkgs.testers.runNixOSTest {
         assert status == 200 and "sam-token-1" not in body and requests()[-1]["headers"]["Authorization"] == "Bearer sam-token-1", (status, body)
 
     with subtest("a grant lets the agent's uses of one secret through unasked: with dev's password, for minutes, from a session that read untrusted text only where it says so, and until dev ends it"):
-        # Every session here is the agent account's own, so tainted from its start: there is no resident agent on
-        # this machine to start a clean one. So what a grant that does not say tainted-too lets through (a clean
-        # session's use) is not shown here; that is broker/tests/secrets.rs's. Nor is "this session"
-        # (`allow <name> session`).
+        # Every session of an agent's is tainted from its start. So what a grant that does not say tainted-too
+        # would let through (a clean session's use) cannot be shown: no agent has such a session (the rule is
+        # the unit tests' in broker/src/session.rs). Nor is "this session" (`allow <name> session`).
         PASSWORD = "Torq-sock-2210"
         def entries(kind):
             return [e for e in (json.loads(l) for l in machine.succeed("torq-broker --json log --brief").splitlines()) if e["kind"] == kind]
@@ -448,7 +447,7 @@ pkgs.testers.runNixOSTest {
         ssh = f"SSH_AUTH_SOCK={sock} ssh -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=/tmp/agent-known -o IdentitiesOnly=no"
         listed = machine.succeed(f"su -s /bin/sh torq-agent-dev -c 'SSH_AUTH_SOCK={sock} ssh-add -l'")
         assert "torq:dev/deploy" in listed, listed
-        # Its session started tainted (not the resident agent): each signature waits for dev, who says no here.
+        # Its session started tainted, as an agent's does: each signature waits for dev, who says no here.
         machine.succeed(f"rm -f /tmp/ssh-agent-dev; su -s /bin/sh torq-agent-dev -c '{ssh} git@git.example.test echo signed-in; echo $? > /tmp/ssh-agent-dev' >&2 &")
         machine.wait_until_succeeds("su - dev -c 'torqcli show system secrets waiting' | grep -q 'to sign in over SSH to git.example.test'", timeout=60)
         w = waiting("dev")

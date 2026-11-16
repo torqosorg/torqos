@@ -9,8 +9,12 @@
 #   runs the engine for the desktop's AI and `torq ask`;
 # - `torq agent run [--share <folder>] -- <program>`: any program at a terminal, as the agent;
 # - `claude`, typed plainly (`torq.agent.plainCommand`): Claude Code as the agent, in the folder the person is in.
-# TorqOS's own loop (doctor mode, modules/ai.nix) is still in the tree and goes in phase 2
-# (docs/HARNESS-AS-A-SYSTEM.md).
+# TorqOS's tools for it (`torq-mcp`: reading the machine, proposing a change) are installed with the coding tools;
+# whether they may read the system journal is `torq.agent.journal`. TorqOS has no agent loop or model of its
+# own (removed in phase 2 of ADR-055, with the settings under `torq agent doctor` and `torq agent model`).
+#
+# All of `torq.*` is never the agent's to propose (ADR-041): it cannot change its own engine, tools or journal
+# access.
 { config, lib, pkgs, utils, ... }:
 
 let
@@ -18,25 +22,18 @@ let
   agentOf = person: "torq-agent-${person}";
   # Each agent account, and the person it serves: the broker's map (broker.json), and the accounts below.
   # (Only names that fit: one too long is the assertion's to say, below, not NixOS's abort.)
-  # The old loop's second account for each person (ADR-051 3, amended 2026-11-11). Nothing runs as it any more
-  # (ADR-055: the agent's service runs the person's engine, as the agent account); it is still made where doctor
-  # mode is on, for the broker's rule about it, and goes with both (docs/HARNESS-AS-A-SYSTEM.md, phase 2).
-  residentOf = person: "torq-resident-${person}";
-  # The longest account made for a person must fit (31 characters, as NixOS takes a group's): the agent's, and
-  # where doctor mode is on the old loop's `torq-resident-<person>`, which is three longer.
-  longestOf = p: if resident then residentOf p else agentOf p;
-  nameLimit = if resident then 17 else 20;
-  fits = p: lib.stringLength (longestOf p) <= 31;
+  # The account made for a person must fit (31 characters, as NixOS takes a group's): `torq-agent-` and a name
+  # of at most 20.
+  nameLimit = 20;
+  fits = p: lib.stringLength (agentOf p) <= 31;
   # The launcher's sudo rules that would let its caller set the environment (SETENV), as text or as rules.
   isLauncher = c: lib.hasInfix "torq-agent-run" (if builtins.isString c then c else c.command);
   launcherSetenv = lib.filter (c: isLauncher c && !(builtins.isString c) && builtins.elem "SETENV" c.options) (lib.concatMap (r: r.commands) config.security.sudo.extraRules)
     ++ lib.filter (l: lib.hasInfix "torq-agent-run" l && lib.hasInfix "SETENV" l) (lib.splitString "\n" config.security.sudo.extraConfig);
-  personsLikeAgents = lib.attrNames (lib.filterAttrs (n: u: u.isNormalUser && (lib.hasPrefix "torq-agent" n || lib.hasPrefix "torq-resident" n)) config.users.users);
+  personsLikeAgents = lib.attrNames (lib.filterAttrs (n: u: u.isNormalUser && lib.hasPrefix "torq-agent" n) config.users.users);
   agents = lib.listToAttrs (map (p: lib.nameValuePair (agentOf p) p) (lib.filter fits cfg.people));
   # Where the agent's service is (its socket, its unit): where an engine is chosen (ADR-055 1).
   bridged = cfg.engine != null;
-  # Where the old loop's accounts are still made, and the broker's map of them: where doctor mode is on.
-  resident = config.torq.agent.doctor.enable;
   # Any torq-agent@ unit this configuration writes (an instance or the template) whose text delegates its control
   # group. A unit file a package brings (systemd.packages) is not in systemd.units, so not seen here: it is a file
   # inside a built package, which evaluation cannot read. Those are read in the units as built (unitsCheck).
@@ -120,14 +117,14 @@ let
     serviceConfig = {
       # The bridge (agent/src/service): it runs the engine named here, hands it each question, and passes on
       # what it says. `bridged` (below) says this unit is only where an engine is chosen.
-      ExecStart = "${config.torq.agent.doctor.package}/bin/torq-agent-service ${person} ${toString cfg.engine}";
+      ExecStart = "${cfg.package}/bin/torq-agent-service ${person} ${toString cfg.engine}";
       # The listening socket as standard input (Accept=no): the program takes it from there.
       StandardInput = "socket";
       StandardOutput = "journal";
       StandardError = "journal";
       # The person's one agent account (ADR-055 2): the engine runs as it, as every program `torq agent run`
-      # starts does, and so does the bridge that starts it. The broker takes whatever arrives from this
-      # account for a coding tool's, tainted: each proposal waits for the person (broker/src/socket.rs).
+      # starts does, and so does the bridge that starts it. Whatever this account proposes at the broker
+      # waits for the person, who reads and approves each proposal (broker/src/session.rs).
       User = agent;
       Group = agent;
       # What the service keeps (the conversation's name at the engine, its count: agent/src/service/kept.rs),
@@ -187,7 +184,6 @@ let
       # Not PrivateDevices: torq-mcp's rfkill and lsblk read devices.
     };
   }) agents;
-  residents = lib.optionalAttrs resident (lib.listToAttrs (map (p: lib.nameValuePair (residentOf p) p) (lib.filter fits cfg.people)));
   # Claude Code for the agents (ADR-051 5, `torq agent tools`): the version dev mode pins (modules/dev.nix), unfree,
   # so only where `torq unfree` allows it — else the assertion below says so, and nothing unfree is evaluated.
   claudeChosen = builtins.elem "claude-code" cfg.tools;
@@ -225,7 +221,39 @@ in
     (lib.mkRemovedOptionModule [ "torq" "agent" "service" "enable" ] ''
       The agent's service is there where an engine is chosen: set torq.agent.engine (`set torq agent engine
       claude-code`) to have it, and leave it unset to have none.'')
+    # Removed with TorqOS's own agent loop (ADR-055, phase 2): `torq doctor`, `torq agent propose`, the model
+    # they asked and the local model's service. Each whole subtree is one removed option, so that any setting
+    # left under it in a machine's configuration is refused with these words, and not as an unknown option.
+    (lib.mkRemovedOptionModule [ "torq" "agent" "doctor" ] ''
+      TorqOS no longer has an agent loop of its own (`torq doctor`, `torq agent propose`): the machine's agent
+      is the coding tool you choose (`set torq agent engine claude-code`). Delete what is set under it: in
+      torqcli, `configure`, `delete torq agent doctor`, `commit`. If `torq agent doctor journal` was on (the
+      agents may read the system journal), that setting is now `torq agent journal`: `set torq agent journal
+      true` in the same commit keeps it.'')
+    (lib.mkRemovedOptionModule [ "torq" "agent" "model" ] ''
+      TorqOS no longer runs a model of its own on the machine (llama.cpp, for `torq doctor`): the machine's
+      agent is the coding tool you choose (`set torq agent engine claude-code`), which asks its own service.
+      Delete what is set under it: in torqcli, `configure`, `delete torq agent model`, `commit`. A model file
+      it named by `path` is not removed from the disk: delete it yourself if you do not want it.'')
   ];
+
+  options.torq.agent.package = lib.mkOption {
+    type = lib.types.package;
+    description = "torq-agent package: the agent's service and torq-mcp (set by the TorqOS flake).";
+  };
+
+  options.torq.agent.journal = lib.mkOption {
+    type = lib.types.bool;
+    default = false;
+    description = ''
+      Whether the agents may read the system journal. Off by default. On, every agent account (each
+      person's, `torq-agent-<person>`) joins `systemd-journal`: every program run as the agent gains it,
+      the engine and any tool a person starts with `torq agent run` (Claude Code, which sends what it reads
+      to its own remote service), and TorqOS's own tool for it (torq-mcp's `read_journal`) is offered. What
+      it gains is read access to every service's and every account's log; the group writes, rotates and
+      deletes nothing. Off, the journal tool is not offered.
+    '';
+  };
 
   options.torq.agent.launcher = lib.mkOption {
     type = lib.types.package;
@@ -248,7 +276,7 @@ in
       for `claude` typed in a terminal, and for `torq agent run`. Each person's agent proposes packages only
       for that person (`users <name> packages`), and settings only as `mayPropose.settings` allows. The
       owner, by default. Each must be a person of this machine (a normal user), with a name of at most 20
-      characters (17 where doctor mode is on): NixOS takes an account's and a group's name of at most 31.
+      characters: NixOS takes an account's and a group's name of at most 31.
     '';
   };
 
@@ -308,14 +336,6 @@ in
     description = "Claude Code, as `torq agent tools` installs it for the agents (a VM test puts a stand-in here: the real one is unfree, and large).";
   };
 
-  options.torq.agent.residents = lib.mkOption {
-    type = lib.types.attrsOf lib.types.str;
-    internal = true;
-    readOnly = true;
-    default = residents;
-    description = "The old loop's second account for each person and the person it serves (the broker's map, /etc/torq/broker.json; ADR-051 3 amended 2026-11-11). Only where doctor mode is on; nothing runs as it since ADR-055.";
-  };
-
   options.torq.agent.agents = lib.mkOption {
     type = lib.types.attrsOf lib.types.str;
     internal = true;
@@ -363,7 +383,7 @@ in
       }
       {
         assertion = fits p;
-        message = "torq.agent.people: ${longestOf p} (the account made for ${p}'s agent) is longer than an account's and its group's name may be (31 characters on NixOS): ${p} is too long a name for an agent of its own (at most ${toString nameLimit} characters).";
+        message = "torq.agent.people: ${agentOf p} (the account made for ${p}'s agent) is longer than an account's and its group's name may be (31 characters on NixOS): ${p} is too long a name for an agent of its own (at most ${toString nameLimit} characters).";
       }
       {
         assertion = !(lib.hasPrefix "torq-agent" p);
@@ -414,6 +434,8 @@ in
       # The coding tools chosen (ADR-051 5, `torq agent tools`), in the agent's own profile
       # (/etc/profiles/per-user/torq-agent-<person>, on the launcher's PATH): on no person's PATH.
       packages = lib.optional (claudeChosen && claudeAllowed) cfg.claudeCode;
+      # The system journal, where `torq agent journal` gives it: read access, for everything run as the agent.
+      extraGroups = lib.optional cfg.journal "systemd-journal";
     }) agents;
     users.groups = lib.mapAttrs (_: _: { }) agents;
 
@@ -424,7 +446,9 @@ in
     environment.systemPackages = [ agentRun pkgs.acl ]
       ++ lib.optional (claudeChosen && claudeAllowed && cfg.plainCommand) plainClaude
       # torq-mcp, where a coding tool run as the agent finds it (/run/current-system/sw/bin/torq-mcp).
-      ++ lib.optional (cfg.tools != [ ]) config.torq.agent.doctor.package;
+      ++ lib.optional (cfg.tools != [ ]) cfg.package;
+    # What torq-mcp reads of this configuration: whether it offers its journal tool.
+    environment.etc."torq/agent.json".text = builtins.toJSON { inherit (cfg) journal; };
     # The coding tools chosen (the launcher links TorqOS into them at each start; the Agent page shows them),
     # and TorqOS's skill, linked into each (ADR-051 7): advice, which the tool may rewrite.
     # And the engine among them, if one is chosen (ADR-055 1): what the person's programs say answers them.
@@ -444,21 +468,6 @@ in
       Defaults!${agentRun}/bin/torq-agent-run closefrom_override, env_reset
     '';
   }
-
-  # The old loop's second accounts (ADR-051 3, amended 2026-11-11), where doctor mode is on: hidden — no
-  # password, no login, no home, no group but its own. Nothing runs as one since ADR-055; the broker still
-  # counts it as the person's agent (broker.json's `residents`) until its rule goes (phase 2).
-  (lib.mkIf resident {
-    users.users = lib.mapAttrs (account: person: {
-      isSystemUser = true;
-      group = account;
-      description = "${person}'s TorqOS agent, resident (the old loop's account; proposes, a person applies)";
-      home = "/var/empty";
-      createHome = false;
-      hashedPassword = "!";
-    }) residents;
-    users.groups = lib.mapAttrs (_: _: { }) residents;
-  })
 
   # Each person's agent, as a service (ADR-051 3, ADR-055 3): `torq-agent@<person>.service`, started by its
   # socket the first time the person asks (`torq ask`, the agent's window), so it costs nothing until then.

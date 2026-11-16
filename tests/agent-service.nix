@@ -1,7 +1,7 @@
 # NixOS VM test: each person's agent as a service (ADR-051 3, ADR-055 3) — `torq-agent@<person>.service` on
 # its socket, the bridge to the engine, with `torq ask` its terminal client and `torq agent run` beside it.
 # alice and bob each have an agent; the engine is Claude Code, standing in (tests/stand-in-engine.nix: the real
-# one is unfree and needs a sign-in). Doctor mode is off: nothing here is TorqOS's own loop. Each claim fails if
+# one is unfree and needs a sign-in). Each claim fails if
 # its guard is taken out:
 # - `torq agent engine` is in the configuration tree, and the service is there because an engine is chosen;
 # - each person's socket is theirs alone; bob cannot connect to alice's, and the service itself refuses anyone
@@ -13,7 +13,7 @@
 # - the answer is passed on, each tool in plain words; the conversation is the engine's, kept across a stop
 #   and a restart of the service, and ended by forget;
 # - what it proposes through TorqOS's tools is told by its number, and is the broker's, as alice's agent's,
-#   tainted as a coding tool's: it waits for alice;
+#   an agent's: it waits for alice;
 # - Ctrl-C stops the answer, all of it (a program in a session of its own, one out of sight), and the service
 #   stays; an engine that dies is said;
 # - a person's standing instructions (their own file) are given to the engine, in the service and by `claude`
@@ -80,7 +80,7 @@ pkgs.testers.runNixOSTest {
     users.users.carol = { isNormalUser = true; hashedPasswordFile = lib.mkForce null; hashedPassword = hash; packages = [ (pkgs.writeShellScriptBin "claude" "echo \"carol's own, as $(id -un)\"") ]; };
     torq.agent.people = [ "alice" "bob" ];
     torq.broker.rebuildCommand = "true";
-    # The engine: Claude Code chosen, allowed, installed for the agents, and standing in. No doctor mode.
+    # The engine: Claude Code chosen, allowed, installed for the agents, and standing in.
     torq.unfree.packages = [ "claude-code" ];
     torq.agent.tools = [ "claude-code" ];
     torq.agent.engine = "claude-code";
@@ -122,13 +122,19 @@ pkgs.testers.runNixOSTest {
     def starts(agent_home=home):
         return [json.loads(l) for l in machine.succeed(f"cat {agent_home}/.stand-in/starts").splitlines()]
 
-    with subtest("the engine is a setting of the tree, and nothing of doctor mode is here"):
+    with subtest("the engine is a setting of the tree, and nothing of TorqOS's own old loop is here"):
         schema = json.loads(machine.succeed("cat /etc/torq/nixos-schema.json"))
         found = [e for e in schema["settings"] if e.get("loc") == ["torq", "agent", "engine"]]
         assert len(found) == 1 and found[0]["type"]["name"] == "nullOr" and found[0]["type"]["elem"]["values"] == ["claude-code"], found
         assert not [e for e in schema["settings"] if e.get("loc") == ["torq", "agent", "service", "enable"]], "the old switch is gone"
         assert json.loads(machine.succeed("cat /etc/torq/agent-tools.json")) == {"tools": ["claude-code"], "engine": "claude-code", "plainCommand": True}
-        machine.fail("test -e /etc/torq/agent.json")
+        # Removed with the old loop (ADR-055, phase 2): its settings, its program, its second account.
+        gone = [e["loc"] for e in schema["settings"] if e.get("loc", [])[:3] in (["torq", "agent", "doctor"], ["torq", "agent", "model"])]
+        assert gone == [], gone
+        assert [e for e in schema["settings"] if e.get("loc") == ["torq", "agent", "journal"]], "the journal's setting is the agents' own now"
+        assert json.loads(machine.succeed("cat /etc/torq/agent.json")) == {"journal": False}
+        machine.fail("test -e /run/current-system/sw/bin/torq-doctor")
+        machine.fail("systemctl cat llama-cpp.service")
         machine.fail("getent passwd torq-resident-alice")
 
     with subtest("each person's socket, theirs alone; the service started by it, not before"):
@@ -277,16 +283,16 @@ pkgs.testers.runNixOSTest {
         assert "agent: looked at the alarms" in machine.succeed("cat /tmp/err")
         assert as_user("alice", "torq ask noise").strip() == "After the noise."
 
-    with subtest("what it proposes: its number, alice's agent's at the broker, tainted as a coding tool's, waiting for her"):
+    with subtest("what it proposes: its number, alice's agent's at the broker, waiting for her"):
         out = as_user("alice", "torq ask 'install htop' 2>/tmp/err")
         m = re.search(r"Proposed #(\d+)", out)
         assert m and f"Proposed #{m.group(1)}: it waits for you" in out and f"request system apply {m.group(1)}" in out and "I proposed htop." in out, out
         err = machine.succeed("cat /tmp/err")
-        assert "agent: proposed a change" in err and "Your agent's proposals always wait for you to read and approve them." in err, err
-        assert "coding-tool" not in err and "tainted" not in err, err
+        assert "agent: proposed a change" in err, err
+        assert "coding-tool" not in err and "taint" not in err and "taint" not in out, (out, err)
         p = [e for e in entries() if e["seq"] == int(m.group(1))][0]
         assert p["kind"] == "proposal" and p["actor"] == "agent" and p["data"]["agent"] == "torq-agent-alice" and p["data"]["agent_for"] == "alice", p
-        assert p["tainted"] is True and "coding-tool" in p["data"]["session"]["tainted_by"], p
+        assert p["tainted"] is True and p["data"]["session"]["tainted_by"][0] == "agent-program", p
         assert not [e for e in entries() if e["kind"] == "applied"], "nothing applied: it waits for alice"
 
     with subtest("what the sandbox rests on, at run time: tracing only one's own descendants, no user manager for the agent"):

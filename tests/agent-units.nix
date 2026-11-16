@@ -29,7 +29,7 @@ let
   # A unit directory as NixOS makes it: a package's unit files linked in, its directories linked file by file.
   # `files` are this configuration's; `brought`, a package's. The two are told apart as NixOS's are: by where
   # each link goes. What the check is told to expect: the agent's units among `files` (unless `expected` says).
-  isAgents = n: !(lib.hasInfix "/" n) && (lib.hasPrefix "torq-agent@" n || lib.hasPrefix "torq-agent-key@" n);
+  isAgents = n: !(lib.hasInfix "/" n) && lib.hasPrefix "torq-agent@" n;
   # What each expected unit is meant to say (`intended`): its own text among `files`, unless the case says
   # (one where the configuration was made to write another text than TorqOS's module means).
   laid = { name, files, brought ? { }, extra ? "", expected ? null, intended ? { } }:
@@ -58,8 +58,8 @@ let
   ours = "[Service]\nExecStart=/bin/true\nProtectControlGroups=true\n";
   socket = "[Socket]\nListenStream=/run/x\n";
   delegates = "[Service]\nDelegate=yes\n";
-  # The agent's three units, as this configuration's.
-  three = { "torq-agent@alice.service" = ours; "torq-agent@alice.socket" = socket; "torq-agent-key@alice.service" = ours; };
+  # The agent's two units, as this configuration's.
+  pair = { "torq-agent@alice.service" = ours; "torq-agent@alice.socket" = socket; };
   passes = name: files: extra: check (laid { inherit name files extra; });
   passesWith = args: check (laid args);
   # Refused, and for that file: the failed build's log says `says`, under the heading of the rule it broke.
@@ -170,94 +170,93 @@ let
   ownCases =
     # Each kind of setting, in the agent's own drop-in directory.
     lib.mapAttrsToList (kind: text:
-      foreignOnly { name = "sets-${kind}"; files = three; brought = { "torq-agent@alice.service.d/10-pkg.conf" = text; }; }
+      foreignOnly { name = "sets-${kind}"; files = pair; brought = { "torq-agent@alice.service.d/10-pkg.conf" = text; }; }
         "torq-agent@alice.service.d: a drop-in directory of the agent's units") settings
     ++ [
-      # The controls: the three units as this configuration's; other units' drop-ins and other "torq-" units;
+      # The controls: the two units as this configuration's; other units' drop-ins and other "torq-" units;
       # a mask of a name that is not expected, and this configuration's own mask of one that is (the expected
       # file itself a link to /dev/null); the directories of links.
-      (passesWith { name = "the-three"; files = three; })
-      (passesWith { name = "others-drop-ins"; files = three; brought = {
+      (passesWith { name = "the-pair"; files = pair; })
+      (passesWith { name = "others-drop-ins"; files = pair; brought = {
         "torq-broker.service" = ours; "torq-broker.service.d/x.conf" = settings.user; "user@.service.d/x.conf" = settings.user;
         "torq-agentx.service" = ours; "docker.socket.d/x.conf" = socket; "sockets.target.d/x.conf" = "[Unit]\nDescription=x\n";
       }; })
-      (passesWith { name = "masks"; files = three; extra = "ln -s /dev/null $out/torq-agent-key@bob.service; ln -s /dev/null $out/torq-agent@bob.socket"; })
-      (let masked = pkgs.runCommand "unit-torq-agent-key@alice.service" { } "mkdir $out && ln -s /dev/null $out/torq-agent-key@alice.service"; in
+      (passesWith { name = "masks"; files = pair; extra = "ln -s /dev/null $out/torq-agent@bob.service; ln -s /dev/null $out/torq-agent@bob.socket"; })
+      (let masked = pkgs.runCommand "unit-torq-agent@alice.socket" { } "mkdir $out && ln -s /dev/null $out/torq-agent@alice.socket"; in
         passesWith {
           name = "our-own-mask";
           files = { "torq-agent@alice.service" = ours; };
-          extra = "ln -s ${masked}/torq-agent-key@alice.service $out/";
+          extra = "ln -s ${masked}/torq-agent@alice.socket $out/";
           expected = {
             "torq-agent@alice.service" = "${package "our-own-mask-own" { "torq-agent@alice.service" = ours; }}/lib/systemd/system/torq-agent@alice.service";
-            "torq-agent-key@alice.service" = "${masked}/torq-agent-key@alice.service";
+            "torq-agent@alice.socket" = "${masked}/torq-agent@alice.socket";
           };
         })
-      (passesWith { name = "wants"; files = three; extra = "mkdir $out/torq-agent@alice.socket.wants $out/torq-agent-key@alice.service.upholds && ln -s ../x.service $out/torq-agent@alice.socket.wants/"; })
+      (passesWith { name = "wants"; files = pair; extra = "mkdir $out/torq-agent@alice.socket.wants $out/torq-agent@alice.service.upholds && ln -s ../x.service $out/torq-agent@alice.socket.wants/"; })
       # The agent's unit named in another unit's directory of links (a target that wants it): a name, no more.
-      (passesWith { name = "wanted-by-another"; files = three; extra = "mkdir $out/multi-user.target.wants $out/other.service.requires && ln -s ../torq-agent@alice.service $out/multi-user.target.wants/ && ln -s ../torq-agent@alice.socket $out/other.service.requires/"; })
+      (passesWith { name = "wanted-by-another"; files = pair; extra = "mkdir $out/multi-user.target.wants $out/other.service.requires && ln -s ../torq-agent@alice.service $out/multi-user.target.wants/ && ln -s ../torq-agent@alice.socket $out/other.service.requires/"; })
       # Other units' aliases, and drop-ins cut at a dash that are not the agent's (torq-broker-…, a unit named torq-x@).
-      (passesWith { name = "others-aliases"; files = three; brought = { "other.service" = ours; "torq-broker-.service.d/x.conf" = settings.user; "torq-x@.service.d/x.conf" = settings.user; };
+      (passesWith { name = "others-aliases"; files = pair; brought = { "other.service" = ours; "torq-broker-.service.d/x.conf" = settings.user; "torq-x@.service.d/x.conf" = settings.user; };
         extra = "ln -s other.service $out/another.service"; })
+      # A unit whose name only begins as the agent's account does (`torq-agent-…@`, the name the old loop's key
+      # unit had until phase 2 of ADR-055) is another unit: its file, its drop-ins and the directories systemd
+      # finds for it by cutting at its second dash are its own. systemd applies none of them to `torq-agent@…`
+      # (the part before the `@` there is `torq-agent`, cut once: `torq-`).
+      (passesWith { name = "a-unit-named-past-the-dash"; files = pair; brought = {
+        "torq-agent-key@alice.service" = ours; "torq-agent-key@alice.service.d/x.conf" = settings.exec-start; "torq-agent-key@.service.d/x.conf" = settings.exec-start;
+        "torq-agent-.service.d/x.conf" = settings.user; "torq-agent-@.service.d/x.conf" = settings.exec-start; "torq-agent-@alice.service.d/x.conf" = settings.exec-start;
+      }; extra = "ln -s ./torq-agent-key@alice.service $out/another-key.service"; })
 
       # What the files say (rule 3): this configuration's own file, as expected, with another text than TorqOS's
       # module means. Said by the unit and the setting, a line the unit has and a line it lacks.
-      (let meant = "[Service]\nExecStart=/bin/true\nUser=torq-resident-alice\nProtectHome=true\n"; in each "says-another-user" (map
-        (changedOnly { name = "says-another-user"; files = three // { "torq-agent@alice.service" = "[Service]\nExecStart=/bin/true\nUser=root\nProtectHome=true\n"; }; intended = { "torq-agent@alice.service" = meant; }; })
+      (let meant = "[Service]\nExecStart=/bin/true\nUser=torq-agent-alice\nProtectHome=true\n"; in each "says-another-user" (map
+        (changedOnly { name = "says-another-user"; files = pair // { "torq-agent@alice.service" = "[Service]\nExecStart=/bin/true\nUser=root\nProtectHome=true\n"; }; intended = { "torq-agent@alice.service" = meant; }; })
         [ "torq-agent@alice.service: User: the unit as built says \"User=root\", which TorqOS's module does not write"
-          "torq-agent@alice.service: User: the unit as built lacks \"User=torq-resident-alice\", which TorqOS's module writes" ]))
-      (changedOnly { name = "a-line-more"; files = three // { "torq-agent@alice.service" = ours + "ExecStartPre=+/bin/sh -c true\n"; }; intended = { "torq-agent@alice.service" = ours; }; }
+          "torq-agent@alice.service: User: the unit as built lacks \"User=torq-agent-alice\", which TorqOS's module writes" ]))
+      (changedOnly { name = "a-line-more"; files = pair // { "torq-agent@alice.service" = ours + "ExecStartPre=+/bin/sh -c true\n"; }; intended = { "torq-agent@alice.service" = ours; }; }
         "torq-agent@alice.service: ExecStartPre: the unit as built says \"ExecStartPre=+/bin/sh -c true\"")
-      (changedOnly { name = "a-line-less"; files = three // { "torq-agent@alice.service" = "[Service]\nExecStart=/bin/true\n"; }; intended = { "torq-agent@alice.service" = ours; }; }
+      (changedOnly { name = "a-line-less"; files = pair // { "torq-agent@alice.service" = "[Service]\nExecStart=/bin/true\n"; }; intended = { "torq-agent@alice.service" = ours; }; }
         "torq-agent@alice.service: ProtectControlGroups: the unit as built lacks \"ProtectControlGroups=true\"")
-      (changedOnly { name = "the-sockets-text"; files = three // { "torq-agent@alice.socket" = "[Socket]\nListenStream=/run/x\nSocketMode=0666\n"; }; intended = { "torq-agent@alice.socket" = socket; }; }
+      (changedOnly { name = "the-sockets-text"; files = pair // { "torq-agent@alice.socket" = "[Socket]\nListenStream=/run/x\nSocketMode=0666\n"; }; intended = { "torq-agent@alice.socket" = socket; }; }
         "torq-agent@alice.socket: SocketMode: the unit as built says \"SocketMode=0666\"")
-      (changedOnly { name = "the-key-units-text"; files = three // { "torq-agent-key@alice.service" = "[Service]\nExecStart=/bin/sh -c true\nProtectControlGroups=true\n"; }; intended = { "torq-agent-key@alice.service" = ours; }; }
-        "torq-agent-key@alice.service: ExecStart: the unit as built says \"ExecStart=/bin/sh -c true\"")
       # The same lines in another order (the order of ExecStartPre lines, or of a list emptied and set again, matters).
-      (changedOnly { name = "another-order"; files = three // { "torq-agent@alice.service" = "[Service]\nProtectControlGroups=true\nExecStart=/bin/true\n"; }; intended = { "torq-agent@alice.service" = ours; }; }
+      (changedOnly { name = "another-order"; files = pair // { "torq-agent@alice.service" = "[Service]\nProtectControlGroups=true\nExecStart=/bin/true\n"; }; intended = { "torq-agent@alice.service" = ours; }; }
         "torq-agent@alice.service: ")
       # Only its last line's end differs: still not the text.
-      (changedOnly { name = "byte-for-byte"; files = three // { "torq-agent@alice.service" = ours + "\n"; }; intended = { "torq-agent@alice.service" = ours; }; }
+      (changedOnly { name = "byte-for-byte"; files = pair // { "torq-agent@alice.service" = ours + "\n"; }; intended = { "torq-agent@alice.service" = ours; }; }
         "torq-agent@alice.service: the unit as built is not, byte for byte, what TorqOS's module writes")
 
       # Another name for one of the agent's units (an alias): its drop-ins would be the agent's.
-      (foreignOnly { name = "another-name-for-ours"; files = three; extra = "ln -s torq-agent@alice.service $out/other.service"; }
+      (foreignOnly { name = "another-name-for-ours"; files = pair; extra = "ln -s torq-agent@alice.service $out/other.service"; }
         "other.service: another name for the agent's unit torq-agent@alice.service")
-      (foreignOnly { name = "an-alias-of-the-socket"; files = three; extra = "ln -s /etc/systemd/system/torq-agent@alice.socket $out/other.socket"; }
+      (foreignOnly { name = "an-alias-of-the-socket"; files = pair; extra = "ln -s /etc/systemd/system/torq-agent@alice.socket $out/other.socket"; }
         "other.socket: another name for the agent's unit torq-agent@alice.socket")
-      (foreignOnly { name = "an-alias-of-the-key-unit"; files = three; extra = "ln -s ./torq-agent-key@alice.service $out/other.service"; }
-        "other.service: another name for the agent's unit torq-agent-key@alice.service")
       # The directories systemd finds by cutting the name at a dash with the instance kept (systemd 260's
-      # unit_file_find_dirs): torq-@<person>.service.d and its template's, and the key unit's.
-      (foreignOnly { name = "the-dash-with-the-instance"; files = three; brought = { "torq-@alice.service.d/pkg.conf" = settings.user; }; } "torq-@alice.service.d: a drop-in directory systemd also applies")
-      (foreignOnly { name = "the-dash-as-a-template"; files = three; brought = { "torq-@.service.d/pkg.conf" = settings.user; }; } "torq-@.service.d: a drop-in directory systemd also applies")
-      (foreignOnly { name = "the-second-dash-with-the-instance"; files = three; brought = { "torq-agent-@alice.service.d/pkg.conf" = settings.exec-start; }; } "torq-agent-@alice.service.d: a drop-in directory systemd also applies")
-      (foreignOnly { name = "the-second-dash-as-a-template"; files = three; brought = { "torq-agent-@.service.d/pkg.conf" = settings.exec-start; }; } "torq-agent-@.service.d: a drop-in directory systemd also applies")
-      (foreignOnly { name = "the-sockets-dash-with-the-instance"; files = three; brought = { "torq-@alice.socket.d/pkg.conf" = "[Socket]\nSocketMode=0666\n"; }; } "torq-@alice.socket.d: a drop-in directory systemd also applies")
+      # unit_file_find_dirs): torq-@<person>.service.d and its template's.
+      (foreignOnly { name = "the-dash-with-the-instance"; files = pair; brought = { "torq-@alice.service.d/pkg.conf" = settings.user; }; } "torq-@alice.service.d: a drop-in directory systemd also applies")
+      (foreignOnly { name = "the-dash-as-a-template"; files = pair; brought = { "torq-@.service.d/pkg.conf" = settings.user; }; } "torq-@.service.d: a drop-in directory systemd also applies")
+      (foreignOnly { name = "the-sockets-dash-with-the-instance"; files = pair; brought = { "torq-@alice.socket.d/pkg.conf" = "[Socket]\nSocketMode=0666\n"; }; } "torq-@alice.socket.d: a drop-in directory systemd also applies")
       (refuses "the-dash-with-the-instance-delegates" { "torq-agent@alice.service" = ours; "torq-@alice.service.d/pkg.conf" = delegates; } "" "torq-@alice.service.d/pkg.conf: Delegate=yes")
       # Which file, from which package, and why: said for a drop-in for every service.
-      (let args = { name = "every-service-said"; files = three; brought = { "service.d/10-pkg.conf" = settings.environment; }; }; in each "every-service-said" [
+      (let args = { name = "every-service-said"; files = pair; brought = { "service.d/10-pkg.conf" = settings.environment; }; }; in each "every-service-said" [
         (foreignOnly args "  service.d/10-pkg.conf: from /nix/store/")
         (foreignOnly args "-every-service-said-package (the file is /nix/store/")
         (foreignOnly args "TorqOS refuses it whatever it sets")
-        (foreignOnly { name = "a-drop-in-said"; files = three; brought = { "torq-agent@alice.service.d/10-pkg.conf" = settings.user; }; } "  torq-agent@alice.service.d/10-pkg.conf: from /nix/store/")
+        (foreignOnly { name = "a-drop-in-said"; files = pair; brought = { "torq-agent@alice.service.d/10-pkg.conf" = settings.user; }; } "  torq-agent@alice.service.d/10-pkg.conf: from /nix/store/")
       ])
 
       # Each place systemd reads a drop-in for one of the agent's units, whatever is in it.
-      (foreignOnly { name = "the-templates"; files = three; brought = { "torq-agent@.service.d/pkg.conf" = settings.user; }; } "torq-agent@.service.d: a drop-in directory of the agent's units")
-      (foreignOnly { name = "the-dash"; files = three; brought = { "torq-.service.d/pkg.conf" = settings.environment; }; } "torq-.service.d: a drop-in directory systemd also applies")
-      (foreignOnly { name = "the-second-dash"; files = three; brought = { "torq-agent-.service.d/pkg.conf" = settings.user; }; } "torq-agent-.service.d: a drop-in directory systemd also applies")
-      (foreignOnly { name = "every-service"; files = three; brought = { "service.d/pkg.conf" = settings.environment; }; } "service.d: a drop-in directory systemd also applies")
-      (foreignOnly { name = "the-key-units"; files = three; brought = { "torq-agent-key@alice.service.d/pkg.conf" = settings.exec-start; }; } "torq-agent-key@alice.service.d: a drop-in directory of the agent's units")
-      (foreignOnly { name = "the-key-units-template"; files = three; brought = { "torq-agent-key@.service.d/pkg.conf" = settings.exec-start; }; } "torq-agent-key@.service.d: a drop-in directory of the agent's units")
+      (foreignOnly { name = "the-templates"; files = pair; brought = { "torq-agent@.service.d/pkg.conf" = settings.user; }; } "torq-agent@.service.d: a drop-in directory of the agent's units")
+      (foreignOnly { name = "the-dash"; files = pair; brought = { "torq-.service.d/pkg.conf" = settings.environment; }; } "torq-.service.d: a drop-in directory systemd also applies")
+      (foreignOnly { name = "every-service"; files = pair; brought = { "service.d/pkg.conf" = settings.environment; }; } "service.d: a drop-in directory systemd also applies")
       # The socket's: who may connect, and where it listens.
-      (foreignOnly { name = "the-sockets"; files = three; brought = { "torq-agent@alice.socket.d/pkg.conf" = "[Socket]\nSocketUser=bob\nSocketMode=0666\n"; }; } "torq-agent@alice.socket.d: a drop-in directory of the agent's units")
-      (foreignOnly { name = "the-sockets-template"; files = three; brought = { "torq-agent@.socket.d/pkg.conf" = "[Socket]\nListenStream=/tmp/agent.sock\n"; }; } "torq-agent@.socket.d: a drop-in directory of the agent's units")
-      (foreignOnly { name = "the-sockets-dash"; files = three; brought = { "torq-.socket.d/pkg.conf" = "[Socket]\nSocketMode=0666\n"; }; } "torq-.socket.d: a drop-in directory systemd also applies")
-      (foreignOnly { name = "every-socket"; files = three; brought = { "socket.d/pkg.conf" = "[Socket]\nSocketMode=0666\n"; }; } "socket.d: a drop-in directory systemd also applies")
+      (foreignOnly { name = "the-sockets"; files = pair; brought = { "torq-agent@alice.socket.d/pkg.conf" = "[Socket]\nSocketUser=bob\nSocketMode=0666\n"; }; } "torq-agent@alice.socket.d: a drop-in directory of the agent's units")
+      (foreignOnly { name = "the-sockets-template"; files = pair; brought = { "torq-agent@.socket.d/pkg.conf" = "[Socket]\nListenStream=/tmp/agent.sock\n"; }; } "torq-agent@.socket.d: a drop-in directory of the agent's units")
+      (foreignOnly { name = "the-sockets-dash"; files = pair; brought = { "torq-.socket.d/pkg.conf" = "[Socket]\nSocketMode=0666\n"; }; } "torq-.socket.d: a drop-in directory systemd also applies")
+      (foreignOnly { name = "every-socket"; files = pair; brought = { "socket.d/pkg.conf" = "[Socket]\nSocketMode=0666\n"; }; } "socket.d: a drop-in directory systemd also applies")
       # A drop-in directory with nothing in it, and one that masks: there, so refused (none is written).
-      (foreignOnly { name = "an-empty-drop-in-directory"; files = three; extra = "mkdir $out/torq-agent@alice.service.d"; } "torq-agent@alice.service.d: a drop-in directory of the agent's units")
-      (foreignOnly { name = "a-drop-in-directory-that-is-a-link"; files = three; extra = "ln -s ${package "elsewhere" { "x.conf" = settings.user; }}/lib/systemd/system $out/torq-agent@alice.service.d"; } "torq-agent@alice.service.d: a drop-in directory of the agent's units")
+      (foreignOnly { name = "an-empty-drop-in-directory"; files = pair; extra = "mkdir $out/torq-agent@alice.service.d"; } "torq-agent@alice.service.d: a drop-in directory of the agent's units")
+      (foreignOnly { name = "a-drop-in-directory-that-is-a-link"; files = pair; extra = "ln -s ${package "elsewhere" { "x.conf" = settings.user; }}/lib/systemd/system $out/torq-agent@alice.service.d"; } "torq-agent@alice.service.d: a drop-in directory of the agent's units")
 
       # The unit itself another's. A package's file of the same name stays the unit, as NixOS lays it out (this
       # configuration's then its overrides.conf): named for both, the link and the directory.
@@ -273,34 +272,33 @@ let
           expected = { "torq-agent@alice.socket" = "${pkgs.writeTextDir "torq-agent@alice.socket" socket}/torq-agent@alice.socket"; }; }
         "torq-agent@alice.socket: not the unit this configuration writes")
       # An alias (NixOS: `aliases`): the unit's name a link to another unit's.
-      (foreignOnly { name = "an-alias"; files = three; brought = { "other.service" = ours; }; extra = "ln -sfn other.service $out/torq-agent@alice.service"; }
+      (foreignOnly { name = "an-alias"; files = pair; brought = { "other.service" = ours; }; extra = "ln -sfn other.service $out/torq-agent@alice.service"; }
         "torq-agent@alice.service: not the unit this configuration writes (it is other.service")
       # A file of its own in the directory, not a link: not as NixOS puts this configuration's there.
-      (foreignOnly { name = "a-file-not-a-link"; files = three; extra = "rm $out/torq-agent@alice.service && printf '[Service]\\nUser=root\\n' > $out/torq-agent@alice.service"; }
+      (foreignOnly { name = "a-file-not-a-link"; files = pair; extra = "rm $out/torq-agent@alice.service && printf '[Service]\\nUser=root\\n' > $out/torq-agent@alice.service"; }
         "torq-agent@alice.service: not the unit this configuration writes (a file of its own here")
       # A link to the right text in another place is still not the expected file.
-      (foreignOnly { name = "the-same-text-elsewhere"; files = three; extra = "ln -sfn ${pkgs.writeText "copy" ours} $out/torq-agent@alice.service"; }
+      (foreignOnly { name = "the-same-text-elsewhere"; files = pair; extra = "ln -sfn ${pkgs.writeText "copy" ours} $out/torq-agent@alice.service"; }
         "torq-agent@alice.service: not the unit this configuration writes")
       # A mask a package puts over a unit this configuration writes is not the expected link either.
-      (foreignOnly { name = "a-mask-over-ours"; files = three; extra = "ln -sfn /dev/null $out/torq-agent-key@alice.service"; }
-        "torq-agent-key@alice.service: not the unit this configuration writes (it is /dev/null")
+      (foreignOnly { name = "a-mask-over-ours"; files = pair; extra = "ln -sfn /dev/null $out/torq-agent@alice.socket"; }
+        "torq-agent@alice.socket: not the unit this configuration writes (it is /dev/null")
       # A unit this configuration writes that is not there.
-      (foreignOnly { name = "ours-not-there"; files = three; extra = "rm $out/torq-agent@alice.socket"; } "torq-agent@alice.socket: the unit this configuration writes is not there")
-      # Other units named as the agent's are: the template, another instance, the key unit where none is
-      # written, a timer and a path unit that would start the agent.
-      (foreignOnly { name = "a-template"; files = three; brought = { "torq-agent@.service" = ours; }; } "torq-agent@.service: named as the agent's units are")
-      (foreignOnly { name = "another-instance"; files = three; brought = { "torq-agent@mallory.service" = ours; }; } "torq-agent@mallory.service: named as the agent's units are")
-      (foreignOnly { name = "a-key-unit-unasked"; files = { "torq-agent@alice.service" = ours; }; brought = { "torq-agent-key@alice.service" = "[Service]\nExecStart=/bin/sh -c true\n"; }; } "torq-agent-key@alice.service: named as the agent's units are")
-      (foreignOnly { name = "a-timer"; files = three; brought = { "torq-agent@alice.timer" = "[Timer]\nOnBootSec=1\n"; }; } "torq-agent@alice.timer: named as the agent's units are")
-      (foreignOnly { name = "a-socket-template"; files = three; brought = { "torq-agent@.socket" = socket; }; } "torq-agent@.socket: named as the agent's units are")
-      (foreignOnly { name = "a-link-to-nothing-so-named"; files = three; extra = "ln -s /nix/store/nothing-here $out/torq-agent-key@bob.service"; } "torq-agent-key@bob.service: named as the agent's units are")
+      (foreignOnly { name = "ours-not-there"; files = pair; extra = "rm $out/torq-agent@alice.socket"; } "torq-agent@alice.socket: the unit this configuration writes is not there")
+      # Other units named as the agent's are: the template, another instance, a timer and a path unit that would
+      # start the agent.
+      (foreignOnly { name = "a-template"; files = pair; brought = { "torq-agent@.service" = ours; }; } "torq-agent@.service: named as the agent's units are")
+      (foreignOnly { name = "another-instance"; files = pair; brought = { "torq-agent@mallory.service" = ours; }; } "torq-agent@mallory.service: named as the agent's units are")
+      (foreignOnly { name = "a-timer"; files = pair; brought = { "torq-agent@alice.timer" = "[Timer]\nOnBootSec=1\n"; }; } "torq-agent@alice.timer: named as the agent's units are")
+      (foreignOnly { name = "a-socket-template"; files = pair; brought = { "torq-agent@.socket" = socket; }; } "torq-agent@.socket: named as the agent's units are")
+      (foreignOnly { name = "a-link-to-nothing-so-named"; files = pair; extra = "ln -s /nix/store/nothing-here $out/torq-agent@bob.service"; } "torq-agent@bob.service: named as the agent's units are")
     ];
 
   # The check as a configuration carries it: a real configuration's unit directory, as NixOS builds it.
   # TorqOS's own programs are not what is checked here, and building them is the long part: stand-ins.
   stub = pkgs.runCommand "torq-stand-in" { version = "0"; meta.mainProgram = "torq-stand-in"; } "mkdir -p $out/bin";
   stubs = {
-    torq.agent.doctor.package = stub;
+    torq.agent.package = stub;
     torq.broker.package = stub;
     torq.secrets.package = stub;
     torq.cli.package = stub;
@@ -450,7 +448,7 @@ let
   hostCases =
     let
       system = pkgs.stdenv.hostPlatform.system;
-      resident = { lib, ... }: {
+      withAgent = { lib, ... }: {
         imports = [ stubs engineOn ];
         # (The image and the installer have no owner yet: one, so that there is an agent to check.)
         torq.user = lib.mkDefault "owner";
@@ -458,7 +456,7 @@ let
       devVm = if system == "aarch64-linux" then "dev-vm-aarch64" else "dev-vm-x86_64";
       # (Not a check of nothing: the host has an agent, whose two units the check is told to expect.)
       host = name: modules:
-        let c = only (carried (self.nixosConfigurations.${name}.extendModules { modules = [ resident ] ++ modules; }).config); in
+        let c = only (carried (self.nixosConfigurations.${name}.extendModules { modules = [ withAgent ] ++ modules; }).config); in
         if lib.length (lib.splitString "\n" c.expected) == 2 then c else throw "agent-units: ${name}: the check expects ${c.expected}, not an agent's two units";
     in [
       (host devVm [ ])

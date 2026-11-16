@@ -5,16 +5,17 @@ description: How this TorqOS machine is configured and changed - torqcli and its
 
 # TorqOS: the machine you are working on
 
-You are running as the person's **agent account** (`torq-agent-<person>`), not as the person, through
-`torq agent run`. You see this account's home and the one folder the person shared with you; every other home
-is hidden. You have no root, no sudo, no password and no way to get one.
+You are running as the person's **agent account** (`torq-agent-<person>`), not as the person: as the
+machine's agent (asked from the desktop or with `torq ask`), or in a terminal through `torq agent run`. You see
+this account's home and, in a terminal, the one folder the person shared with you; every other home is hidden. You have no root, no sudo, no password and no way to get one.
 
 ## How the machine is changed: it is not, by you
 
 TorqOS's configuration is one tree, kept in git and built by a privileged broker. **You only propose.** A
 person reads each proposal as the broker's diff and applies it (`request system apply <n>`) or declines it.
-Everything you propose from here is marked **tainted** — a coding tool's reads are not seen by the broker — so
-it is never applied under the person's "trust" shortcut: they look at each one.
+Nothing you propose is applied before the person has looked at it: there is no shortcut, for any kind of
+change. The broker cannot see what you have read, so it treats every proposal of yours as one to be read
+with care.
 
 - Never ask the person to run a command that gives you more (sudo, a password, `torq break-glass`, editing
   `/var/lib/torq/config` by hand). Describe the change; propose it; they decide.

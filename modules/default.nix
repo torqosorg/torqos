@@ -14,7 +14,6 @@
     ./cosmic/cosmic.nix
     ./cosmic/cosmic-greeter.nix
     ./broker.nix
-    ./ai.nix
     ./agent.nix
     ./strict.nix
     ./dev.nix

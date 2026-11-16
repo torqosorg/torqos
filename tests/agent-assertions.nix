@@ -21,7 +21,6 @@ let
         modules = [ self.nixosModules.default base extra ];
       }).config;
     in map (a: a.message) (lib.filter (a: !a.assertion) config.assertions);
-  doctorOn = { enable = true; endpoint = "https://api.example.org/v1"; model = "m"; };
   # An engine chosen (ADR-055): Claude Code allowed, installed for the agents (a stand-in: the real one is
   # unfree and large) and named as the engine — with whatever else `extra` says.
   withEngine = extra: {
@@ -41,18 +40,31 @@ let
     (let ms = ours (failing { }); in if ms == [ ] then "plain" else throw "agent-assertions: a plain configuration fails: ${builtins.toJSON ms}")
     (refuses "not a person" { torq.agent.people = [ "ghost" ]; } "ghost is not a person on this machine")
     (refuses "twice" { torq.agent.people = [ "dev" "dev" ]; } "a person is named twice")
-    (refuses "a key in the endpoint's query" { torq.agent.doctor.endpoint = "https://api.example.org/v1?key=secret"; } "no query (?) or fragment (#)")
-    (refuses "a fragment in the endpoint" { torq.agent.doctor.endpoint = "https://api.example.org/v1#secret"; } "no query (?) or fragment (#)")
     (refuses "a person in people named as an agent" { torq.agent.people = [ "torq-agent-x" ]; users.users.torq-agent-x.isNormalUser = true; } "torq-agent-x is named as an agent account is")
     (refuses "any person named as an agent" { users.users.torq-agent-y.isNormalUser = true; } "torq-agent-y is a person named as an agent account is")
-    (refuses "a person named as a resident agent" { users.users.torq-resident-y.isNormalUser = true; } "torq-resident-y is a person named as an agent account is")
-    # The name's limit is measured against the longest account made for the person: `torq-agent-<name>` (20
-    # characters of name), and only where doctor mode is on the old loop's `torq-resident-<name>` (17).
+    # The name's limit is measured against the account made for the person: `torq-agent-<name>` (20 characters
+    # of name).
     (refuses "too long for an agent account" { torq.agent.people = [ "dev" "abcdefghijklmnopqrstu" ]; users.users.abcdefghijklmnopqrstu.isNormalUser = true; } "torq-agent-abcdefghijklmnopqrstu (the account made for abcdefghijklmnopqrstu's agent) is longer than an account's and its group's name may be (31 characters on NixOS): abcdefghijklmnopqrstu is too long a name for an agent of its own (at most 20 characters)")
     (let ms = ours (failing { torq.agent.people = [ "dev" "abcdefghijklmnopqrst" ]; users.users.abcdefghijklmnopqrst.isNormalUser = true; }); in
-      if ms == [ ] then "20 characters fit an agent account" else throw "agent-assertions: a name of 20 characters is refused with no doctor mode: ${builtins.toJSON ms}")
-    (refuses "too long for a resident account, where doctor mode is on" { torq.agent.doctor = doctorOn; torq.agent.people = [ "dev" "abcdefghijklmnopqr" ]; users.users.abcdefghijklmnopqr.isNormalUser = true; } "torq-resident-abcdefghijklmnopqr (the account made for abcdefghijklmnopqr's agent) is longer")
-    (refuses "too long for a resident account, said" { torq.agent.doctor = doctorOn; torq.agent.people = [ "dev" "abcdefghijklmnopqr" ]; users.users.abcdefghijklmnopqr.isNormalUser = true; } "at most 17 characters")
+      if ms == [ ] then "20 characters fit an agent account" else throw "agent-assertions: a name of 20 characters is refused: ${builtins.toJSON ms}")
+    # Removed with TorqOS's own agent loop (ADR-055, phase 2): a configuration that still sets one of its
+    # settings is refused in words that say what to delete, never as an option NixOS does not know. Each
+    # subtree is one removed option, so any setting under it is caught; the journal's new place is said.
+    (refuses "doctor mode still set" { torq.agent.doctor.enable = true; } "The option definition `torq.agent.doctor' in")
+    (refuses "doctor mode still set, said" { torq.agent.doctor = { enable = true; endpoint = "https://api.example.org/v1"; model = "m"; }; } "`delete torq agent doctor`")
+    (refuses "the journal under doctor mode, said" { torq.agent.doctor.journal = true; } "that setting is now `torq agent journal`")
+    (refuses "a key file still set" { torq.agent.doctor.apiKeyFile = "/var/lib/torq/secrets/model.key"; } "TorqOS no longer has an agent loop of its own")
+    (refuses "the local model still set" { torq.agent.model = { url = "https://example.org/m.gguf"; hash = "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="; }; } "`delete torq agent model`")
+    (refuses "the local model's flags still set" { torq.agent.model.extraFlags = [ "--ctx-size" "16384" ]; } "The option definition `torq.agent.model' in")
+    # The journal, the agents' own setting now: off by default; on, each agent account is in systemd-journal
+    # and in no other group, and torq-mcp is told so. No local model's service, no second account, either way.
+    (let off = configOf { }; on = configOf { torq.agent.journal = true; }; in
+      if off.users.users.torq-agent-dev.extraGroups == [ ] && on.users.users.torq-agent-dev.extraGroups == [ "systemd-journal" ]
+        && builtins.fromJSON off.environment.etc."torq/agent.json".text == { journal = false; }
+        && builtins.fromJSON on.environment.etc."torq/agent.json".text == { journal = true; }
+        && !(on.services.llama-cpp.enable or false) && !(on.users.users ? torq-resident-dev)
+      then "the journal is the agents' own setting"
+      else throw "agent-assertions: torq.agent.journal does not give the agents the journal, and only that")
     (refuses "SETENV on the launcher's rule" ({ config, ... }: {
       security.sudo.extraRules = [{ groups = [ "wheel" ]; commands = [{ command = "${config.torq.agent.launcher}/bin/torq-agent-run"; options = [ "NOPASSWD" "SETENV" ]; }]; }];
     }) "a rule for torq-agent-run with SETENV")
@@ -73,11 +85,12 @@ let
     # The engine (ADR-055 1): one of the coding tools installed for the agents, or refused, saying what to set.
     (refuses "an engine not installed" { torq.agent.engine = "claude-code"; } "torq.agent.engine: claude-code is not installed for the agents. Install it first: `set torq agent tools claude-code`")
     (let ms = ours (failing (withEngine { })); in if ms == [ ] then "an engine installed" else throw "agent-assertions: an engine that is installed is refused: ${builtins.toJSON ms}")
-    # The agent's service is where an engine is chosen, and nowhere else: not on a plain machine, and not
-    # where only doctor mode is on (which still makes the old loop's account, for the broker's rule: phase 2).
-    (let plain = configOf { }; doctor = configOf { torq.agent.doctor = doctorOn; }; engine = configOf (withEngine { }); has = c: c.systemd.services ? "torq-agent@dev" || c.systemd.sockets ? "torq-agent@dev"; in
-      if !(has plain) && !(has doctor) && has engine
-        && !(plain.users.users ? torq-resident-dev) && doctor.users.users ? torq-resident-dev && !(engine.users.users ? torq-resident-dev)
+    # The agent's service is where an engine is chosen, and nowhere else: not on a plain machine. And no
+    # second account for the agent anywhere (the old loop's `torq-resident-<person>`, removed).
+    (let plain = configOf { }; engine = configOf (withEngine { }); has = c: c.systemd.services ? "torq-agent@dev" || c.systemd.sockets ? "torq-agent@dev"; in
+      if !(has plain) && has engine
+        && !(plain.users.users ? torq-resident-dev) && !(engine.users.users ? torq-resident-dev)
+        && (let settings = builtins.fromJSON (builtins.unsafeDiscardStringContext engine.environment.etc."torq/broker.json".text); in !(settings ? residents) && !(settings ? model) && settings.agent.agents == { torq-agent-dev = "dev"; })
         && (builtins.fromJSON engine.environment.etc."torq/agent-tools.json".text) == { tools = [ "claude-code" ]; engine = "claude-code"; plainCommand = true; }
         && (builtins.fromJSON plain.environment.etc."torq/agent-tools.json".text) == { tools = [ ]; engine = null; plainCommand = false; }
       then "the service is where an engine is"
@@ -131,13 +144,6 @@ let
     ])
     (refuses "a lingering agent" (withEngine { users.users.torq-agent-dev.linger = true; }) "the agent account has no user manager of its own")
     (refuses "tracing allowed" (withEngine { boot.kernel.sysctl."kernel.yama.ptrace_scope" = lib.mkForce 0; }) "kernel.yama.ptrace_scope")
-    (refuses "the key where the agent reads it" { torq.agent.doctor = doctorOn // { apiKeyFile = "/var/lib/torq-agent-dev/model.key"; }; } "a file only root reads")
-    (refuses "the key in /var/tmp" { torq.agent.doctor = doctorOn // { apiKeyFile = "/var/tmp/model.key"; }; } "a file only root reads")
-    (refuses "the key in /dev/shm" { torq.agent.doctor = doctorOn // { apiKeyFile = "/dev/shm/model.key"; }; } "a file only root reads")
-    (refuses "the key named another way (//)" { torq.agent.doctor = doctorOn // { apiKeyFile = "//home/dev/model.key"; }; } "named plainly")
-    (refuses "the key named another way (/./)" { torq.agent.doctor = doctorOn // { apiKeyFile = "/./tmp/model.key"; }; } "named plainly")
-    (refuses "the key named another way (..)" { torq.agent.doctor = doctorOn // { apiKeyFile = "/srv/../home/dev/k"; }; } "named plainly")
-    (let ms = ours (failing { torq.agent.doctor = doctorOn // { apiKeyFile = "/var/lib/torq/secrets/model.key"; }; }); in if ms == [ ] then "the key root's" else throw "agent-assertions: a root-only key refused: ${builtins.toJSON ms}")
     # A start that fails does not cost the person their socket (KNOWN-GAPS 6zzo): what waits on the socket is
     # turned away when the service ends, so a failed start is not tried again for the same question, and the
     # unit has no limit of starts that would stop its socket for good. Nothing restarts it by itself. (What

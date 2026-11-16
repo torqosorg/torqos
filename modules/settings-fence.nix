@@ -37,7 +37,7 @@ rec {
     [ "torq" "broker" ]
     [ "torq" "packages" ]
     [ "torq" "cli" "package" ]
-    [ "torq" "agent" "doctor" "package" ]
+    [ "torq" "agent" "package" ]
     [ "torq" "schema" ]
     [ "torq" "nixosSchema" ]
     [ "torq" "releases" ]

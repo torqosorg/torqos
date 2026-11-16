@@ -40,7 +40,8 @@
       packages = lib.recursiveUpdate (forSystems allSystems (pkgs: {
         torq-broker = pkgs.callPackage ./broker/package.nix { };
         torq = pkgs.callPackage ./cli/package.nix { };
-        # The agent (ADR-042): doctor mode, run as a person's agent account (torq-agent-<person>).
+        # The agent's programs (ADR-051, ADR-055), run as a person's agent account (torq-agent-<person>): the
+        # agent's service, the bridge to the person's engine; and torq-mcp, TorqOS's tools for it.
         torq-agent = pkgs.callPackage ./agent/package.nix { };
         # The secrets daemon (ADR-052): a secret used, never read.
         torq-secrets = pkgs.callPackage ./secrets/package.nix { };
@@ -71,7 +72,7 @@
         torq.broker.package =
           lib.mkDefault self.packages.${pkgs.stdenv.hostPlatform.system}.torq-broker;
         torq.cli.package = lib.mkDefault self.packages.${pkgs.stdenv.hostPlatform.system}.torq;
-        torq.agent.doctor.package = lib.mkDefault self.packages.${pkgs.stdenv.hostPlatform.system}.torq-agent;
+        torq.agent.package = lib.mkDefault self.packages.${pkgs.stdenv.hostPlatform.system}.torq-agent;
         torq.secrets.package = lib.mkDefault self.packages.${pkgs.stdenv.hostPlatform.system}.torq-secrets;
       };
 
@@ -187,10 +188,9 @@
         agent-assertions = import ./tests/agent-assertions.nix { inherit pkgs self; };
         # "No delegation" in the units as built, a package's unit files included: small builds, no VM.
         agent-units = import ./tests/agent-units.nix { inherit pkgs self; };
-        doctor = import ./tests/doctor.nix { inherit pkgs self; };
         agent-proposals = import ./tests/agent-proposals.nix { inherit pkgs self; };
         agent-service = import ./tests/agent-service.nix { inherit pkgs self; };
-        # torq-mcp and Claude Code as a tool (ADR-051 5 and 7): a stand-in client, its proposal tainted, the broker's resident rule.
+        # torq-mcp and Claude Code as a tool (ADR-051 5 and 7): a stand-in client; its proposal waits for the person.
         agent-mcp = import ./tests/agent-mcp.nix { inherit pkgs self; };
         remote = import ./tests/remote.nix { inherit pkgs self; };
         adopt = import ./tests/adopt.nix { inherit pkgs self; };
@@ -308,7 +308,7 @@
           # The broker links PAM (ADR-040: a system change's password, checked as root).
           buildInputs = [ pkgs.pam ];
         } // self.packages.${pkgs.stdenv.hostPlatform.system}.torq.filterEnv
-          // self.packages.${pkgs.stdenv.hostPlatform.system}.torq-agent.doctorEnv);
+          // self.packages.${pkgs.stdenv.hostPlatform.system}.torq-agent.toolsEnv);
       });
     };
 }

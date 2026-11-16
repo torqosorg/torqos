@@ -1,9 +1,10 @@
 # NixOS VM test: one agent account per person (ADR-051 3, amending ADR-041 1). Two people, alice and
 # bob, each with an agent of their own; dave, a person with none; carol, whose `torq-agent-carol` is an account
 # named like an agent that the broker's map does not name. Each claim fails if its guard is taken out:
-# bob's agent cannot propose alice's packages (refused, and ledgered as bob's agent's); alice's trust
-# does not apply bob's agent's proposal; bob cannot run alice's agent; neither agent reads the other's
-# home; a person with no agent account is told so plainly; a look-alike account is no agent.
+# bob's agent cannot propose alice's packages (refused, and ledgered as bob's agent's), nor cite or report
+# into a session of alice's agent's; bob cannot run alice's agent; neither agent reads the other's
+# home; a person with no agent account is told so plainly; a look-alike account is no agent. Each person has
+# one agent account and no other (the old loop's second one is gone: ADR-055, phase 2).
 { pkgs, self }:
 
 let
@@ -11,8 +12,6 @@ let
 in
 pkgs.testers.runNixOSTest {
   name = "torq-agents-per-person";
-  # `torq unfree` sets nixpkgs.config (modules/unfree.nix), so the node builds its own package set.
-  node.pkgsReadOnly = false;
 
   nodes.machine = { pkgs, lib, ... }: {
     imports = [ self.nixosModules.default ];
@@ -28,18 +27,6 @@ pkgs.testers.runNixOSTest {
     # A person who is not an administrator, with no agent: for who may decline (ADR-051, amended).
     users.users.erin = { isNormalUser = true; hashedPasswordFile = lib.mkForce null; hashedPassword = hash; };
     torq.agent.people = [ "alice" "bob" ];
-    # Doctor mode on, for its resident service: the trust subtest speaks from that service's control group, as
-    # TorqOS's resident agent does (ADR-051 step 5). No model is ever asked here.
-    # Its model a socket in a directory only root writes (none listens: no model is asked), so the resident
-    # agent's sessions can start clean (a TCP model on this machine would taint them: ADR-051 step 5).
-    torq.agent.doctor = { enable = true; endpoint = "unix:/run/torq-test-model/none.sock"; model = "none"; };
-    systemd.tmpfiles.rules = [ "d /run/torq-test-model 0755 root root -" ];
-    # An engine, so that the agent has its service (ADR-055): the old loop's rule is still tried from that
-    # service's control group, as the old loop's account, until both go (phase 2). The engine is never asked here.
-    torq.unfree.packages = [ "claude-code" ];
-    torq.agent.tools = [ "claude-code" ];
-    torq.agent.engine = "claude-code";
-    torq.agent.claudeCode = import ./stand-in-engine.nix { inherit pkgs; };
     # Named like an agent account, made by hand, not in torq.agent.people: no agent.
     users.users.torq-agent-carol = { isSystemUser = true; group = "torq-agent-carol"; home = "/var/lib/torq-agent-carol"; createHome = true; };
     users.groups.torq-agent-carol = { };
@@ -54,29 +41,13 @@ pkgs.testers.runNixOSTest {
     repo = "/var/lib/torq/config"
     machine.succeed(f"mkdir -p {repo} && echo '{{}}' > {repo}/desktop.json && touch {repo}/flake.nix && torq-broker init")
     PASSWORD = "Torq-sock-2210"
-    # A home for each old-loop account to run torqcli in (its own service made one; the bridge makes none).
-    for person in ["alice", "bob"]:
-        machine.succeed(f"install -d -m 700 -o torq-resident-{person} -g torq-resident-{person} /var/lib/torq-test-resident/{person}")
+    def as_agent(who, cmd):
+        return machine.succeed(f"su -s /bin/sh {who} -c {shlex.quote(cmd)}")
 
-    def as_agent(who, cmd, resident):
-        # As the agent account `who`. `resident`: from inside its person's torq-agent@<person>.service's control
-        # group, as TorqOS's resident agent is (ADR-051 step 5) — root moves this shell there first, which root may
-        # and no process of the agent's can; otherwise from su, as any other program of the agent's is.
-        if not resident:
-            return machine.succeed(f"su -s /bin/sh {who} -c {shlex.quote(cmd)}")
-        unit = f"torq-agent@{who.removeprefix('torq-agent-')}.service"
-        machine.succeed(f"systemctl start {unit}")
-        cg = machine.succeed(f"systemctl show -P ControlGroup {unit}").strip()
-        procs = shlex.quote(f"/sys/fs/cgroup{cg}/cgroup.procs")
-        # The resident agent's own account (ADR-051 3 amended 2026-11-11): the agent account is never resident.
-        res = who.replace("torq-agent-", "torq-resident-", 1)
-        script = f"echo $$ > {procs} && exec setpriv --reuid {res} --regid {res} --init-groups -- env HOME=/var/lib/torq-test-resident/{who.removeprefix('torq-agent-')} sh -c {shlex.quote(cmd)}"
-        return machine.succeed(f"sh -c {shlex.quote(script)}")
-
-    def ask(user, request, resident=False):
+    def ask(user, request):
         cmd = f"printf '%s\\n' {shlex.quote(json.dumps(request))} | socat -t 30 - UNIX-CONNECT:/run/torq/broker.sock"
         code, out = None, ""
-        for l in as_agent(user, cmd, resident).splitlines():
+        for l in as_agent(user, cmd).splitlines():
             f = json.loads(l)
             out += f.get("out", "")
             code = f.get("exit", code)
@@ -88,13 +59,12 @@ pkgs.testers.runNixOSTest {
     def packages(person, names):
         return f"--- /dev/null\n+++ b/users/{person}/packages.json\n@@ -0,0 +1 @@\n+{json.dumps(names)}\n"
 
-    def propose(who, diff, reason, session=None, resident=False):
+    def propose(who, diff, reason, session=None):
         args = ["--json", "propose", f"--base={head()}", f"--reason={reason}"] + ([f"--session={session}"] if session else [])
-        return ask(who, {"args": args, "diff": diff}, resident)
+        return ask(who, {"args": args, "diff": diff})
 
-    # As the resident agent, which alone starts a session untainted (ADR-051 step 5).
     def start(who):
-        sid = as_agent(who, "torqcli agent session start", True).strip()
+        sid = as_agent(who, "torqcli agent session start").strip()
         assert len(sid) == 32, sid
         return sid
 
@@ -106,8 +76,10 @@ pkgs.testers.runNixOSTest {
 
     with subtest("each person's agent: its own account, its home its own, the other's out of reach"):
         machine.succeed("jq -e '.agent.agents == {\"torq-agent-alice\": \"alice\", \"torq-agent-bob\": \"bob\"}' /etc/torq/broker.json")
-        # Each resident agent's own account, mapped too (ADR-051 3 amended 2026-11-11).
-        machine.succeed("jq -e '.residents == {\"torq-resident-alice\": \"alice\", \"torq-resident-bob\": \"bob\"}' /etc/torq/broker.json")
+        # One account each, and none of the old loop's second ones (removed in phase 2 of ADR-055).
+        machine.succeed("jq -e 'has(\"residents\") | not' /etc/torq/broker.json")
+        machine.fail("getent passwd torq-resident-alice")
+        machine.fail("getent passwd torq-resident-bob")
         for a in ["torq-agent-alice", "torq-agent-bob"]:
             machine.succeed(f"getent passwd {a} | grep -q ':/var/lib/{a}:.*nologin$'")
             machine.succeed(f"test \"$(id -u {a})\" -lt 1000 && test \"$(id -Gn {a})\" = {a}")
@@ -133,45 +105,27 @@ pkgs.testers.runNixOSTest {
         code, v = propose("torq-agent-alice", packages("alice", ["htop"]), "htop for alice")
         assert code == 0 and v["data"]["agent_for"] == "alice", (code, v)
 
-    with subtest("alice's trust applies alice's agent's proposals, not bob's agent's"):
-        # What `torqcli request system agent trust 30` sends, with alice's password.
-        code, g = ask("alice", {"args": ["--json", "trust-grant", "--minutes=30"], "password": PASSWORD})
-        assert code == 0 and g["kind"] == "trust_granted" and g["data"]["person"] == "alice", (code, g)
+    with subtest("a session is its own agent's: bob's agent neither cites alice's agent's nor reports into it"):
         sb = start("torq-agent-bob")
         before = head()
-        code, v = propose("torq-agent-bob", packages("bob", ["jq"]), "jq for bob, under alice's trust", session=sb, resident=True)
-        assert code == 0 and "trust_applied" not in v, (code, v)
-        assert head() == before, "bob's agent's proposal was applied under alice's trust"
-        # bob's agent cannot cite alice's agent's session, nor report into it.
+        code, v = propose("torq-agent-bob", packages("bob", ["jq"]), "jq for bob", session=sb)
+        assert code == 0 and v["tainted"] is True and v["data"]["agent"] == "torq-agent-bob" and v["data"]["caller"] == "torq-agent-bob" and "trust_applied" not in v, (code, v)
+        assert head() == before, "an agent's proposal waits for its person"
         sa = start("torq-agent-alice")
-        code, v = propose("torq-agent-bob", packages("bob", ["fd"]), "on alice's agent's session", session=sa, resident=True)
+        code, v = propose("torq-agent-bob", packages("bob", ["fd"]), "on alice's agent's session", session=sa)
         assert code == 1 and "not torq-agent-bob's" in v["error"], (code, v)
         # Refused for that reason, not any (the exit code alone).
         code, out = machine.execute(f"su -s /bin/sh torq-agent-bob -c 'torqcli agent session taint {sa} read_journal' 2>&1")
         assert code != 0 and "not torq-agent-bob's" in out, (code, out)
-        machine.succeed(f"jq -e '.tainted == false and .agent == \"torq-agent-alice\"' /var/lib/torq/state/sessions/{sa}.json")
-        # alice's own agent, under her trust: applied (the trust works; it is bob's agent it does not cover).
-        code, v = propose("torq-agent-alice", packages("alice", ["tree"]), "tree for alice", session=sa, resident=True)
-        assert code == 0 and v.get("trust_applied", {}).get("approved_by") == "alice", (code, v)
+        machine.succeed(f"jq -e '.tainted == true and .tainted_by == [\"agent-program\"] and .agent == \"torq-agent-alice\"' /var/lib/torq/state/sessions/{sa}.json")
+        # alice's own agent, on its own session: a proposal, which waits for alice.
+        code, v = propose("torq-agent-alice", packages("alice", ["tree"]), "tree for alice", session=sa)
+        assert code == 0 and v["tainted"] is True and v["data"]["agent_for"] == "alice", (code, v)
+        assert head() == before
+        # alice applies it herself (her own folder: no password; an agent's: her word that she looked).
+        code, a = ask("alice", {"args": ["--json", "apply", str(v["seq"]), "--confirm-tainted"]})
+        assert code == 0 and a["kind"] == "applied" and a["approved_by"] == "alice", (code, a)
         machine.succeed(f"git -C {repo} show HEAD:users/alice/packages.json | grep -q tree")
-
-    with subtest("residency from the uid, the control group a second guard"):
-        unit = "torq-agent@alice.service"
-        machine.succeed(f"systemctl start {unit}")
-        # The resident account outside its unit (as root's su makes it): tainted from its start, as any program.
-        out = machine.succeed("su -s /bin/sh torq-resident-alice -c 'cd /tmp && HOME=/var/lib/torq-test-resident/alice torqcli agent session start'").strip()
-        rec = json.loads(machine.succeed(f"cat /var/lib/torq/state/sessions/{out}.json"))
-        assert rec["tainted_by"] == ["not-the-resident-agent"] and rec["agent"] == "torq-agent-alice" and rec["resident"] is False, rec
-        # The agent account inside the unit's control group (root moves it there): never resident.
-        cg = machine.succeed(f"systemctl show -P ControlGroup {unit}").strip()
-        procs = shlex.quote(f"/sys/fs/cgroup{cg}/cgroup.procs")
-        sid = machine.succeed(f"sh -c {shlex.quote(f'echo $$ > {procs} && exec setpriv --reuid torq-agent-alice --regid torq-agent-alice --init-groups -- env HOME=/var/lib/torq-agent-alice torqcli agent session start')}").strip()
-        rec = json.loads(machine.succeed(f"cat /var/lib/torq/state/sessions/{sid}.json"))
-        assert rec["tainted_by"] == ["not-the-resident-agent"] and rec["resident"] is False, rec
-        # Both are the person's one agent: one count, one name in the ledger (data.agent), the caller the kernel's.
-        rs = start("torq-agent-bob")
-        code, v = propose("torq-agent-bob", packages("bob", ["fd"]), "fd for bob, resident", session=rs, resident=True)
-        assert code == 0 and v["data"]["agent"] == "torq-agent-bob" and v["data"]["caller"] == "torq-resident-bob" and v["tainted"] is False, (code, v)
 
     with subtest("torq agent run: each person their own agent, and no one else's"):
         code, out = run_as("bob", "torq agent run -- sh -c 'id -un; echo $HOME; cat /var/lib/torq-agent-alice/secret 2>/dev/null || echo NOPE'")
