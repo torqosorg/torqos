@@ -187,7 +187,9 @@ pkgs.testers.runNixOSTest {
         new = [e for e in entries(unchecked) if e["kind"] in ("proposal", "refused")]
         assert [e["kind"] for e in new] == ["proposal"], new
         p = new[0]
-        why = "this machine's configuration as it is does not pass the check either"
+        # The checker itself sees that Nix did not reach its daemon, which is no word on the change: it gives no
+        # verdict (cli/src/nixerr.rs `outside`), and the broker has nothing to ask the configuration as it is about.
+        why = "the checker gave no answer"
         assert p["data"]["check"]["result"] == "not checked" and p["data"]["check"]["why"] == why and len(p["data"]["check"]["tree"]) == 40, p
         assert f"proposed as #{p['seq']}: a person applies it (request system apply {p['seq']}). It could not be checked first ({why}): it may fail when applied." in out, out
         assert "cannot open connection" not in out and "error:" not in out, out

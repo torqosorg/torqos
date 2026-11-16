@@ -25,6 +25,10 @@ pkgs.testers.runNixOSTest {
     # A rebuild that says a lot, as a real one does: every apply's answer and exit must still come
     # through a burst of the build's output (the third review of ADR-040).
     torq.broker.rebuildCommand = "seq 1 6000 >&2";
+    # The check of an agent's proposal (ADR-056) puts a copy of the config repo in the store. A test VM's store
+    # has under half a gigabyte to write in, less than `min-free` (1 GiB), so Nix would collect garbage before
+    # each copy and never get there: 40 seconds a time (measured), longer than this test waits for an answer.
+    nix.settings.min-free = 0;
     # socat speaks to the socket; jq reads the answers; tmux is a terminal to type a password at.
     environment.systemPackages = [ pkgs.socat pkgs.jq pkgs.tmux pkgs.pam pkgs.python3Minimal ];
     # su asks at a terminal: the password typed into one, as dev (the su check, below).
@@ -315,6 +319,8 @@ pkgs.testers.runNixOSTest {
     with subtest("the agent proposes, and can do nothing else"):
         p = propose("torq-agent-dev", own_diff("dev"), "the agent suggests hello")
         assert p["actor"] == "agent" and p["data"]["caller"] == "torq-agent-dev" and p["data"]["agent"] == "torq-agent-dev", p
+        # Checked first (ADR-056): this stub repo evaluates neither as it is nor changed, so recorded as not checked.
+        assert p["data"]["check"]["result"] == "not checked" and p["data"]["check"]["why"] == "the check could not be made on this machine right now", p
         for args in [["apply", str(p["seq"])], ["revert", "3"], ["confirm"], ["reconcile"], ["repair"], ["password", "--user", "dev"]]:
             code, v = answer(ask("torq-agent-dev", {"args": ["--json"] + args, "password": "Torq-sock-2210", "hash": "$6$x$y"}))
             assert code == 1 and "the agent proposes; a person applies" in v["error"], (args, code, v)

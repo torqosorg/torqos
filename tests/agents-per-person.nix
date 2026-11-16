@@ -31,6 +31,10 @@ pkgs.testers.runNixOSTest {
     users.users.torq-agent-carol = { isSystemUser = true; group = "torq-agent-carol"; home = "/var/lib/torq-agent-carol"; createHome = true; };
     users.groups.torq-agent-carol = { };
     torq.broker.rebuildCommand = "true";
+    # The check of an agent's proposal (ADR-056) puts a copy of the config repo in the store. A test VM's store
+    # has under half a gigabyte to write in, less than `min-free` (1 GiB), so Nix would collect garbage before
+    # each copy and never get there: 40 seconds a time (measured), longer than this test waits for an answer.
+    nix.settings.min-free = 0;
     environment.systemPackages = [ pkgs.socat pkgs.jq ];
   };
 
@@ -96,6 +100,8 @@ pkgs.testers.runNixOSTest {
     with subtest("bob's agent proposes bob's packages, never alice's: refused, and ledgered as his agent's"):
         code, v = propose("torq-agent-bob", packages("bob", ["htop"]), "htop for bob")
         assert code == 0 and v["data"]["agent"] == "torq-agent-bob" and v["data"]["agent_for"] == "bob", (code, v)
+        # Checked first (ADR-056): this stub repo evaluates neither as it is nor changed, so recorded as not checked.
+        assert v["data"]["check"]["result"] == "not checked" and v["data"]["check"]["why"] == "the check could not be made on this machine right now", v
         before = head()
         code, v = propose("torq-agent-bob", packages("alice", ["nmap"]), "nmap for alice")
         assert code == 1 and "only for bob" in v["error"], (code, v)

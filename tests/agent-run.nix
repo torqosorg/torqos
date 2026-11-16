@@ -18,6 +18,10 @@ pkgs.testers.runNixOSTest {
     users.users.dev.hashedPassword = devHash;
     users.users.sam = { isNormalUser = true; hashedPasswordFile = lib.mkForce null; hashedPassword = "!"; };
     torq.broker.rebuildCommand = "true";
+    # The check of an agent's proposal (ADR-056) puts a copy of the config repo in the store. A test VM's store
+    # has under half a gigabyte to write in, less than `min-free` (1 GiB), so Nix would collect garbage before
+    # each copy and never get there: 40 seconds a time (measured), longer than this test waits for an answer.
+    nix.settings.min-free = 0;
     environment.systemPackages = [ pkgs.socat pkgs.jq pkgs.bubblewrap ];
     # Room for the many files the sweep race below walks (the default disk runs out of inodes at ~75k).
     virtualisation.diskSize = 4096;
@@ -103,6 +107,9 @@ pkgs.testers.runNixOSTest {
         out = agent(f"printf '%s\\n' {shlex.quote(req)} | socat -t 30 - UNIX-CONNECT:/run/torq/broker.sock")
         e = json.loads(machine.succeed("torq-broker log --json --brief | tail -1"))
         assert e["kind"] == "proposal" and e["actor"] == "agent" and e["data"]["caller"] == "torq-agent-dev", (e, out)
+        # Checked first, by the broker's checker and not by the agent (ADR-056): this stub repo evaluates neither as it
+        # is nor changed, so it is recorded as not checked.
+        assert e["data"]["check"]["result"] == "not checked" and e["data"]["check"]["why"] == "the check could not be made on this machine right now", e
 
 
     with subtest("nothing it starts outlives it; one session at a time; nothing setuid; the homes stay hidden"):

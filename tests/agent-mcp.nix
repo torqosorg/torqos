@@ -92,7 +92,8 @@ pkgs.testers.runNixOSTest {
     torq.agent.journal = true;
     torq.broker.rebuildCommand = "true";
     # The check of a proposal (ADR-056) puts a copy of the config repo in the store: with the little room a
-    # test VM's store has, Nix would collect garbage first, each time, for half a minute.
+    # test VM's store has (under half a gigabyte to write in, less than `min-free`), Nix would collect garbage
+    # first, each time: 40 seconds, measured.
     nix.settings.min-free = 0;
     # Claude Code chosen, allowed, and standing in.
     torq.unfree.packages = [ "claude-code" ];
@@ -180,6 +181,8 @@ pkgs.testers.runNixOSTest {
         assert "a person applies it" in said and "It waits for the person" in said and "taint" not in said, text
         p = proposal("htop from claude")
         assert p["actor"] == "agent" and p["data"]["agent"] == "torq-agent-alice" and p["tainted"] is True, p
+        # Checked first (ADR-056): this stub repo evaluates neither as it is nor changed, so recorded as not checked.
+        assert p["data"]["check"]["result"] == "not checked" and p["data"]["check"]["why"] == "the check could not be made on this machine right now", p
         assert p["data"]["session"]["tainted_by"] == ["agent-program", "show_alarms"], p
         assert not [e for e in entries() if e["kind"] == "applied"], "nothing applied by itself"
         assert "torq-mcp: session" in machine.succeed("cat /tmp/claude-err")

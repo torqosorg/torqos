@@ -31,7 +31,8 @@ pkgs.testers.runNixOSTest {
     torq.agent.journal = true;
     torq.broker.rebuildCommand = "true";
     # The check of a proposal (ADR-056) puts a copy of the config repo in the store: with the little room a
-    # test VM's store has, Nix would collect garbage first, each time, for half a minute.
+    # test VM's store has (under half a gigabyte to write in, less than `min-free`), Nix would collect garbage
+    # first, each time: 40 seconds, measured.
     nix.settings.min-free = 0;
     environment.systemPackages = [ pkgs.socat pkgs.jq pkgs.tmux ];
   };
@@ -119,6 +120,8 @@ pkgs.testers.runNixOSTest {
         code, first = propose(packages("dev", ["htop"]), "htop for dev", session=sid)
         assert code == 0 and first["tainted"] is True and first["data"]["session"]["id"] == sid and first["data"]["session"]["tainted_by"] == ["agent-program"], (code, first)
         assert first["data"]["agent"] == "torq-agent-dev" and first["data"]["agent_for"] == "dev" and "resident" not in first["data"] and "trust_applied" not in first, first
+        # Checked first (ADR-056): this stub repo evaluates neither as it is nor changed, so recorded as not checked.
+        assert first["data"]["check"]["result"] == "not checked" and first["data"]["check"]["why"] == "the check could not be made on this machine right now", first
         code, v = propose(packages("dev", ["htop"]), "htop, no session")
         assert code == 0 and v["tainted"] is True, ("no session: tainted", v)
         code, v = propose(packages("dev", ["htop"]), "htop, no such session", session="0" * 32)

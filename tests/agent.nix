@@ -21,6 +21,10 @@ pkgs.testers.runNixOSTest {
     # could cut the machine off, ADR-042, 6: kept out of this test's plain apply).
     torq.agent.mayPropose.settings = [ "services.nginx" ];
     torq.broker.rebuildCommand = "true";
+    # The check of an agent's proposal (ADR-056) puts a copy of the config repo in the store. A test VM's store
+    # has under half a gigabyte to write in, less than `min-free` (1 GiB), so Nix would collect garbage before
+    # each copy and never get there: 40 seconds a time (measured), longer than this test waits for an answer.
+    nix.settings.min-free = 0;
     environment.systemPackages = [ pkgs.socat pkgs.jq pkgs.tmux ];
   };
 
@@ -78,6 +82,9 @@ pkgs.testers.runNixOSTest {
     with subtest("what its list allows, it proposes"):
         code, v = propose(new_file("users/dev/packages.json", "[\"htop\"]"), "htop for dev")
         assert code == 0 and v["kind"] == "proposal" and v["actor"] == "agent" and v["data"]["caller"] == "torq-agent-dev" and v["data"]["agent_for"] == "dev", (code, v)
+        # The broker had it checked first (ADR-056). This repo is a stub (an empty flake.nix), which evaluates neither
+        # as it is nor changed: recorded, as not checked, and on which tree.
+        assert v["data"]["check"]["result"] == "not checked" and v["data"]["check"]["why"] == "the check could not be made on this machine right now" and len(v["data"]["check"]["tree"]) == 40, v
         code, v = propose(services("{\"nginx\": {\"enable\": true}, \"openssh\": {\"enable\": false}}"), "nginx on")
         assert code == 0 and v["kind"] == "proposal", (code, v)
 

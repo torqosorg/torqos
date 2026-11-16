@@ -81,7 +81,8 @@ pkgs.testers.runNixOSTest {
     torq.agent.people = [ "alice" "bob" ];
     torq.broker.rebuildCommand = "true";
     # The check of a proposal (ADR-056) puts a copy of the config repo in the store: with the little room a
-    # test VM's store has, Nix would collect garbage first, each time, for half a minute.
+    # test VM's store has (under half a gigabyte to write in, less than `min-free`), Nix would collect garbage
+    # first, each time: 40 seconds, measured.
     nix.settings.min-free = 0;
     # The engine: Claude Code chosen, allowed, installed for the agents, and standing in.
     torq.unfree.packages = [ "claude-code" ];
@@ -296,6 +297,8 @@ pkgs.testers.runNixOSTest {
         p = [e for e in entries() if e["seq"] == int(m.group(1))][0]
         assert p["kind"] == "proposal" and p["actor"] == "agent" and p["data"]["agent"] == "torq-agent-alice" and p["data"]["agent_for"] == "alice", p
         assert p["tainted"] is True and p["data"]["session"]["tainted_by"][0] == "agent-program", p
+        # Checked first (ADR-056): this stub repo evaluates neither as it is nor changed, so recorded as not checked.
+        assert p["data"]["check"]["result"] == "not checked" and p["data"]["check"]["why"] == "the check could not be made on this machine right now", p
         assert not [e for e in entries() if e["kind"] == "applied"], "nothing applied: it waits for alice"
 
     with subtest("what the sandbox rests on, at run time: tracing only one's own descendants, no user manager for the agent"):
