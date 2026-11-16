@@ -1443,17 +1443,24 @@ Its §5 lists claims without a test.
    (`request system agent trust`, the broker's `trust-grant`, `trust-revoke` and `trust`). Every proposal of an
    agent's waits for a person. What remains open, or is left behind:
    - **A configuration that still sets a removed setting does not build, and says what to delete.** Any setting
-     under `torq agent doctor` or `torq agent model` is refused at `commit check` and at the build with the words
-     of `modules/agent.nix` ("TorqOS no longer has an agent loop of its own … `delete torq agent doctor`"), not as
-     an unknown option. A machine that has one must delete it in the same commit that updates TorqOS: `request
-     system update`, `configure`, `delete torq agent doctor`, `delete torq agent model`, `commit`. The torqcli of the
-     running (older) system still knows the settings, so the delete works there; once the machine runs the new
-     TorqOS, torqcli no longer knows them (`"doctor" is not a setting`) and a leftover in `nixos/torq.json` could
-     only be taken out by hand, as root, which the build's refusal exists to make unnecessary. Not tried on a
-     machine: the assertions are held by `tests/agent-assertions.nix` (evaluation).
-   - **The journal's setting moved.** `torq agent doctor journal` is `torq agent journal`. It is not carried over:
-     a machine that had it on must set the new one (the refusal above says so), or its agents lose the journal,
-     which is the safe way to fail.
+     under `torq agent doctor` or `torq agent model` is refused at `commit check` and at the build, not as an
+     unknown option but in words of `modules/agent.nix` that begin with what is set, the file it is in and what
+     to type ("`torq agent doctor` is still set, in `nixos/torq.json', and TorqOS no longer has it. In torqcli:
+     `configure`, `delete torq agent doctor`, `commit` …"): torqcli shows a refusal's first 300 characters, so
+     the command comes first. Only what is set is named. Seen by a real evaluation of a small configuration on
+     the check host (2026-11-16); the file is named because each `nixos/<name>.json` is now a module of its own
+     (`modules/nixos-settings.nix`; before, NixOS named a file of nixpkgs). A machine that has one deletes it in
+     the commit that updates TorqOS: `request system update`, `configure`, `delete torq agent doctor`, `commit`.
+     The torqcli of the running (older) system still knows the settings, so the delete works there. On a machine
+     that already runs the new TorqOS (a configuration that came from a repository, say) torqcli no longer knows
+     them, and `delete` takes out what the files hold all the same: words the system's settings do not know are
+     deleted where the configuration's files hold exactly them, whole, and nothing is set that way
+     (`cli/src/settings.rs`, `holds`; unit-tested, fence included). Not tried on a machine that has the old
+     settings: the assertions are held by `tests/agent-assertions.nix` (evaluation).
+   - **The journal's setting moved.** `torq agent doctor journal` is `torq agent journal`. It is not carried over,
+     and it cannot be set in the commit that updates TorqOS: the torqcli of the system being updated does not
+     know it. It is a second commit, after the update is installed (the refusal says so, only where the journal
+     was on); between the two the agents do not read the journal, which is the safe way to fail.
    - **What a machine that had doctor mode on keeps on its disk.** The accounts `torq-resident-<person>` go from
      /etc/passwd at the switch (users are not mutable); they had no home (`/var/empty`). Left, and cleaned up by
      nothing: `/var/lib/torq-agent-<person>/.local/state/torq-agent/sessions/` (the old loop's own notes of its
@@ -1469,7 +1476,13 @@ Its §5 lists claims without a test.
      `broker/tests/ledger_fixtures.rs`, `broker/tests/sessions.rs`). A trust grant left standing is honoured by
      nothing, and is never written off as expired either: it stays the last word on the record about itself.
      `show system ledger` shows it with the reason it was written with ("…apply without asking, for 60 minutes"),
-     which is no longer true of the machine: history, not marked as such on the screen.
+     and adds that it no longer holds ("an earlier TorqOS; it no longer holds: every change your agent proposes
+     waits for you"). A repository whose ledger has such a grant still standing is adopted by a new machine: the
+     grant is no grant (ADR-055, as built 7b).
+   - **An agent's proposal that an older broker left unmarked and waiting** (from the old loop's resident agent:
+     `tainted: false`) is an agent's all the same, by who proposed it: applied only with the person's word that
+     they read it, never by a `commit at`, and shown with where it comes from (`read_first` in the broker,
+     the same rule in torqcli; `broker/tests/sessions.rs`, the old broker's own entry among them).
    - **Secrets: a session of an agent's is always one that "read untrusted text" (open; the owner's to
      decide).** ADR-052 4's rules are written in terms of a clean and a tainted session, and only the old loop's
      resident agent ever had a clean one. Nothing was loosened: every agent session is now tainted from its start

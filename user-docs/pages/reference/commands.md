@@ -34,7 +34,7 @@ command can be abbreviated to a unique beginning, and `?` or `help` works anywhe
 | `request system restore <backup> [<snapshot>] <path>` | put a path back from a backup, what is there set aside |
 | `request system software rollback <n>` | load configuration `<n>`'s software into the candidate (a downgrade); offered for install as an update is |
 | `request system revert <change>` | undo one recorded change (`#85` or `85`) |
-| `request system apply <n>` | apply a proposal of the agent's, after showing what it does and what your agent had read before proposing it (one that could cut you off is applied as a commit confirmed) |
+| `request system apply <n>` | apply a proposal of the agent's, after showing what it does, whose agent proposed it and which of TorqOS's tools that agent used before proposing it (one that could cut you off is applied as a commit confirmed) |
 | `request system snapshot take` | take a snapshot of your data now (asks your password) |
 | `request system snapshot restore <n> <path>` | put a path back as it was before change `n` (asks your password) |
 | `request system snapshot delete <n>` | delete one snapshot; recorded first, and cannot be undone (asks your password) |

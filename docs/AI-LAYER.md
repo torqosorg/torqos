@@ -128,7 +128,8 @@ told. So it treats everything an agent proposes as possibly steered by text some
   asks in words, TorqOS Settings shows the proposal's page). A `commit at` refuses it: it is applied by a
   person who is there.
 - A person reads where it comes from in plain words, at torqcli's apply prompt and on the Proposals page:
-  "Your agent proposed this", and what it reported reading ("the system's log, the record of changes"), with
+  "Your agent proposed this" (to anyone else, "<person>'s agent proposed this"), and which of TorqOS's tools
+  it reported reading with ("the system's log, the record of changes"), with
   the advice to judge the change itself and not the reason given for it.
 - **Sessions.** A program of the agent's (torq-mcp) starts a session at the broker; the broker keeps its
   record in its own state directory, where the agent cannot write. Every session is marked from its start
@@ -177,7 +178,8 @@ today are leave for their agent to use a secret without asking (`data.covers`: `
   `coding-tool`, `local-tcp-model`, `model-socket-open` or `model-unknown`. An entry's kind and data are
   free text to `verify`, which checks the chain: such a ledger verifies as it always did
   (`wire/tests/fixtures/before-phase-2.jsonl`, written by the old broker, is held to that). Such a grant is
-  honoured by nothing; torqcli shows those entries with the reasons they were written with, and reads the old
+  honoured by nothing; torqcli shows those entries with the reasons they were written with, says of such a grant
+  that it no longer holds, treats an agent's proposal left unmarked as an agent's, and reads the old
   session words as "your agent proposed this".
 
 ## Change lifecycle

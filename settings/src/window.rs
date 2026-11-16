@@ -2073,7 +2073,7 @@ impl Settings {
         // What answers: the engine (the program that answers), named, with where what it reads goes; under it
         // how the person signs it in.
         let (engine, how) = app::agent_engine(s.engine.as_ref(), s.plain);
-        page = page.push(settings::section().title("What answers").add(settings::item::builder("The program that answers when you ask (the engine)").description(how).control(widget::text::body(engine))));
+        page = page.push(settings::section().title("What answers").add(settings::item::builder("The program that answers when you ask").description(how).control(widget::text::body(engine))));
         // Instructions for your agent: the person's own standing text, in their own home (their agent cannot
         // write it). Shown as it stood when the page was opened; edited in the desktop's text editor.
         let (text, trouble) = app::agent_instructions(&s.instructions);

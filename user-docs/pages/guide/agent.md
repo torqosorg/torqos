@@ -148,8 +148,9 @@ read. So it never lets your agent change anything by itself:
 - everything your agent proposes waits until **you** have read it and approved it, one proposal at a time;
 - there is no setting that lets it apply changes without asking, for a while or for a kind of change;
 - when you apply one, TorqOS shows what the change does, as the system records it and not as the agent
-  describes it, tells you that your agent proposed it and what it had read (for example "the system's log,
-  the record of changes"), and asks.
+  describes it, tells you that your agent proposed it and which of TorqOS's own tools it used to read things
+  before proposing (for example "the system's log, the record of changes"; TorqOS does not see what else it
+  read), and asks. To anyone else on the machine the same proposal reads "<your name>'s agent proposed this".
 
 Judge the change you are shown, not the reason the agent gives for it.
 
@@ -211,16 +212,32 @@ The panel's dialog has not been tried on a real machine yet.
 
 TorqOS once had a small agent of its own (`torq doctor`, `torq agent propose`, the settings under `torq
 agent doctor` and `torq agent model`, and "trusting" the agent for a while with `request system agent
-trust`). All of that is gone. If your machine's configuration still has one of those settings, an update
-is refused and says so; delete them in the same change:
+trust`). All of that is gone. `torq doctor` and `torq agent propose` now say so in one line: ask your
+agent instead, with `torq ask`.
+
+If your machine's configuration still has one of those settings, the update is refused, and the refusal
+names each one that is set, the file it is in, and the line that deletes it. Delete what it names, in the
+same commit as the update:
 
 ```text
 alice@torq> request system update
 alice@torq> configure
 alice@torq# delete torq agent doctor
-alice@torq# delete torq agent model
 alice@torq# commit
 ```
 
-If you had let the agents read the system journal (`torq agent doctor journal true`), set `torq agent
-journal true` in the same change to keep that.
+(`delete torq agent model` the same way, if the refusal names it; delete only what it names.) The same
+lines work once the machine already runs the new TorqOS, for example when its configuration came from a
+repository that still had the setting.
+
+If you had let the agents read the system journal (`torq agent doctor journal true`), that setting is now
+`torq agent journal`. The TorqOS you are updating from does not know it yet, so it cannot be set in the
+same commit: after the update is installed, make a second one.
+
+```text
+alice@torq> configure
+alice@torq# set torq agent journal true
+alice@torq# commit
+```
+
+Between the two commits your agents do not read the journal.

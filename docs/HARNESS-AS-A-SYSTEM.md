@@ -338,8 +338,9 @@ Kimi); a person's own Claude Code outside the fence.
   - *Kept, to read what older machines hold:* the ledger's old words verify (a fixture written by the broker
     of 74339a1, `wire/tests/fixtures/before-phase-2.jsonl`); a session record from before is read, and is
     tainted; torqcli says the old session words as it says the new one.
-  - *A machine that still sets a removed setting* is told what to delete (`delete torq agent doctor`,
-    `delete torq agent model`, in the commit that updates TorqOS), not that an option is unknown.
+  - *A machine that still sets a removed setting* is told what is set, in which file, and what to type
+    (`delete torq agent doctor`, in the commit that updates TorqOS), not that an option is unknown; the
+    journal's new setting is a second commit after the update.
   - *Not decided here, for the owner:* secrets' rules (ADR-052 4) still tell a clean session from a tainted
     one, and no agent has a clean one now, so `first-use` and `never` ask every time and `allow all` and
     `allow <name> session` cover nothing (KNOWN-GAPS 6zzu).

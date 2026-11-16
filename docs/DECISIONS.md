@@ -3510,7 +3510,7 @@ content at the next), and a proposal must be judged on what it does, not on what
      left on a ledger is honoured by nothing. Rejected: writing `trust_expired` for such a grant (it would need
      the broker to keep a notion of what it no longer does).
   4. *The settings that went are refused by name.* `torq.agent.doctor` and `torq.agent.model` are each one
-     removed option (`lib.mkRemovedOptionModule`), so a configuration that still sets anything under them is
+     removed option (in the way of `lib.mkRemovedOptionModule`; see 7d), so a configuration that still sets anything under them is
      told what to delete at `commit check` and at the build, not that NixOS knows no such option. The journal's
      setting, which was doctor mode's and is the agents', is `torq agent journal` (not carried over: off unless
      set again). `torq.agent.doctor.package` is `torq.agent.package`.
@@ -3518,3 +3518,21 @@ content at the next), and a proposal must be judged on what it does, not on what
      distinguish a clean session from a tainted one, and no agent has a clean one now. Left for the owner.
   6. *Session trust may return* (5 of the decision), decided from what the model proxy saw: its own ADR then.
      Nothing is kept in the tree for it.
+  7. *The fix round after an independent review* (2026-11-16). (a) *An agent's proposal is an agent's by who
+     proposed it, not by its mark*: one an older broker recorded unmarked and that still waits is applied only
+     with the person's word that they read it, is refused by a `commit at`, and is shown with where it comes
+     from (`read_first`; torqcli follows the same rule). The `commit at`'s own refusal of what could cut the
+     machine off went with it: only an agent's proposal records that, and every one is refused before. (b) *A
+     standing grant of trust in proposals no longer stops an adoption.* A new machine refuses a repository
+     whose ledger has a grant to an agent still standing; a grant from before phase 2 that covers proposals
+     is now read as none, so such a repository is adopted where it was refused before. That is nil in effect:
+     the grant is honoured by nothing on the new machine (there is no code that applies under one), so
+     nothing is carried out for anyone; refusing would only lock out a repository whose one fault is its
+     history. (c) *Whose agent*: "Your agent proposed this" is said only to the person the agent works for
+     (the entry's `agent_for`); anyone else reads "<person>'s agent proposed this". (d) *The removed settings'
+     words* are our own module's (`removed` in `modules/agent.nix`, NixOS's `mkRemovedOptionModule` reworded):
+     what to type first, the file named, only what is set, and the journal's new setting said only where the
+     journal was on and as a second commit after the update (the older torqcli does not know it). torqcli's
+     `delete` takes a setting the system no longer knows out of the files that hold it, so the same line
+     works before and after the update. (e) `torq doctor` and `torq agent propose` say in one line that they
+     were removed and what to use.
