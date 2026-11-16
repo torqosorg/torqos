@@ -1,114 +1,33 @@
-//! What the agent is for this person and on this machine (ADR-051 2 and 4), as the Agent page, the applet
-//! and the window say it: their agent account, whether its service is here, and what answers — the engine
-//! (ADR-055, from /etc/torq/agent-tools.json), or the model TorqOS's own `torq doctor` asks —
-//! local, or REMOTE and where — read from what the system's configuration put in /etc/torq/agent.json
-//! (modules/ai.nix), everyone's to read. Whether a key is configured is a yes or a no: its file's name is
-//! in the configuration, its contents are the agent's, never read here.
+//! What the agent is for this person and on this machine (ADR-051 2 and 4, ADR-055), as the Agent page, the
+//! applet and the window say it: their agent account, whether its service is here, and what answers — the
+//! engine, the person's coding tool, from what the system's configuration put in /etc/torq/agent-tools.json
+//! (modules/agent.nix), everyone's to read.
 
-use serde::Deserialize;
-
-/// What the system's configuration wrote for the agent (modules/ai.nix): the fields this reads.
-const AGENT_JSON: &str = "/etc/torq/agent.json";
-
-#[derive(Deserialize)]
-struct Written {
-    endpoint: String,
-    model: String,
-    #[serde(rename = "apiKeyFile", default)]
-    api_key_file: Option<String>,
-}
-
-/// Where the model is.
+/// What answers when a person asks their agent: the engine the configuration names (`torq agent engine`).
 #[derive(Debug, Clone, PartialEq)]
-pub enum Place {
-    /// llama-server on this machine, on its socket (the default).
-    Local,
-    /// Another server on this machine (`http://127.0.0.1…`): what it reads stays here.
-    ThisMachine(String),
-    /// Off the machine: its host. What the agent reads leaves the machine.
-    Remote(String),
-    /// The engine's own (ADR-055): the coding tool asks its maker's service itself, as the agent, with the
-    /// sign-in kept in the agent's account. What the agent reads leaves the machine.
-    Engine(&'static str),
+pub struct Engine {
+    /// What it is called.
+    pub name: &'static str,
+    /// Whose service it asks: where what the agent reads goes.
+    pub maker: &'static str,
 }
 
-/// The model the agent asks.
-#[derive(Debug, Clone, PartialEq)]
-pub struct Brain {
-    pub place: Place,
-    /// The model's name, as its endpoint knows it.
-    pub model: String,
-    /// The endpoint, as configured.
-    pub endpoint: String,
-    /// Whether the configuration names a key file (never its contents).
-    pub key: bool,
-}
-
-/// The host (and port) of an `https://` or `http://` URL.
-fn host_of(url: &str) -> String {
-    let rest = url.split_once("://").map_or(url, |(_, r)| r);
-    let host = rest.split(['/', '?', '#']).next().unwrap_or_default();
-    // Never a user or password in what is shown.
-    crate::history::one_line(host.rsplit('@').next().unwrap_or_default(), 80)
-}
-
-/// A URL as it is shown: its scheme, host and path — never a user, password, query or fragment, where a key
-/// could be (the configuration refuses those too, modules/ai.nix).
-fn shown_url(url: &str) -> String {
-    let Some((scheme, rest)) = url.split_once("://") else { return url.split(['?', '#']).next().unwrap_or_default().to_string() };
-    let rest = rest.split(['?', '#']).next().unwrap_or_default();
-    let end = rest.find('/').unwrap_or(rest.len());
-    let (authority, path) = rest.split_at(end);
-    format!("{scheme}://{}{path}", authority.rsplit('@').next().unwrap_or_default())
-}
-
-/// /etc/torq/agent.json's words, read.
-pub fn brain_of(json: &str) -> anyhow::Result<Brain> {
-    let w: Written = serde_json::from_str(json)?;
-    let place = if w.endpoint.starts_with("unix:") {
-        Place::Local
-    } else if w.endpoint.starts_with("https://") {
-        Place::Remote(host_of(&w.endpoint))
-    } else {
-        Place::ThisMachine(host_of(&w.endpoint))
-    };
-    Ok(Brain { place, model: crate::history::one_line(&w.model, 80), endpoint: crate::history::one_line(&shown_url(&w.endpoint), 200), key: w.api_key_file.is_some() })
-}
-
-/// The engine `json` (agent-tools.json) names, if it is one TorqOS knows: what it is called.
-pub fn engine_of(json: &str) -> Option<&'static str> {
+/// The engine `json` (agent-tools.json) names, if it is one TorqOS knows.
+pub fn engine_of(json: &str) -> Option<Engine> {
     let v: serde_json::Value = serde_json::from_str(json).ok()?;
     let id = v["engine"].as_str()?;
-    KNOWN_TOOLS.iter().find(|(known, _, _, _)| *known == id).map(|(_, name, _, _)| *name)
+    KNOWN_TOOLS.iter().find(|(known, _, _, _)| *known == id).map(|(_, name, _, maker)| Engine { name, maker })
 }
 
-/// What answers this machine's agents: the engine, where the configuration names one (`torq agent engine`);
-/// else the model TorqOS's own `torq doctor` asks, where doctor mode is on; else `None`.
-pub fn brain() -> anyhow::Result<Option<Brain>> {
-    if let Some(name) = engine_of(&std::fs::read_to_string(TOOLS_JSON).unwrap_or_default()) {
-        return Ok(Some(Brain { place: Place::Engine(name), model: name.to_string(), endpoint: String::new(), key: false }));
-    }
-    match std::fs::read_to_string(AGENT_JSON) {
-        Ok(json) => brain_of(&json).map(Some),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(e) => Err(anyhow::Error::from(e).context(AGENT_JSON)),
-    }
+/// What answers this machine's agents: the engine the configuration names; none named, `None`.
+pub fn engine() -> Option<Engine> {
+    engine_of(&std::fs::read_to_string(TOOLS_JSON).unwrap_or_default())
 }
 
-impl Brain {
-    /// In one line: "Local model (llama-server on this machine)", "REMOTE: api.anthropic.com · claude-…".
+impl Engine {
+    /// In one line, with where what the agent reads goes: "Claude Code · what it reads goes to Anthropic".
     pub fn line(&self) -> String {
-        match &self.place {
-            Place::Local => "Local model (llama-server on this machine)".to_string(),
-            Place::ThisMachine(h) => format!("On this machine: {h} · {}", self.model),
-            Place::Remote(h) => format!("REMOTE: {h} · {}", self.model),
-            // Said by name where TorqOS knows whose it is: what the agent reads leaves the machine, to them.
-            Place::Engine(name) => format!("{name} · what it reads goes to {}", KNOWN_TOOLS.iter().find(|(_, known, _, _)| known == name).map_or("its maker's service", |(_, _, _, maker)| *maker)),
-        }
-    }
-
-    pub fn remote(&self) -> bool {
-        matches!(self.place, Place::Remote(_) | Place::Engine(_))
+        format!("{} · what it reads goes to {}", self.name, self.maker)
     }
 }
 
@@ -120,8 +39,8 @@ pub struct Setup {
     pub agent: Option<String>,
     /// Whether their agent's service is on this machine (its socket is there).
     pub service: bool,
-    /// The model, where doctor mode is on.
-    pub brain: Option<Brain>,
+    /// What answers, where an engine is chosen.
+    pub engine: Option<Engine>,
     /// The coding tools the configuration installs for the agents (`torq agent tools`, ADR-051 5).
     pub tools: Vec<CodingTool>,
     /// Whether `claude`, typed plainly, is a command on this machine: what the person is told to type.
@@ -183,7 +102,7 @@ pub fn setup() -> anyhow::Result<Setup> {
     let service = std::path::Path::new(&torq_wire::agent::socket(&me)).exists();
     let written = std::fs::read_to_string(TOOLS_JSON).unwrap_or_default();
     let tools = tools_of(&written, agent.as_deref(), |p| p.exists());
-    Ok(Setup { me, agent, service, brain: brain()?, tools, plain: plain_command_of(&written), instructions: super::instructions::mine() })
+    Ok(Setup { me, agent, service, engine: engine(), tools, plain: plain_command_of(&written), instructions: super::instructions::mine() })
 }
 
 /// How long systemd has to say whether the service runs: a look is never held longer.
@@ -244,40 +163,16 @@ pub(crate) fn output_within(mut c: std::process::Command, limit: std::time::Dura
 mod tests {
     use super::*;
 
-    #[test]
-    fn the_model_in_one_line() {
-        let local = brain_of(r#"{"endpoint":"unix:/run/llama-cpp/llama.sock","model":"local","apiKeyFile":null,"journal":false,"maxSteps":8}"#).unwrap();
-        assert_eq!(local.place, Place::Local);
-        assert_eq!(local.line(), "Local model (llama-server on this machine)");
-        assert!(!local.key && !local.remote());
-        let remote = brain_of(r#"{"endpoint":"https://key:secret@api.anthropic.com/v1","model":"claude-sonnet-4-5","apiKeyFile":"/var/lib/torq-agent-alice/model.key","journal":true,"maxSteps":8}"#).unwrap();
-        assert_eq!(remote.place, Place::Remote("api.anthropic.com".into()));
-        assert_eq!(remote.line(), "REMOTE: api.anthropic.com · claude-sonnet-4-5");
-        assert!(remote.key && remote.remote());
-        assert_eq!(remote.endpoint, "https://api.anthropic.com/v1", "no password shown");
-        let keyed = brain_of(r#"{"endpoint":"https://api.example.org/v1?key=secret#more","model":"m"}"#).unwrap();
-        assert_eq!(keyed.endpoint, "https://api.example.org/v1", "no query or fragment shown");
-        assert_eq!(shown_url("https://h?k=s"), "https://h");
-        assert_eq!(shown_url("https://u:p@h/p#f"), "https://h/p");
-        let here = brain_of(r#"{"endpoint":"http://127.0.0.1:8099/v1","model":"fake","apiKeyFile":null}"#).unwrap();
-        assert_eq!(here.place, Place::ThisMachine("127.0.0.1:8099".into()));
-        assert!(!here.remote());
-        assert!(brain_of("{}").is_err());
-    }
-
-    /// ADR-055: the engine the configuration names, by what it is called; none named, or one this TorqOS does
-    /// not know, is no engine. Where there is one, it is what answers, said remote.
+    /// ADR-055: the engine the configuration names, by what it is called and whose service it asks; none named,
+    /// or one this TorqOS does not know, is no engine.
     #[test]
     fn the_engine_the_configuration_names() {
-        assert_eq!(engine_of(r#"{"tools":["claude-code"],"engine":"claude-code"}"#), Some("Claude Code"));
+        let e = engine_of(r#"{"tools":["claude-code"],"engine":"claude-code"}"#).unwrap();
+        assert_eq!(e, Engine { name: "Claude Code", maker: "Anthropic" });
+        assert_eq!(e.line(), "Claude Code · what it reads goes to Anthropic");
         for none in [r#"{"tools":["claude-code"],"engine":null}"#, r#"{"tools":["claude-code"]}"#, r#"{"engine":"something-else"}"#, "", "not json"] {
             assert_eq!(engine_of(none), None, "{none}");
         }
-        let b = Brain { place: Place::Engine("Claude Code"), model: "Claude Code".into(), endpoint: String::new(), key: false };
-        assert_eq!(b.line(), "Claude Code · what it reads goes to Anthropic");
-        let other = Brain { place: Place::Engine("Something else"), ..b.clone() };
-        assert_eq!(other.line(), "Something else · what it reads goes to its maker's service");
-        assert!(b.remote());
     }
 
     /// ADR-051 5: the coding tools the configuration chose, installed where the agent's own profile has them;

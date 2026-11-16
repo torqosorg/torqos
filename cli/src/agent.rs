@@ -42,17 +42,12 @@ pub(crate) fn agent_of(person: &str) -> String {
     format!("{AGENT_PREFIX}{person}")
 }
 
-/// What each person's resident agent's own account's name begins with: `torq-resident-<person>` (ADR-051 3,
-/// amended 2026-11-11). It runs the person's agent service; to torqcli it is an agent as the agent account is.
-const RESIDENT_PREFIX: &str = "torq-resident-";
-
-/// Whether `name` is named as an agent account is (`torq-agent-<someone>`, or a resident agent's own
-/// `torq-resident-<someone>`). Convenience only: torqcli
+/// Whether `name` is named as an agent account is (`torq-agent-<someone>`). Convenience only: torqcli
 /// runs unprivileged, as whoever runs it, and what it decides here is how it behaves (a commit that
 /// proposes and stops, no `torq agent run` from inside one) — never what is allowed. The broker is the
 /// authority: it knows an agent by its map (/etc/torq/broker.json) and the kernel's uid, not by a name.
 pub(crate) fn is_agent(name: &str) -> bool {
-    [AGENT_PREFIX, RESIDENT_PREFIX].iter().any(|pre| name.strip_prefix(pre).is_some_and(|p| !p.is_empty()))
+    name.strip_prefix(AGENT_PREFIX).is_some_and(|p| !p.is_empty())
 }
 
 const SUDO: &str = "/run/wrappers/bin/sudo";
@@ -646,8 +641,8 @@ impl Drop for Keys {
     }
 }
 
-/// What a person reads where a proposal of their agent's is told (`torq ask`, the window, the applet). The
-/// broker marks every proposal of a coding tool's tainted, whatever it read; what that means to the person is this.
+/// What a person reads where a proposal of their agent's is told (the window, the applet): nothing an agent
+/// proposes is applied before its person has read and approved it.
 pub const ALWAYS_ASKED: &str = "Your agent's proposals always wait for you to read and approve them.";
 
 /// What Forget did, as every program says it.
@@ -683,8 +678,6 @@ fn show(e: torq_wire::agent::Event, error_ends: bool, failed: &mut bool, fate: &
             }
         }
         Event::Called { tool } => writeln!(err, "agent: {}", clean(&tool))?,
-        // Why the broker marked it (its own word, `coding-tool`) is not a person's to read: what it means is.
-        Event::Tainted { .. } => writeln!(err, "agent: {ALWAYS_ASKED}")?,
         Event::Proposed { seq } => match fate(seq) {
             Fate::Waiting => writeln!(out, "Proposed #{seq}: it waits for you. To read it: `show system proposals`. To apply it: `request system apply {seq}`")?,
             Fate::Failed => writeln!(out, "Proposed #{seq}: applying it failed once, so it waits for you again. To read it: `show system proposals`. To apply it: `request system apply {seq}`")?,
@@ -764,39 +757,6 @@ pub(crate) fn ask(args: &[String]) -> Result<i32> {
     bail!("your agent's service ended before it answered (journalctl -u {}, an administrator's)", agent.unit())
 }
 
-/// `torq doctor "<question>"` (ADR-042): the agent, in doctor mode, asked one question — run as the
-/// agent's account through `torq agent run` (no directory shared), so it reads only what the agent
-/// may, and proposes nothing. As the agent already (a tool run as it), the doctor itself.
-///
-/// `torq agent propose "<ask>"` (`propose`; ADR-042, 6): the same, with one more tool — it may
-/// propose a change within what the agent may (torq.agent.mayPropose), never apply one: a person
-/// applies it with `request system apply <n>`.
-pub(crate) fn doctor_mode(args: &[String], propose: bool) -> Result<i32> {
-    const DOCTOR: &str = "/run/current-system/sw/bin/torq-doctor";
-    let question = args.join(" ");
-    if question.trim().is_empty() {
-        bail!(if propose {
-            "usage: torq agent propose \"<what you want changed>\" — e.g. torq agent propose \"install htop for me\""
-        } else {
-            "usage: torq doctor \"<question>\" — e.g. torq doctor \"why is my wifi flaky?\""
-        });
-    }
-    if !Path::new(DOCTOR).exists() {
-        bail!("doctor mode is off on this machine: configure; set torq agent doctor enable true; commit (ADR-042)");
-    }
-    let mut doctor: Vec<String> = vec![DOCTOR.into()];
-    if propose {
-        doctor.push("--propose".into());
-    }
-    doctor.extend(["--".into(), question]);
-    if is_agent(&crate::me()?) {
-        use std::os::unix::process::CommandExt;
-        let e = Command::new(&doctor[0]).args(&doctor[1..]).exec();
-        return Err(anyhow::Error::from(e).context("starting the doctor"));
-    }
-    run(&[vec!["run".to_string(), "--".to_string()], doctor].concat())
-}
-
 /// `torq break-glass "<reason>"` (ADR-035): a root shell, after the record. The launcher, through
 /// sudo (the person's password), writes the ledger entry, pushes it, and only then opens the shell.
 pub(crate) fn break_glass(args: &[String]) -> Result<i32> {
@@ -827,8 +787,8 @@ mod tests {
     #[test]
     fn whose_agent_by_name() {
         assert_eq!(agent_of("alice"), "torq-agent-alice");
-        assert!(is_agent("torq-agent-alice") && is_agent(&agent_of("bob")) && is_agent("torq-resident-alice"));
-        for not in ["torq-agent", "torq-agent-", "torq-resident-", "torq-resident", "alice", "xtorq-agent-alice"] {
+        assert!(is_agent("torq-agent-alice") && is_agent(&agent_of("bob")));
+        for not in ["torq-agent", "torq-agent-", "torq-resident-alice", "alice", "xtorq-agent-alice"] {
             assert!(!is_agent(not), "{not}");
         }
     }
@@ -842,14 +802,6 @@ mod tests {
         assert!(parse(&a("run --share")).is_err());
         assert!(parse(&a("run --shar /x")).is_err(), "no other option");
         assert!(parse(&a("start")).is_err());
-    }
-
-    #[test]
-    fn the_doctor_needs_a_question() {
-        for q in [vec![], vec!["  ".to_string()]] {
-            assert!(format!("{:#}", doctor_mode(&q, false).unwrap_err()).starts_with("usage: torq doctor"));
-            assert!(format!("{:#}", doctor_mode(&q, true).unwrap_err()).starts_with("usage: torq agent propose"));
-        }
     }
 
     #[test]
@@ -1009,15 +961,13 @@ mod tests {
         let waiting = |_| Fate::Waiting;
         let mut s = |e| show(e, false, &mut failed, &waiting, &mut out, &mut err).unwrap();
         assert_eq!(s(Event::Called { tool: "read_journal".into() }), None);
-        assert_eq!(s(Event::Tainted { why: "coding-tool\u{1b}[2J".into() }), None);
         assert_eq!(s(Event::Say { text: "line one\nrewrite\rd \u{1b}[2J\u{202e}".into() }), None);
         assert_eq!(s(Event::Proposed { seq: 12 }), None);
         assert_eq!(s(Event::Done { exit: 0 }), Some(0));
         let (out, err) = (String::from_utf8(out).unwrap(), String::from_utf8(err).unwrap());
         assert!(out.starts_with("line one\n") && out.contains("Proposed #12: it waits for you") && out.contains("request system apply 12"), "{out}");
         assert!(!out.contains('\u{1b}') && !out.contains('\r') && !out.contains('\u{202e}'), "{out:?}");
-        // The broker's own word for the taint is not shown: what it means to the person is.
-        assert_eq!(err, "agent: read_journal\nagent: Your agent's proposals always wait for you to read and approve them.\n");
+        assert_eq!(err, "agent: read_journal\n");
         // An error, then done: failed, whatever the code.
         let (mut failed, mut sink) = (false, Vec::new());
         assert_eq!(show(Event::Error { text: "a task is running already".into() }, false, &mut failed, &waiting, &mut Vec::new(), &mut sink).unwrap(), None);

@@ -102,7 +102,7 @@ mod tests {
         assert_eq!(r.open, None, "a search opens nothing");
         let r = p.handle(r#"{"Activate":0}"#);
         assert_eq!(r.open, Some(Handoff::new("why is my wifi slow?", None)));
-        assert!(!r.open.as_ref().unwrap().taints(), "nothing attached");
+        assert!(!r.open.as_ref().unwrap().context.is_some(), "nothing attached");
         assert_eq!(r.say, [r#""Close""#]);
         assert_eq!(p.handle(r#"{"Activate":0}"#), Reply::default(), "offered once");
     }

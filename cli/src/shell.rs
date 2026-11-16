@@ -555,7 +555,7 @@ impl Machine for Real<'_> {
         ))
     }
 
-    fn propose(&self, diff: &str, base: &str, reason: &str) -> Result<(u64, Option<u64>)> {
+    fn propose(&self, diff: &str, base: &str, reason: &str) -> Result<u64> {
         let scratch = scratch_dir()?;
         let file = scratch.path().join("change.diff");
         fs::write(&file, diff)?;
@@ -567,9 +567,7 @@ impl Machine for Real<'_> {
         }
         let args: Vec<&str> = args.iter().map(String::as_str).collect();
         let proposed = done(run::broker_json(broker(self.cli, &args)?, &log)?, "propose")?;
-        let seq = proposed["seq"].as_u64().context("the broker did not say which proposal it made")?;
-        // Applied at once under a person's trust (ADR-042, 7), if the broker says so.
-        Ok((seq, proposed["trust_applied"]["seq"].as_u64()))
+        proposed["seq"].as_u64().context("the broker did not say which proposal it made")
     }
 
     fn proposals(&self, fit: Option<usize>) -> Result<String> {
@@ -588,7 +586,8 @@ impl Machine for Real<'_> {
                 history::one_line(&e.ts, 25),
                 history::one_line(&e.tier, 8),
                 history::one_line(&by, 30),
-                if e.tainted { "  ⚠ read untrusted content" } else { "" },
+                // An agent's is said by who proposed it; anyone else's that says so of itself is marked.
+                if e.tainted && e.actor != "agent" { "  ⚠ made from untrusted text" } else { "" },
                 if history::failed_once(&entries, e.seq) { "  ✗ its apply failed once (apply it again, or decline it)" } else { "" },
                 history::one_line(&e.reason, 80)
             );
@@ -674,23 +673,6 @@ impl Machine for Real<'_> {
             Some(m) => format!("applied proposal #{seq} (change #{}) as a commit confirmed: it rolls back in {m} minutes unless you confirm it (configure; commit)\n", v["seq"].as_u64().unwrap_or(0)),
             None => format!("applied proposal #{seq} (change #{})\n", v["seq"].as_u64().unwrap_or(0)),
         })
-    }
-
-    fn trust(&self, minutes: Option<u32>) -> Result<String> {
-        let log = run::start_log()?;
-        let me = me()?;
-        let Some(m) = minutes else {
-            let v = done(run::broker_json(broker(self.cli, &["trust-revoke", "--approved-by", &me])?, &log)?, "request system agent trust revoke")?;
-            return Ok(if v["revoked"].is_null() { "You had given the agent no trust to revoke.\n".into() } else { "Your trust in the agent is ended: its proposals wait for you again.\n".into() });
-        };
-        let m_s = m.to_string();
-        let v = done(run::broker_json(broker(self.cli, &["trust-grant", "--minutes", &m_s, "--approved-by", &me])?, &log)?, "request system agent trust")?;
-        Ok(format!(
-            "Until {} ({m} minute{}), the agent's proposals in your own folder apply without asking (change #{}): never a system change, never one from a session that read untrusted text. Each is its own change in the ledger (request system revert <n> undoes it); request system agent trust revoke ends it now.\n",
-            history::one_line(v["data"]["until"].as_str().unwrap_or("?"), 40),
-            if m == 1 { "" } else { "s" },
-            v["seq"].as_u64().unwrap_or(0)
-        ))
     }
 
     fn commit(&self, diff: &str, base: &str, tier: &str, reason: &str, confirm: Option<u32>) -> Result<u64> {
@@ -824,7 +806,6 @@ impl Machine for Real<'_> {
                 history::one_line(v["pending_confirm"]["deadline"].as_str().unwrap_or("?"), 40)
             ));
         }
-        out.push_str(&trust_lines(&v["trust"]));
         if detail {
             // The facts behind the report, as the broker gives them (`torq-broker status`).
             let fact = |k: &str| match &v[k] {
@@ -1028,7 +1009,11 @@ impl Machine for Real<'_> {
             history::one_line(&target.reason, 60),
             history::one_line(&target.ts, 25),
             history::one_line(target.approved_by.as_deref().unwrap_or(&target.actor), 20),
-            if target.tainted { ", from a session that read untrusted content" } else { "" },
+            match (target.tainted, target.actor.as_str()) {
+                (false, _) => "",
+                (true, "agent") => ", proposed by an agent",
+                (true, _) => ", made from untrusted text",
+            },
             if files.is_empty() { "-".to_string() } else { files.join(", ") }
         );
         let what = format!("{what}{}", self.revert_ssh_keys(target)?);
@@ -1207,9 +1192,9 @@ fn propose_args(diff: &str, base: &str, reason: &str) -> Vec<String> {
     vec!["propose".into(), format!("--diff={diff}"), format!("--base={base}"), format!("--reason={reason}"), "--actor=user".into()]
 }
 
-/// The agent's session at the broker, as the program that started it (`torq-doctor`) hands it to
-/// torqcli: `TORQ_AGENT_SESSION`, an id and nothing else. The broker decides what it means; without
-/// one, the agent's proposal is tainted (ADR-042, amended).
+/// The agent's session at the broker, as the program that started it (`torq-mcp`) hands it to
+/// torqcli: `TORQ_AGENT_SESSION`, an id and nothing else. The broker decides what it means: the
+/// proposal's entry then carries what the session reported reading (ADR-042, amended).
 fn agent_session(var: Option<String>) -> Option<String> {
     var.filter(|s| s.len() == 32 && s.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)))
 }
@@ -1217,27 +1202,12 @@ fn agent_session(var: Option<String>) -> Option<String> {
 /// What a person is told before applying a proposal, and the minutes of the commit confirmed it is
 /// applied as, if it could cut the machine off (ADR-042, 6).
 fn apply_warning(body: &serde_json::Value) -> (String, Option<u32>) {
-    // What its session read, as the broker recorded it in the proposal's own entry.
-    let read: Option<Vec<String>> = body["data"]["session"]["tainted_by"].as_array().map(|a| a.iter().filter_map(|s| s.as_str()).map(|s| history::one_line(s, 40)).collect());
     let mut why = String::new();
     if body["tainted"].as_bool().unwrap_or(false) {
-        // Not TorqOS's resident agent (ADR-051 step 5): what the program read is not known at all.
-        let (unseen, read): (Vec<String>, Vec<String>) = read.unwrap_or_default().into_iter().partition(|s| crate::app::UNSEEN.contains(&s.as_str()));
-        let (model, read): (Vec<String>, Vec<String>) = read.into_iter().partition(|s| crate::app::MODEL.contains(&s.as_str()));
-        if !model.is_empty() {
-            why.push_str(&format!("Its model is one another program on this machine could have stood in for ({}): what it was told to propose may not be the model's. ", model.join(", ")));
-        }
-        if !unseen.is_empty() {
-            why.push_str(&format!("This came from a program run as your agent that is not TorqOS's resident agent ({}): a coding tool, `torq agent run`, `torq doctor`. The broker cannot see what it read: treat it as if it read the web. ", unseen.join(", ")));
-        }
-        let from = match read.as_slice() {
-            r if !r.is_empty() => format!("Before proposing this, the agent read text that anyone could have written ({}): a log line, a device's name, a web page can carry instructions meant for it. ", r.join(", ")),
-            _ if !unseen.is_empty() || !model.is_empty() => String::new(),
-            _ if body["actor"] == "agent" => "The broker cannot vouch for what the program that proposed this read (it named no session TorqOS's agent keeps): treat it as if it read the web. ".into(),
-            _ => "The one who proposed it said it came from untrusted text (the web, mail, a download). ".into(),
-        };
-        why.push_str(&from);
-        why.push_str("Judge the change itself, shown above, not the reason given for it. ");
+        // What its session reported reading, as the broker recorded it in the proposal's own entry.
+        let sources: Vec<String> = body["data"]["session"]["tainted_by"].as_array().into_iter().flatten().filter_map(|s| s.as_str().map(String::from)).collect();
+        why.push_str(&crate::app::origin_said(body["actor"] == "agent", &sources));
+        why.push_str(". Judge the change itself, shown above, not the reason given for it. ");
     }
     let cuts: Vec<String> = body["data"]["cuts_off"].as_array().into_iter().flatten().filter_map(|s| s.as_str()).map(|s| history::one_line(s, 80)).collect();
     let confirm = (!cuts.is_empty()).then_some(CUTS_OFF_MINUTES);
@@ -1255,33 +1225,6 @@ fn apply_warning(body: &serde_json::Value) -> (String, Option<u32>) {
     (why, confirm)
 }
 
-/// `show system alarms`: each person's trust in the agent while it holds (the broker's `status`,
-/// `trust`) — not a problem, but what a person must see: changes may land without anyone asked.
-fn trust_lines(trust: &serde_json::Value) -> String {
-    trust
-        .as_array()
-        .into_iter()
-        .flatten()
-        .map(|g| {
-            format!(
-                "  the agent's proposals in {}'s folder apply without asking until {} (trust #{}; request system agent trust revoke ends it)\n",
-                history::one_line(g["person"].as_str().unwrap_or("?"), 40),
-                history::one_line(g["until"].as_str().unwrap_or("?"), 40),
-                g["seq"].as_u64().unwrap_or(0)
-            )
-        })
-        .collect()
-}
-
-#[test]
-fn trust_is_shown_while_it_holds() {
-    let t = serde_json::json!([{"seq": 12, "person": "viper", "minutes": 30, "until": "2026-11-07T10:30:00Z"}]);
-    assert_eq!(trust_lines(&t), "  the agent's proposals in viper's folder apply without asking until 2026-11-07T10:30:00Z (trust #12; request system agent trust revoke ends it)\n");
-    assert_eq!(trust_lines(&serde_json::Value::Null), "");
-    // Text from the ledger never drives the terminal.
-    assert!(!trust_lines(&serde_json::json!([{"seq": 1, "person": "v\u{1b}[2J", "until": "x"}])).contains('\u{1b}'));
-}
-
 /// How long an agent's change that could cut the machine off waits for a person's confirmation.
 const CUTS_OFF_MINUTES: u32 = 10;
 
@@ -1290,18 +1233,21 @@ fn a_person_is_told_why_before_applying() {
     use serde_json::json;
     let (w, c) = apply_warning(&json!({"tier": "user", "tainted": false, "actor": "agent", "data": {}}));
     assert_eq!((w.as_str(), c), ("", None));
-    let (w, c) = apply_warning(&json!({"tier": "user", "tainted": true, "actor": "agent", "data": {"session": {"id": "s", "tainted_by": ["read_journal", "show_ledger"]}}}));
-    assert!(w.contains("(read_journal, show_ledger)") && w.contains("not the reason") && c.is_none(), "{w}");
+    // An agent's: said so, with what it reported reading in plain words; never the record's own words.
+    let (w, c) = apply_warning(&json!({"tier": "user", "tainted": true, "actor": "agent", "data": {"session": {"id": "s", "tainted_by": ["agent-program", "read_journal", "show_ledger"]}}}));
+    assert_eq!(w, "Your agent proposed this. Before proposing it, it read text that anyone could have written (the system's log, the record of changes): a log line, a device's name or a web page can carry instructions meant for it. Judge the change itself, shown above, not the reason given for it. ");
+    assert!(c.is_none());
     let (w, _) = apply_warning(&json!({"tier": "user", "tainted": true, "actor": "agent", "data": {}}));
-    assert!(w.contains("named no session"), "{w}");
-    // Not the resident agent: said so, and what else it read besides.
-    let (w, _) = apply_warning(&json!({"tier": "user", "tainted": true, "actor": "agent", "data": {"session": {"id": "s", "tainted_by": ["not-the-resident-agent", "coding-tool", "read_journal"]}}}));
-    assert!(w.contains("not TorqOS's resident agent (not-the-resident-agent, coding-tool)") && w.contains("could have written (read_journal)") && w.contains("not the reason"), "{w}");
-    let (w, _) = apply_warning(&json!({"tier": "user", "tainted": true, "actor": "agent", "data": {"session": {"id": "s", "tainted_by": ["not-the-resident-agent"]}}}));
-    assert!(w.contains("cannot see what it read") && !w.contains("could have written") && !w.contains("named no session"), "{w}");
-    // The resident agent, with a model another program here could have stood in for (ADR-051 step 5's review).
-    let (w, _) = apply_warning(&json!({"tier": "user", "tainted": true, "actor": "agent", "data": {"session": {"id": "s", "tainted_by": ["local-tcp-model"]}}}));
-    assert!(w.contains("could have stood in for (local-tcp-model)") && !w.contains("named no session") && !w.contains("could have written"), "{w}");
+    assert_eq!(w, "Your agent proposed this. TorqOS cannot see what it had read. Judge the change itself, shown above, not the reason given for it. ");
+    // As an older broker recorded one (its words for the old loop, a coding tool, a model): the same sentence.
+    for old in [json!(["not-the-resident-agent", "coding-tool"]), json!(["local-tcp-model"]), json!(["not-the-resident-agent"])] {
+        let (w, _) = apply_warning(&json!({"tier": "user", "tainted": true, "actor": "agent", "data": {"session": {"id": "s", "tainted_by": old}}}));
+        assert!(w.starts_with("Your agent proposed this. TorqOS cannot see what it had read. Judge"), "{w}");
+        assert!(!w.contains("resident") && !w.contains("coding-tool") && !w.contains("model") && !w.contains("taint"), "{w}");
+    }
+    // A person's own, who said it came from untrusted text.
+    let (w, _) = apply_warning(&json!({"tier": "user", "tainted": true, "actor": "user", "data": {}}));
+    assert!(w.starts_with("The one who proposed this said it was made from untrusted text (the web, mail, a download). Judge"), "{w}");
     let (w, c) = apply_warning(&json!({"tier": "system", "tainted": false, "actor": "agent", "data": {"cuts_off": ["networking.wireless.enable"]}}));
     assert!(w.contains("networking.wireless.enable") && w.contains("commit confirmed"), "{w}");
     assert_eq!(c, Some(CUTS_OFF_MINUTES));
@@ -1563,11 +1509,12 @@ fn a_command_on_the_command_line() {
         assert!(e.starts_with(why), "{bad:?}: {e}");
     }
 }
-/// `torq agent session start` (its id on standard output) and `torq agent session taint <id>
-/// <source>`: the agent's session at the broker, which keeps its record (ADR-042, amended). The
-/// agent's alone: the broker refuses anyone else's.
+/// `torq agent session start` (its id on standard output), `torq agent session taint <id> <source>` (the
+/// session read a tool's untrusted text) and `torq agent session show <id>`: the agent's session at the
+/// broker, which keeps its record (ADR-042, amended). The agent's alone, run by torq-mcp: the broker
+/// refuses anyone else's.
 fn agent_session_command(args: &[String]) -> Result<i32> {
-    let usage = "usage: torq agent session start | torq agent session taint <id> <source> | torq agent session show <id> (the agent's, run by torq-doctor)";
+    let usage = "usage: torq agent session start | torq agent session taint <id> <source> | torq agent session show <id> (the agent's own, run by TorqOS's tools for it, torq-mcp: not a person's command)";
     let cli = Cli { repo: PathBuf::from(REPO), broker: if cfg!(debug_assertions) { std::env::var("TORQ_BROKER").unwrap_or_else(|_| BROKER.into()) } else { BROKER.into() } };
     let log = run::start_log()?;
     let a: Vec<&str> = args.iter().map(String::as_str).collect();
@@ -1601,13 +1548,9 @@ fn run_shell(args: &[String]) -> Result<i32> {
     if args.first().map(String::as_str) == Some("break-glass") {
         return crate::agent::break_glass(&args[1..]);
     }
-    // The agent's session at the broker (ADR-042, amended): torq-doctor's way to it, as the agent.
+    // The agent's session at the broker (ADR-042, amended): torq-mcp's way to it, as the agent.
     if args.first().map(String::as_str) == Some("agent") && args.get(1).map(String::as_str) == Some("session") {
         return agent_session_command(&args[2..]);
-    }
-    // The agent asked to propose (ADR-042, 6): the doctor, with one more tool.
-    if args.first().map(String::as_str) == Some("agent") && args.get(1).map(String::as_str) == Some("propose") {
-        return crate::agent::doctor_mode(&args[2..], true);
     }
     // `claude`, typed plainly (ADR-055; `torq agent plainCommand`): Claude Code as the person's agent, in the
     // folder they are in, every word after it Claude Code's own.
@@ -1622,13 +1565,9 @@ fn run_shell(args: &[String]) -> Result<i32> {
     if args.first().map(String::as_str) == Some("agent") {
         return crate::agent::run(&args[1..]);
     }
-    // The person's own agent, resident (ADR-051 3 and 4): asked over its socket, the answer streamed.
+    // The person's own agent (ADR-051 3 and 4, ADR-055): asked over its socket, the answer streamed.
     if args.first().map(String::as_str) == Some("ask") {
         return crate::agent::ask(&args[1..]);
-    }
-    // Doctor mode (ADR-042): the agent asked one question, as the agent's account.
-    if args.first().map(String::as_str) == Some("doctor") {
-        return crate::agent::doctor_mode(&args[1..], false);
     }
     if args == ["install"] {
         return crate::install::run().map(|()| 0);

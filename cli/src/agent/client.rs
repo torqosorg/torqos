@@ -367,7 +367,6 @@ mod tests {
         let (_d, path, asked) = service(|_| {
             [
                 r#"{"type":"called","tool":"read_journal"}"#,
-                r#"{"type":"tainted","why":"read_journal"}"#,
                 r#"{"type":"say","text":"fine"}"#,
                 r#"{"type":"proposed","seq":7}"#,
                 r#"{"type":"done","exit":0}"#,
@@ -381,7 +380,6 @@ mod tests {
             got,
             vec![
                 Event::Called { tool: "read_journal".into() },
-                Event::Tainted { why: "read_journal".into() },
                 Event::Say { text: "fine".into() },
                 Event::Proposed { seq: 7 },
                 Event::Done { exit: 0 },

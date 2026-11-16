@@ -8,9 +8,6 @@
 //!
 //! Who is asking is never in a request: the service takes it from the kernel (SO_PEERCRED) and answers
 //! only the person it serves.
-//!
-//! `Task` and `Turn` are the old loop's (`torq-doctor --propose --task`, which wrote the same events on its
-//! output): nothing starts it that way any more, and they go with it (docs/HARNESS-AS-A-SYSTEM.md, phase 2).
 
 use serde::{Deserialize, Serialize};
 
@@ -92,8 +89,6 @@ pub enum Event {
     Called { tool: String },
     /// A proposal the engine made through TorqOS's tools: the broker's number for it.
     Proposed { seq: u64 },
-    /// What the answer proposes is marked tainted at the broker, and why (a source's word: `coding-tool`).
-    Tainted { why: String },
     /// Something failed; what, in words.
     Error { text: String },
     /// The ask is over: 0 when it was answered, 137 when it was stopped (128 + the signal that ended the engine),
@@ -115,29 +110,6 @@ pub enum Event {
     Forgotten,
 }
 
-/// One turn the agent remembers: what the person asked, and what it answered — kept only when the
-/// answer came from a session that read nothing untrusted (else `None`: a tainted answer is never
-/// carried into a later session as if it were the agent's own).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Turn {
-    pub question: String,
-    #[serde(default)]
-    pub answer: Option<String>,
-}
-
-/// What the service hands the harness for one task, on its input.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Task {
-    pub question: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub context: Option<String>,
-    /// The conversation's recent turns, oldest first.
-    #[serde(default)]
-    pub memory: Vec<Turn>,
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -156,7 +128,6 @@ mod tests {
             (Event::Say { text: "a\n".into() }, r#"{"type":"say","text":"a\n"}"#),
             (Event::Called { tool: "read_journal".into() }, r#"{"type":"called","tool":"read_journal"}"#),
             (Event::Proposed { seq: 7 }, r#"{"type":"proposed","seq":7}"#),
-            (Event::Tainted { why: "context".into() }, r#"{"type":"tainted","why":"context"}"#),
             (Event::Error { text: "no".into() }, r#"{"type":"error","text":"no"}"#),
             (Event::Done { exit: 137 }, r#"{"type":"done","exit":137}"#),
             (Event::Status { running: false, turns: 3, conversation: 5 }, r#"{"type":"status","running":false,"turns":3,"conversation":5}"#),
@@ -165,8 +136,6 @@ mod tests {
             assert_eq!(serde_json::to_string(&e).unwrap(), line);
             assert_eq!(serde_json::from_str::<Event>(line).unwrap(), e);
         }
-        let t = Task { question: "q".into(), context: None, memory: vec![Turn { question: "p".into(), answer: None }] };
-        assert_eq!(serde_json::to_string(&t).unwrap(), r#"{"question":"q","memory":[{"question":"p","answer":null}]}"#);
     }
 
 
@@ -197,7 +166,8 @@ mod tests {
         for bad in [r#"{"type":"apply","seq":3}"#, r#"{"type":"ask","text":"x","as":"bob"}"#, r#"{"text":"x"}"#, r#""stop""#, r#"{"type":"ask"}"#] {
             assert!(serde_json::from_str::<Request>(bad).is_err(), "{bad}");
         }
-        assert!(serde_json::from_str::<Task>(r#"{"question":"q","tools":["shell"]}"#).is_err());
+        // The old loop's word for a proposal's mark (removed with it): no event now.
+        assert!(serde_json::from_str::<Event>(r#"{"type":"tainted","why":"coding-tool"}"#).is_err());
     }
 
     #[test]

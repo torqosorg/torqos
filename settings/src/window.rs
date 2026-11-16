@@ -1711,8 +1711,8 @@ impl Settings {
         if !r.who.is_empty() {
             detail.push_str(&format!(" · {}", r.who));
         }
-        if r.tainted {
-            detail.push_str(" · ⚠ tainted: made after reading untrusted content");
+        if let Some(origin) = r.origin {
+            detail.push_str(&format!(" · ⚠ {origin}"));
         }
         page = page.push(widget::text::caption(detail));
         if r.undoable {
@@ -1770,7 +1770,7 @@ impl Settings {
                 page = page.push(section);
             }
         }
-        page.push(actions(app::AGENT)).into()
+        page.into()
     }
 
     /// One proposal: what it does, and applying it.
@@ -2071,17 +2071,9 @@ impl Settings {
                 .add(settings::item_row(vec![widget::column::with_capacity(2).push(widget::text::body("Its service")).push(widget::text::caption(service)).width(Length::Fill).into()])),
         );
         // What answers: the engine (the program that answers), named, with where what it reads goes; under it
-        // how the person signs it in. A key is only the old `torq doctor`'s to speak of: no such row for an engine.
-        let (model, how, key) = app::agent_model(s.brain.as_ref(), s.plain);
-        let mut brain = settings::section().title("What answers").add(settings::item::builder("The program that answers when you ask (the engine)").description(how).control(widget::text::body(model)));
-        if let Some(key) = key {
-            brain = brain.add(
-                settings::item::builder("An API key is configured")
-                    .description("For `torq doctor` only. Only whether: never its value. An administrator puts its file in place.")
-                    .control(widget::text::body(key)),
-            );
-        }
-        page = page.push(brain);
+        // how the person signs it in.
+        let (engine, how) = app::agent_engine(s.engine.as_ref(), s.plain);
+        page = page.push(settings::section().title("What answers").add(settings::item::builder("The program that answers when you ask (the engine)").description(how).control(widget::text::body(engine))));
         // Instructions for your agent: the person's own standing text, in their own home (their agent cannot
         // write it). Shown as it stood when the page was opened; edited in the desktop's text editor.
         let (text, trouble) = app::agent_instructions(&s.instructions);
@@ -2290,8 +2282,8 @@ fn change(r: &Row) -> Element<'_, Message> {
     if !r.who.is_empty() {
         detail.push_str(&format!(" · {}", r.who));
     }
-    if r.tainted {
-        detail.push_str(" · ⚠ tainted: made after reading untrusted content");
+    if let Some(origin) = r.origin {
+        detail.push_str(&format!(" · ⚠ {origin}"));
     }
     let row = settings::item_row(vec![
         colour.icon(name, 16),

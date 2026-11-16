@@ -6,7 +6,7 @@
 //! **Ask the agent about this crash**; nothing is read of the crash and nothing goes anywhere until it is
 //! clicked. Then its summary — `coredumpctl info` as the person, matched by its pid, owner, unit and boot (program,
 //! signal, backtrace), bounded —
-//! opens the agent's window, attached: the person reads it and asks, and the session that reads it is tainted.
+//! opens the agent's window, attached: the person reads it and asks.
 
 use super::handoff::Handoff;
 use serde_json::Value;
@@ -112,7 +112,7 @@ impl Crash {
     }
 
     /// What opens the agent's window: a fixed question (nothing of the crash in it), and the crash — its
-    /// program, signal and summary, untrusted text — attached: it taints, and the person may remove it.
+    /// program, signal and summary, untrusted text — attached: the person may remove it.
     pub fn handoff(&self, info: Option<&str>) -> Handoff {
         let context = match info {
             Some(i) => format!("{} crashed with {} (pid {}).\n\ncoredumpctl info:\n{i}", self.program, self.signal, self.pid),
@@ -309,7 +309,7 @@ mod tests {
     }
 
     /// The notification says nothing of the crash's contents and escapes what it says; the question is fixed,
-    /// the program only in what is attached (bounded, tainting); the person asks.
+    /// the program only in what is attached (bounded); the person asks.
     #[test]
     fn offered_then_attached() {
         let c = crash_of(&entry(1000, "4242", UNIT, json!({ "COREDUMP_EXE": "/home/me/<b>x</b>&y" })), 1000).unwrap();
@@ -321,7 +321,7 @@ mod tests {
         assert!(body.starts_with("bash (/run/current-system/sw/bin/bash, SIGSEGV)"), "{body}");
         assert!(body.contains("SIGSEGV") && body.contains("nothing is sent unless you ask"), "{body}");
         let h = c.handoff(Some(&"frame\n".repeat(10_000)));
-        assert!(h.taints());
+        assert!(h.context.is_some());
         assert_eq!(h.question, CRASH_QUESTION, "nothing of the crash in the question");
         assert!(h.context.as_deref().unwrap().contains("/run/current-system/sw/bin/bash crashed with SIGSEGV"));
         assert!(h.context.as_deref().unwrap().chars().count() <= super::super::handoff::MAX_CONTEXT);

@@ -1,5 +1,5 @@
 //! What the panel's applet and the agent's window show of a conversation (ADR-051 4): each question,
-//! its answer as it comes, the tools it called, whether its session read untrusted text, what it
+//! its answer as it comes, the tools it called, what it
 //! proposed, and how it ended. Kept here, tested, so the two programs only draw it. Everything the agent
 //! says is cleaned again (nothing in it can draw on a screen), and bounded.
 
@@ -32,8 +32,6 @@ pub struct Turn {
     pub answer: String,
     /// What it did on the way, in order: each tool it used, in words ("ran a command").
     pub called: Vec<String>,
-    /// Why its session is tainted: each source of untrusted text it read (none: untainted).
-    pub tainted: Vec<String>,
     /// The proposals it made, by number.
     pub proposed: Vec<u64>,
     pub errors: Vec<String>,
@@ -73,7 +71,6 @@ impl Conversation {
             question: shown(question, MAX_ANSWER),
             answer: String::new(),
             called: vec![],
-            tainted: vec![],
             proposed: vec![],
             errors: vec![],
             ended: Ended::Working,
@@ -92,7 +89,6 @@ impl Conversation {
                 t.answer = shown(&t.answer, MAX_ANSWER);
             }
             Event::Called { tool } => push_bounded(&mut t.called, crate::history::one_line(&tool, 64)),
-            Event::Tainted { why } => push_bounded(&mut t.tainted, crate::history::one_line(&why, 64)),
             Event::Proposed { seq } => push_bounded(&mut t.proposed, seq),
             Event::Error { text } => push_bounded(&mut t.errors, shown(&text, 2000)),
             // Killed by `stop` (its signal's code, 128 + 9) is stopped, not failed.
@@ -163,11 +159,9 @@ impl Turn {
         s
     }
 
-    /// Said where the turn proposed something (the broker marks every proposal of a coding tool's, whatever
-    /// it read; its own word for that is not shown): what that means to the person.
-
-    pub fn taint(&self) -> Option<String> {
-        (!self.tainted.is_empty()).then(|| super::ALWAYS_ASKED.to_string())
+    /// Said where the turn proposed something: what a proposal of the agent's means to the person.
+    pub fn always_asked(&self) -> Option<&'static str> {
+        (!self.proposed.is_empty()).then_some(super::ALWAYS_ASKED)
     }
 }
 
@@ -329,8 +323,8 @@ mod tests {
         c.asked("why\u{1b}[2J?");
         assert!(c.working());
         c.heard(Event::Called { tool: "read_journal".into() });
-        c.heard(Event::Tainted { why: "read_journal".into() });
         c.heard(Event::Say { text: "line one\r\nrewrite\u{202e}".into() });
+        assert!(c.last().unwrap().always_asked().is_none(), "nothing proposed yet: nothing said of proposals");
         c.heard(Event::Proposed { seq: 12 });
         c.heard(Event::Done { exit: 0 });
         let t = c.last().unwrap();
@@ -338,7 +332,7 @@ mod tests {
         assert!(!t.question.contains('\u{1b}') && !t.answer.contains(['\r', '\u{202e}']), "{t:?}");
         assert!(t.answer.starts_with("line one\nrewrite"), "{:?}", t.answer);
         assert_eq!(t.state(), "Answered · read_journal");
-        assert_eq!(t.taint().unwrap(), "Your agent's proposals always wait for you to read and approve them.", "the broker's word for it is not shown");
+        assert_eq!(t.always_asked().unwrap(), "Your agent's proposals always wait for you to read and approve them.");
         assert_eq!(c.proposals(), vec![12]);
         // What it did, as the engine's steps are said: each kind once, counted.
         let mut d = Conversation::default();
@@ -367,7 +361,7 @@ mod tests {
         c.lost("your agent did not answer in time");
         assert_eq!(c.last().unwrap().ended, Ended::Failed);
         assert_eq!(c.last().unwrap().errors, ["your agent did not answer in time"]);
-        assert!(c.last().unwrap().taint().is_none());
+        assert!(c.last().unwrap().always_asked().is_none());
     }
 
     #[test]
@@ -443,9 +437,7 @@ mod tests {
         assert_eq!(rows[0].text, "Proposed #1: waiting for you to apply or refuse it");
         assert_eq!(rows[3].text, "Proposed #8: looking it up…");
         assert_eq!(rows[4].text, "Proposed #10: declined");
-        c.heard(Event::Tainted { why: "read_journal".into() });
-        let rows = c.last().unwrap().proposal_rows(&f);
-        assert!(rows.iter().all(|r| !r.text.contains("taint")), "the mark is the turn's one sentence, not a word on each row: {rows:?}");
+        assert!(rows.iter().all(|r| !r.text.contains("always wait")), "that they wait is the turn's one sentence, not a word on each row: {rows:?}");
     }
 
     #[test]

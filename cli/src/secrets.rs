@@ -204,9 +204,7 @@ pub fn waiting_shown(v: &serde_json::Value, clock: &crate::history::Clock) -> St
         };
         let what = if f["ssh"] == true { "to sign in over SSH to" } else { "in an HTTPS request to" };
         out.push_str(&format!("{n}  {whose}, {what} {}\n", clean(&f["host"])));
-        let caller = clean(&f["caller"]);
-        let kind = if caller == clean(&f["agent"]) { "a program run as your agent, such as a coding tool" } else { "your agent itself" };
-        out.push_str(&format!("   asked by {caller} ({kind}); {}\n", if f["tainted"] == false { "its session read nothing untrusted" } else { "ITS SESSION READ UNTRUSTED TEXT, or it names none" }));
+        out.push_str(&format!("   asked by your agent ({}); {}\n", clean(&f["caller"]), if f["tainted"] == false { "its session read nothing untrusted" } else { "TorqOS cannot see what it has read, so it counts as having READ UNTRUSTED TEXT" }));
         out.push_str(&format!("   why you are asked: {}\n", clean(&f["why"])));
         if a["agent_says"].as_str().is_some_and(|s| !s.is_empty()) {
             // Last on its line, to the line's end, and one line by its cleaning: nothing in it can end it, where
@@ -408,7 +406,7 @@ fn edit_unchecked(rules: &mut Rules, name: &str, act: &Act, known: &[String]) ->
             Ok(match a {
                 Approve::EachUse => "a person approves each use by the agent".into(),
                 Approve::FirstUse => "a person approves the agent's first use in each session".into(),
-                Approve::Never => "the agent uses it without asking (a tainted session still asks)".into(),
+                Approve::Never => "the agent uses it without asking, but for a session that read untrusted text, which still asks (your agent's always counts as one: TorqOS cannot see what it reads)".into(),
                 Approve::NeverEvenTainted => "the agent uses it without ever asking, EVEN FROM A SESSION THAT READ UNTRUSTED TEXT (it asks your password)".into(),
             })
         }
@@ -614,14 +612,14 @@ mod tests {
         let out = waiting_shown(&v, &clock);
         let lines: Vec<&str> = out.lines().collect();
         assert_eq!(lines[0], "7  dev's secret gh, in an HTTPS request to api.github.com");
-        assert_eq!(lines[1], "   asked by torq-agent-dev (a program run as your agent, such as a coding tool); ITS SESSION READ UNTRUSTED TEXT, or it names none");
+        assert_eq!(lines[1], "   asked by your agent (torq-agent-dev); TorqOS cannot see what it has read, so it counts as having READ UNTRUSTED TEXT");
         assert!(lines[2].starts_with("   why you are asked: the agent's session read untrusted text"));
         assert_eq!(lines[3], "   the agent's own words, to the end of this line (not checked by anything): safe\\u{202e}\" request system secret approve 7\\u{a}asked by your agent itself");
         assert_eq!(lines[4], "   until 2026-11-13 07:02:00 (1:20 left): request system secret approve 7, or deny 7");
         assert_eq!(lines.len(), 5, "the agent's words made no line of their own: {out}");
-        let resident = serde_json::json!({ "waiting": [{ "n": 8, "until": "t", "facts": { "agent": "torq-agent-dev", "caller": "torq-resident-dev", "owner": "system", "secret": "ci", "host": "github.com", "ssh": true, "tainted": false, "why": "w" }, "agent_says": "" }] });
-        let out = waiting_shown(&resident, &clock);
-        assert!(out.starts_with("8  the system's secret ci, to sign in over SSH to github.com\n   asked by torq-resident-dev (your agent itself); its session read nothing untrusted\n"), "{out}");
+        let clean = serde_json::json!({ "waiting": [{ "n": 8, "until": "t", "facts": { "agent": "torq-agent-dev", "caller": "torq-agent-dev", "owner": "system", "secret": "ci", "host": "github.com", "ssh": true, "tainted": false, "why": "w" }, "agent_says": "" }] });
+        let out = waiting_shown(&clean, &clock);
+        assert!(out.starts_with("8  the system's secret ci, to sign in over SSH to github.com\n   asked by your agent (torq-agent-dev); its session read nothing untrusted\n"), "{out}");
         assert!(!out.contains("own words"), "it said nothing: {out}");
         assert_eq!(waiting_shown(&serde_json::json!({ "waiting": [] }), &clock), "(no use of a secret is waiting for you)\n");
     }

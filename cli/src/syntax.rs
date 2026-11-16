@@ -171,12 +171,8 @@ pub enum Request {
     Pull,
     /// The newest TorqOS (`all`: every input) into the candidate.
     Update { all: bool, detail: bool },
-    /// Session trust (ADR-042): the agent's untainted proposals in one's own folder apply without asking, for `minutes`.
-    Trust { minutes: u32 },
     /// Erase what one's own agent remembers of the conversation (ADR-051 9), as `torq ask --forget`.
     AgentForget,
-    /// End one's trust in the agent.
-    TrustRevoke,
     /// An earlier configuration's software into the candidate.
     SoftwareRollback { n: usize, detail: bool },
 }
@@ -304,8 +300,6 @@ pub fn render(op: &Op) -> String {
             Request::Revert { change } => format!("request system revert {change}"),
             Request::Apply { proposal } => format!("request system apply {proposal}"),
             Request::Decline { proposal } => format!("request system decline {proposal}"),
-            Request::Trust { minutes } => format!("request system agent trust {minutes}"),
-            Request::TrustRevoke => "request system agent trust revoke".into(),
             Request::AgentForget => "request system agent forget".into(),
             Request::RestoreData { change, path } => format!("request system snapshot restore {change} {path}"),
             Request::SnapshotTake => "request system snapshot take".into(),
@@ -416,8 +410,6 @@ mod tests {
             (Mode::Operational, Op::Request(Request::Revert { change: 12 })),
             (Mode::Operational, Op::Request(Request::Apply { proposal: 12 })),
             (Mode::Operational, Op::Request(Request::Decline { proposal: 12 })),
-            (Mode::Operational, Op::Request(Request::Trust { minutes: 30 })),
-            (Mode::Operational, Op::Request(Request::TrustRevoke)),
             (Mode::Operational, Op::Request(Request::AgentForget)),
             (Mode::Operational, Op::Request(Request::RestoreData { change: 12, path: "/home/alice/a".into() })),
             (Mode::Operational, Op::Request(Request::SnapshotTake)),

@@ -22,7 +22,7 @@ use std::time::Duration;
 use torq::agent::client::{Client, Status, Unreachable};
 use torq::agent::conversation::{self, Conversation, Ended, Fate, Turn};
 use torq::agent::handoff;
-use torq::agent::setup::{self, Brain};
+use torq::agent::setup::{self, Engine};
 use torq::agent::Event;
 
 /// `--ask <file>`: open with a question and what it is about, handed over in a file of the person's own
@@ -74,8 +74,8 @@ fn check() -> std::process::ExitCode {
     let reach = Client::mine().and_then(|c| c.status()).map(Some);
     let (line, _) = conversation::glance(&reach, None);
     println!("{line}");
-    if let Some(b) = setup::brain().ok().flatten() {
-        println!("{}", b.line());
+    if let Some(e) = setup::engine() {
+        println!("{}", e.line());
     }
     match reach {
         Ok(_) => std::process::ExitCode::SUCCESS,
@@ -96,7 +96,7 @@ struct Window {
     core: cosmic::Core,
     client: Result<Client, Unreachable>,
     reach: Result<Option<Status>, Unreachable>,
-    brain: Option<Brain>,
+    engine: Option<Engine>,
     fates: Vec<(u64, Fate)>,
     /// Which conversation of the agent's, and how long, the last look saw: another one now is a Forget from elsewhere.
     remembered: Option<conversation::Seen>,
@@ -166,7 +166,7 @@ impl Window {
         Task::none()
     }
 
-    /// A turn: its question; then, said first, whether its session read untrusted text; its answer (only the
+    /// A turn: its question; then, said first where it proposed something, that its proposals wait; its answer (only the
     /// question and its end for an older turn, `full` false, so a long sitting stays light to lay out); each
     /// proposal with its fate, and Review where it waits.
     fn turn<'a>(&self, t: &'a Turn, full: bool) -> Element<'a, Message> {
@@ -175,8 +175,8 @@ impl Window {
         let warn: cosmic::iced::Color = theme.cosmic().warning_color().into();
         let mut col = widget::column::with_capacity(6).spacing(spacing.space_xxs);
         col = col.push(widget::text::heading(t.question.clone()).width(Length::Fill));
-        if let Some(taint) = t.taint() {
-            col = col.push(widget::text::body(taint).class(cosmic::theme::Text::Color(warn)).width(Length::Fill));
+        if let Some(waits) = t.always_asked() {
+            col = col.push(widget::text::body(waits).class(cosmic::theme::Text::Color(warn)).width(Length::Fill));
         }
         if full {
             if !t.answer.is_empty() {
@@ -217,7 +217,7 @@ impl cosmic::Application for Window {
     }
 
     fn init(core: cosmic::Core, flags: Flags) -> (Self, Task<cosmic::Action<Message>>) {
-        let mut app = Window { core, client: Client::mine(), reach: Ok(None), brain: None, fates: vec![], remembered: None, looking: false, talk: Conversation::default(), question: String::new(), forgetting: false, note: None, attached: None, declining: Default::default() };
+        let mut app = Window { core, client: Client::mine(), reach: Ok(None), engine: None, fates: vec![], remembered: None, looking: false, talk: Conversation::default(), question: String::new(), forgetting: false, note: None, attached: None, declining: Default::default() };
         let title = match app.core.main_window_id() {
             Some(id) => app.set_window_title("TorqOS Agent".into(), id),
             None => Task::none(),
@@ -297,7 +297,7 @@ impl cosmic::Application for Window {
                 }
                 self.client = l.client;
                 self.reach = l.reach;
-                self.brain = l.brain;
+                self.engine = l.engine;
                 self.fates = l.fates;
             }
             Message::Question(s) => self.question = s,
@@ -307,7 +307,7 @@ impl cosmic::Application for Window {
                 self.question.clear();
                 self.note = None;
                 self.talk.asked(&q);
-                // What was attached goes with it, once: untrusted text, it taints the session (the service says so).
+                // What was attached goes with it, once: untrusted text, given to the agent marked as attached.
                 return agentkit::ask(client, q, self.attached.take(), Message::Heard, Message::Lost, Message::Noted);
             }
             Message::Heard(e) => {
@@ -386,14 +386,10 @@ impl cosmic::Application for Window {
         let mut head = widget::row::with_capacity(3).spacing(spacing.space_s).align_y(Alignment::Center);
         head = head.push(widget::icon(agentkit::mark(mood)).width(Length::Fixed(24.0)).height(Length::Fixed(24.0)));
         let mut said = widget::column::with_capacity(2).push(widget::text::title4(line)).width(Length::Fill);
-        if let Some(b) = &self.brain {
-            let model = widget::text::body(b.line());
-            said = said.push(if b.remote() {
-                let theme = cosmic::theme::active();
-                model.class(cosmic::theme::Text::Color(theme.cosmic().warning_color().into()))
-            } else {
-                model
-            });
+        if let Some(e) = &self.engine {
+            // Where what the agent reads goes: off the machine, said in the warning colour.
+            let theme = cosmic::theme::active();
+            said = said.push(widget::text::body(e.line()).class(cosmic::theme::Text::Color(theme.cosmic().warning_color().into())));
         }
         head = head.push(said);
         head = head.push(widget::button::text("Agent settings").on_press(Message::Settings));

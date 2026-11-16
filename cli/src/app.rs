@@ -202,8 +202,8 @@ pub struct Glance {
     pub draft: bool,
     /// What the running system needs before it is all in use.
     pub needs: Needs,
-    /// Proposals waiting for a person, and how many of them are tainted.
-    pub waiting: (usize, usize),
+    /// How many proposals wait for a person.
+    pub waiting: usize,
     /// The latest change that took effect, in the log's words.
     pub last: Option<String>,
 }
@@ -246,7 +246,7 @@ pub fn glance(session: Option<&std::path::Path>, draft: bool) -> Result<Glance> 
         confirm,
         draft,
         needs,
-        waiting: (waiting.len(), waiting.iter().filter(|e| e.tainted).count()),
+        waiting: waiting.len(),
         last: history::last_change(&entries),
     })
 }
@@ -797,8 +797,6 @@ pub struct WaitingUse {
     pub host: String,
     /// A signature for SSH to the host, not an HTTPS request to it.
     pub ssh: bool,
-    /// A program run as the agent asked (a coding tool), not the agent itself.
-    pub tool: bool,
     /// Its session read untrusted text, or it names no session.
     pub tainted: bool,
     /// It names a session: a no can be for the rest of it.
@@ -810,8 +808,8 @@ pub struct WaitingUse {
 }
 
 /// The uses in the broker's answer. One that does not say what it is (no number, secret, host or owner) is left
-/// out: nothing is shown of it, and nothing can be answered. Where the answer does not say a use is the agent's own
-/// from a session that read nothing untrusted, it is taken as the more doubtful: a coding tool's, tainted.
+/// out: nothing is shown of it, and nothing can be answered. Where the answer does not say a use is from a
+/// session that read nothing untrusted, it is taken as the more doubtful: one that did.
 fn uses_of(v: &serde_json::Value) -> Vec<WaitingUse> {
     let one = |a: &serde_json::Value| -> Option<WaitingUse> {
         let f = &a["facts"];
@@ -825,10 +823,6 @@ fn uses_of(v: &serde_json::Value) -> Vec<WaitingUse> {
             user,
             host: history::one_line(f["host"].as_str()?, 255),
             ssh: f["ssh"] == true,
-            tool: match (f["caller"].as_str(), f["agent"].as_str()) {
-                (Some(caller), Some(agent)) => caller == agent,
-                _ => true,
-            },
             tainted: f["tainted"] != false,
             session: f["session"].is_string(),
             until: a["until"].as_str().and_then(history::parse_ts),
@@ -1019,18 +1013,17 @@ impl WaitingUse {
             Some(u) if u == me => format!("{} (yours)", self.secret),
             Some(u) => format!("{} ({u}'s)", self.secret),
         };
-        let session = match (self.tainted, self.session, self.tool) {
-            (false, ..) => "It read nothing untrusted.",
-            (true, false, _) => "The use names no session, so it counts as one that read untrusted text.",
-            (true, true, true) => "A coding tool's. TorqOS cannot see what it read, so it counts as one that read untrusted text.",
-            (true, true, false) => "It read untrusted text.",
+        let session = match (self.tainted, self.session) {
+            (false, _) => "It read nothing untrusted.",
+            (true, false) => "The use names no session, so it counts as one that read untrusted text.",
+            (true, true) => "TorqOS cannot see what your agent has read, so it counts as one that read untrusted text.",
         };
         UseDialog {
             n: self.n,
             facts: vec![
                 ("Secret", secret, false),
                 ("Used for", if self.ssh { format!("signing in over SSH to {}", self.host) } else { format!("an HTTPS request to {}", self.host) }, false),
-                ("Asked by", if self.tool { "a coding tool run as your agent".into() } else { "your agent".into() }, false),
+                ("Asked by", "your agent".into(), false),
                 ("Its session", session.into(), self.tainted),
             ],
             left: match self.until.map(|u| u - now) {
@@ -1406,16 +1399,16 @@ mod approval_tests {
         serde_json::json!({ "waiting": uses })
     }
 
-    /// A coding tool's use of dev's own secret gh, tainted, in a session, with the agent's words.
+    /// The agent's use of dev's own secret gh, in a session, with the agent's words (tainted, as its sessions are).
     fn tool_use(n: u64, says: &str) -> serde_json::Value {
         serde_json::json!({ "n": n, "asked": "2026-11-13T12:00:00.000Z", "until": "2026-11-13T12:02:00.000Z", "answer": null, "agent_says": says,
             "facts": { "person": "dev", "agent": "torq-agent-dev", "caller": "torq-agent-dev", "owner": { "person": "dev" }, "secret": "gh", "host": "api.github.com", "ssh": false, "session": "s1", "tainted": true, "why": "w" } })
     }
 
-    /// The resident agent's use of the system's secret ci over SSH, from a session that read nothing untrusted.
-    fn resident_use(n: u64) -> serde_json::Value {
+    /// A use of the system's secret ci over SSH that the broker says came from a session that read nothing untrusted.
+    fn clean_use(n: u64) -> serde_json::Value {
         serde_json::json!({ "n": n, "asked": "2026-11-13T12:00:00.000Z", "until": "2026-11-13T12:02:00.000Z", "agent_says": "",
-            "facts": { "person": "dev", "agent": "torq-agent-dev", "caller": "torq-resident-dev", "owner": "system", "secret": "ci", "host": "github.com", "ssh": true, "session": "s2", "tainted": false, "why": "w" } })
+            "facts": { "person": "dev", "agent": "torq-agent-dev", "caller": "torq-agent-dev", "owner": "system", "secret": "ci", "host": "github.com", "ssh": true, "session": "s2", "tainted": false, "why": "w" } })
     }
 
     fn uses(v: &[serde_json::Value]) -> Vec<WaitingUse> {
@@ -1429,25 +1422,25 @@ mod approval_tests {
     #[test]
     fn what_waits_is_read_as_the_brokers_facts() {
         assert_eq!(history::parse_ts("2026-11-13T12:00:00.000Z"), Some(NOON));
-        let read = uses(&[resident_use(9), tool_use(7, "listing  the\trepositories")]);
+        let read = uses(&[clean_use(9), tool_use(7, "listing  the\trepositories")]);
         assert_eq!(read.iter().map(|u| u.n).collect::<Vec<_>>(), [7, 9]);
-        assert_eq!(read[0], WaitingUse { n: 7, secret: "gh".into(), user: Some("dev".into()), host: "api.github.com".into(), ssh: false, tool: true, tainted: true, session: true, until: Some(NOON + 120), agent_says: "listing the repositories".into() });
-        assert_eq!((read[1].user.as_deref(), read[1].ssh, read[1].tool, read[1].tainted, read[1].session, read[1].agent_says.as_str()), (None, true, false, false, true, ""));
-        // Nothing said of taint, the caller or the session: tainted, a coding tool's, no session.
-        let mut bare = resident_use(3);
-        for k in ["tainted", "caller", "session"] {
+        assert_eq!(read[0], WaitingUse { n: 7, secret: "gh".into(), user: Some("dev".into()), host: "api.github.com".into(), ssh: false, tainted: true, session: true, until: Some(NOON + 120), agent_says: "listing the repositories".into() });
+        assert_eq!((read[1].user.as_deref(), read[1].ssh, read[1].tainted, read[1].session, read[1].agent_says.as_str()), (None, true, false, true, ""));
+        // Nothing said of taint or the session: tainted, no session.
+        let mut bare = clean_use(3);
+        for k in ["tainted", "session"] {
             bare["facts"].as_object_mut().unwrap().remove(k);
         }
         let read = uses(&[bare]);
-        assert_eq!((read[0].tainted, read[0].tool, read[0].session), (true, true, false));
+        assert_eq!((read[0].tainted, read[0].session), (true, false));
         // No number, no secret, no host, an owner that is no one's: left out.
         for k in ["secret", "host", "owner"] {
-            let mut broken = resident_use(3);
+            let mut broken = clean_use(3);
             broken["facts"].as_object_mut().unwrap().remove(k);
             assert!(uses(&[broken]).is_empty(), "{k}");
         }
-        assert!(uses(&[resident_use(0)]).is_empty(), "no number");
-        let mut no_ones = resident_use(3);
+        assert!(uses(&[clean_use(0)]).is_empty(), "no number");
+        let mut no_ones = clean_use(3);
         no_ones["facts"]["owner"] = serde_json::json!({ "group": "wheel" });
         assert!(uses(&[no_ones]).is_empty(), "an owner that is no one's");
         assert!(uses_of(&serde_json::json!({})).is_empty() && uses_of(&serde_json::json!({ "waiting": "many" })).is_empty());
@@ -1468,8 +1461,8 @@ mod approval_tests {
             [
                 ("Secret", "gh (yours)".to_string(), false),
                 ("Used for", "an HTTPS request to api.github.com".to_string(), false),
-                ("Asked by", "a coding tool run as your agent".to_string(), false),
-                ("Its session", "A coding tool's. TorqOS cannot see what it read, so it counts as one that read untrusted text.".to_string(), true),
+                ("Asked by", "your agent".to_string(), false),
+                ("Its session", "TorqOS cannot see what your agent has read, so it counts as one that read untrusted text.".to_string(), true),
             ]
         );
         assert_eq!(d.left, "1:05 left to answer, then it is refused.");
@@ -1477,20 +1470,18 @@ mod approval_tests {
         // Its words are no fact: every line of them begins with the mark, and is no wider than the dialog draws.
         assert_eq!(d.agent_says, ["\u{200e}| Secret: other (yours) Used", "\u{200e}| for: an HTTPS request to", "\u{200e}| evil.example.com Asked by:", "\u{200e}| your agent"]);
         assert!(d.facts.iter().all(|(_, v, _)| !v.contains("evil")), "the agent's words are in no fact");
-        // The agent itself, clean, the system's secret, over SSH; no one else waiting; its time gone by.
-        let u = &uses(&[resident_use(8)])[0];
+        // One the broker says is clean, the system's secret, over SSH; no one else waiting; its time gone by.
+        let u = &uses(&[clean_use(8)])[0];
         let d = u.dialog("dev", 0, NOON + 120, None);
         assert_eq!(d.facts.iter().map(|(_, v, red)| (v.as_str(), *red)).collect::<Vec<_>>(), [("ci (the system's)", false), ("signing in over SSH to github.com", false), ("your agent", false), ("It read nothing untrusted.", false)]);
         // The line of how many others wait is always there: another use coming or going moves nothing.
         assert_eq!((d.more.as_str(), d.left.as_str(), d.agent_says.len()), ("No other use waits", "Its time is about over.", 0));
-        // Someone else's secret is said to be theirs; a use with no session, and the agent's own tainted session.
+        // Someone else's secret is said to be theirs; and a use with no session.
         assert_eq!(u.clone().dialog("sam", 0, NOON, None).facts[0].1, "ci (the system's)");
         let mut theirs = uses(&[tool_use(7, "")])[0].clone();
         assert_eq!(theirs.dialog("sam", 0, NOON, None).facts[0].1, "gh (dev's)");
         theirs.session = false;
         assert_eq!(theirs.dialog("dev", 0, NOON, None).facts[3].1, "The use names no session, so it counts as one that read untrusted text.");
-        (theirs.session, theirs.tool) = (true, false);
-        assert_eq!(theirs.dialog("dev", 0, NOON, None).facts[2..], [("Asked by", "your agent".to_string(), false), ("Its session", "It read untrusted text.".to_string(), true)]);
         theirs.until = None;
         assert_eq!(theirs.dialog("dev", 0, NOON, None).left, "Its time is about over.");
     }
@@ -1534,7 +1525,7 @@ mod approval_tests {
             ]
         );
         assert_eq!((d.offers_note, d.deny_session), (Some(ONLY_EVEN_TAINTED), true));
-        let clean = uses(&[resident_use(8)])[0].clone();
+        let clean = uses(&[clean_use(8)])[0].clone();
         let d = clean.dialog("dev", 0, NOON, None);
         assert_eq!(d.offers.iter().map(|o| (o.allowance, o.label.as_str(), o.red)).collect::<Vec<_>>(), [(Allowance::Session, "In your agent's sessions that are running now", false), (Allowance::Minutes(60), "For 60 minutes", false), (Allowance::Minutes(480), "For 480 minutes (8 hours)", false)]);
         assert_eq!((d.offers_note, d.deny_session), (None, true));
@@ -1569,7 +1560,7 @@ mod approval_tests {
     #[test]
     fn what_each_button_sends() {
         let tool = uses(&[tool_use(7, "")])[0].clone();
-        let clean = uses(&[resident_use(8)])[0].clone();
+        let clean = uses(&[clean_use(8)])[0].clone();
         let run = |u: &WaitingUse, reply: Reply, grant: &str, answer: &str| {
             let d = tempfile::tempdir().unwrap();
             let said = answer_with(&broker(d.path(), grant, answer), "dev", &d.path().join("log"), u, reply, false).map_err(|e| format!("{e:#}"));
@@ -1636,7 +1627,7 @@ mod approval_tests {
         // The system's secret: the grant of the system's of that name, and not one's own.
         a.replied(7, Ok("done".into()), t1);
         a.read(t1);
-        a.heard(uses(&[resident_use(8)]), NOON, t1);
+        a.heard(uses(&[clean_use(8)]), NOON, t1);
         a.allows(&[grant(6, "dev", Some(("ci", false))), grant(7, "dev", Some(("ci", true)))], "dev", t1);
         assert_eq!(a.held().map(|g| g.seq), Some(7));
 
@@ -1648,7 +1639,7 @@ mod approval_tests {
             Some("You already let your agent use this secret without asking until 2026-11-13 08:00:00, but not from a session that read untrusted text. Choosing one of these asks your password, then replaces that. If the new one is refused, or you cancel the password, the old one stays.")
         );
         let session = Allowed { session: true, ..allowed[1].clone() };
-        let said = uses(&[resident_use(8)])[0].dialog("dev", 0, NOON, Some(&session)).replaces.unwrap();
+        let said = uses(&[clean_use(8)])[0].dialog("dev", 0, NOON, Some(&session)).replaces.unwrap();
         assert!(said.starts_with("You already let your agent use this secret without asking until 2026-11-13 08:00:00 at most, in its sessions that were running then. Choosing"), "{said}");
 
         // What is sent: the new one (replacing the old), then the yes; each only if the one before it was done.
@@ -1665,7 +1656,7 @@ mod approval_tests {
         let (said, calls) = run(&tool, red, true, REPLACED);
         assert_eq!(calls, ["secret-grant --name gh --user dev --minutes 60 --tainted-too --replace --approved-by dev --json", "secret-approve 7 --where dialog --approved-by dev --json"]);
         assert!(said.unwrap().starts_with("dev lets the agent use their secret gh"));
-        let clean = uses(&[resident_use(8)])[0].clone();
+        let clean = uses(&[clean_use(8)])[0].clone();
         assert_eq!(run(&clean, Reply::For(Allowance::Minutes(60)), true, REPLACED).1[0], "secret-grant --name ci --minutes 60 --replace --approved-by dev --json", "the system's: no user");
         // The new one refused (a wrong password, a cancelled one): the old one stands, and the person is told so.
         let (said, calls) = run(&tool, red, true, REFUSED);
@@ -1873,7 +1864,7 @@ mod approval_tests {
         assert_eq!(body, "It asks for your secret gh, in an HTTPS request to api.github.com. Open this to answer. With no answer it is refused.");
         u.host = "a<b>&c".into();
         assert!(u.notice("dev").1.contains("a&lt;b&gt;&amp;c"));
-        let (_, body) = uses(&[resident_use(8)])[0].notice("dev");
+        let (_, body) = uses(&[clean_use(8)])[0].notice("dev");
         assert_eq!(body, "It asks for the system's secret ci, to sign in over SSH to github.com. Open this to answer. With no answer it is refused.");
     }
 
@@ -1989,9 +1980,6 @@ const fn draft(label: &'static str, command: &'static str) -> Action {
     Action { label, command, how: How::Draft }
 }
 
-/// What the agent may do without asking, and every button on the Proposals page besides each proposal's own.
-pub const AGENT: &[Action] = &[op("Trust the agent for a while…", "request system agent trust "), run("End that trust now", "request system agent trust revoke")];
-
 /// The Agent page's Forget (asked first): the person's conversation with their agent deleted, through its own socket.
 pub const AGENT_FORGET: &str = "request system agent forget";
 
@@ -2002,9 +1990,8 @@ pub fn decline_line(seq: u64) -> String {
 }
 
 /// The Agent page's buttons (ADR-051 2 and 5, ADR-055), in the order the steps are done: allow Claude Code,
-/// install it, make it the agent; then how to have none; `claude` typed in a terminal; who has an agent;
-/// and last what is left of TorqOS's own `torq doctor`. Each is a line of the tree, into the draft and
-/// committed as every other change is.
+/// install it, make it the agent; then how to have none; `claude` typed in a terminal; who has an agent.
+/// Each is a line of the tree, into the draft and committed as every other change is.
 pub const AGENT_SETTINGS: &[Action] = &[
     // Claude Code is unfree in nixpkgs, and nothing unfree is installed unasked (ADR-039): what that means, said.
     draft("1. Allow Claude Code to be installed (it is not open-source software, and none of that kind is installed until you allow it)", "set torq unfree packages claude-code"),
@@ -2019,13 +2006,6 @@ pub const AGENT_SETTINGS: &[Action] = &[
     // `set` adds to the list in the configuration; but until the list is written, its default (the owner) is the
     // module's, and the first `set` replaces it: the label says so.
     cf("Give another person an agent of their own… (the first time, name yourself too: the list replaces its default)", "set torq agent people "),
-    // TorqOS's own small helper, at a terminal only (`torq doctor`), and its model: going (ADR-055).
-    draft("Turn on `torq doctor`, TorqOS's own small helper at a terminal (it is being replaced by the agent above)", "set torq agent doctor enable true"),
-    cf("`torq doctor`: use a model on another machine: its address…", "set torq agent doctor endpoint "),
-    cf("`torq doctor`: that model's name…", "set torq agent doctor model "),
-    draft("`torq doctor`: use the model on this machine again", "delete torq agent doctor endpoint"),
-    cf("`torq doctor`: the file of the model on this machine (its address to download from)…", "set torq agent model url "),
-    cf("`torq doctor`: …and that file's checksum", "set torq agent model hash "),
 ];
 
 pub static VIEWS: &[View] = &[
@@ -2090,17 +2070,21 @@ mod page_tests {
         read_line(mode, &words(c).unwrap()).unwrap_or_else(|e| panic!("`{c}` is not a command of torqcli: {e:#}"));
     }
 
-    /// Why a proposal is tainted, said the same way everywhere (taint_line): what tainted it, the kinds of source apart.
+    /// Where a proposal comes from, said the same way everywhere (origin_said): an agent's, with what it reported
+    /// reading in plain words; or a person's who said it came from untrusted text. Never the record's own words.
     #[test]
-    fn taint_said_plainly() {
-        let s = |v: &[&str]| taint_line(&v.iter().map(|x| x.to_string()).collect::<Vec<_>>());
-        assert_eq!(s(&["read_journal", "show_ledger"]), "made after reading untrusted content (read_journal, show_ledger)");
-        assert_eq!(s(&[]), "made after reading untrusted content");
-        let n = s(&["not-the-resident-agent", "coding-tool", "show_alarms"]);
-        assert!(n.starts_with("proposed by your agent (Claude Code, or another program run as your agent): TorqOS cannot see what it had read") && n.ends_with("untrusted content (show_alarms)"), "{n}");
-        assert!(!n.contains("not-the-resident-agent") && !n.contains("coding-tool"), "the broker's own words are not shown: {n}");
-        let m = s(&["local-tcp-model"]);
-        assert!(m.starts_with("its model could have been stood in for") && !m.contains("untrusted content"), "{m}");
+    fn where_a_proposal_comes_from_is_said_plainly() {
+        let s = |agent: bool, v: &[&str]| origin_said(agent, &v.iter().map(|x| x.to_string()).collect::<Vec<_>>());
+        assert_eq!(s(true, &[]), "Your agent proposed this. TorqOS cannot see what it had read");
+        assert_eq!(s(true, &["agent-program"]), s(true, &[]));
+        let read = s(true, &["agent-program", "read_journal", "show_ledger", "hardware_facts", "show_configuration", "show_alarms", "propose_change", "attached", "web_fetch"]);
+        assert_eq!(read, "Your agent proposed this. Before proposing it, it read text that anyone could have written (the system's log, the record of changes, hardware details, the configuration, the alarms, what was attached to the question, web_fetch): a log line, a device's name or a web page can carry instructions meant for it");
+        // As older brokers recorded one: their words for the old loop, a coding tool and a model are not a person's to read.
+        for old in ["not-the-resident-agent", "coding-tool", "local-tcp-model", "model-socket-open", "model-unknown"] {
+            assert_eq!(s(true, &[old]), s(true, &[]), "{old}");
+        }
+        assert!(!s(true, &["a\u{1b}[2Jb"]).contains('\u{1b}'), "a source's name is cleaned");
+        assert_eq!(s(false, &[]), "The one who proposed this said it was made from untrusted text (the web, mail, a download)");
     }
 
     /// Every action the window offers is a torqcli command (ADR-045 2): the grammar's own reading of it.
@@ -2118,7 +2102,6 @@ mod page_tests {
             }
             v.actions.iter().for_each(check);
         }
-        AGENT.iter().for_each(check);
         AGENT_SETTINGS.iter().for_each(check);
         whole(Mode::Operational, AGENT_FORGET);
         whole(Mode::Operational, &decline_line(12));
@@ -2129,7 +2112,7 @@ mod page_tests {
             whole(Mode::Operational, c);
         }
         // The Agent page's lines as the person finishes them, then commits them.
-        for c in ["set torq agent doctor endpoint https://api.anthropic.com/v1", "set torq agent doctor model claude-sonnet-4-5", "set torq agent model url https://example.org/m.gguf", "set torq agent people alice"] {
+        for c in ["set torq agent people alice"] {
             whole(Mode::Configuration, c);
         }
         BACKUP.iter().for_each(check);
@@ -2183,30 +2166,40 @@ fn of<'b, 's>(made: &'b mut [(At, Result<crate::session::Session<'s>, String>)],
     made.iter_mut().find(|(a, _)| *a == at).map(|(_, s)| s)
 }
 
-/// The broker's words for what tainted a session that the broker could not see into at all (ADR-051 step 5):
-/// it was not TorqOS's resident agent's (or a coding tool said so of itself).
-pub const UNSEEN: &[&str] = &["not-the-resident-agent", "coding-tool"];
-/// …and for a resident session whose model another program here could have stood in for.
-pub const MODEL: &[&str] = &["local-tcp-model", "model-socket-open", "model-unknown"];
+/// Words in a session's record that are not something it read: the broker's own for "an agent's session" (as
+/// it writes it now, and as older brokers wrote it of the old loop, of a coding tool and of the old loop's model:
+/// a ledger keeps them). Never shown to a person: what they mean is `origin_said`'s first sentence.
+const NOT_A_READ: &[&str] = &["agent-program", "not-the-resident-agent", "coding-tool", "local-tcp-model", "model-socket-open", "model-unknown"];
 
-/// Why a session (and what it proposed) is tainted, in plain words, from the broker's own sources: one line for
-/// torqcli's apply prompt, TorqOS Settings' Proposals page, and the agent's applet and window.
-pub fn taint_line(sources: &[String]) -> String {
-    let (unseen, rest): (Vec<&String>, Vec<&String>) = sources.iter().partition(|s| UNSEEN.contains(&s.as_str()));
-    let (model, read): (Vec<&String>, Vec<&String>) = rest.into_iter().partition(|s| MODEL.contains(&s.as_str()));
-    let names = |v: &[&String]| v.iter().map(|s| history::one_line(s, 40)).collect::<Vec<_>>().join(", ");
-    let mut said = Vec::new();
-    if !unseen.is_empty() {
-        // The broker's own words for it (`coding-tool`, `not-the-resident-agent`) are not a person's to read.
-        said.push("proposed by your agent (Claude Code, or another program run as your agent): TorqOS cannot see what it had read, so read the change itself before you approve it".to_string());
+/// What a tool of TorqOS's that an agent read is called, to a person: its own name where TorqOS has no words.
+fn read_named(source: &str) -> Option<String> {
+    Some(match source {
+        "read_journal" => "the system's log".into(),
+        "hardware_facts" => "hardware details".into(),
+        "show_configuration" => "the configuration".into(),
+        "show_ledger" => "the record of changes".into(),
+        "show_alarms" => "the alarms".into(),
+        "attached" => "what was attached to the question".into(),
+        // What torqcli answered to an earlier proposal: nothing a person needs named.
+        "propose_change" => return None,
+        other => history::one_line(other, 40),
+    })
+}
+
+/// Where a waiting proposal marked in the ledger as not to be applied unread comes from, in plain words, for
+/// torqcli's apply prompt and TorqOS Settings' Proposals page. `agent`: an agent proposed it (every proposal of
+/// an agent's is so marked); else a person did, and said it was made from untrusted text. `sources`: what the
+/// agent's session reported reading, as the broker recorded it in the proposal. No full stop at its end.
+pub fn origin_said(agent: bool, sources: &[String]) -> String {
+    if !agent {
+        return "The one who proposed this said it was made from untrusted text (the web, mail, a download)".into();
     }
-    if !model.is_empty() {
-        said.push(format!("its model could have been stood in for by another program on this machine ({})", names(&model)));
+    let read: Vec<String> = sources.iter().filter(|s| !NOT_A_READ.contains(&s.as_str())).filter_map(|s| read_named(s)).collect();
+    if read.is_empty() {
+        "Your agent proposed this. TorqOS cannot see what it had read".into()
+    } else {
+        format!("Your agent proposed this. Before proposing it, it read text that anyone could have written ({}): a log line, a device's name or a web page can carry instructions meant for it", read.join(", "))
     }
-    if !read.is_empty() || said.is_empty() {
-        said.push(if read.is_empty() { "made after reading untrusted content".to_string() } else { format!("made after reading untrusted content ({})", names(&read)) });
-    }
-    said.join("; ")
 }
 
 /// A proposal waiting for a person.
@@ -2215,9 +2208,9 @@ pub struct Proposal {
     pub seq: u64,
     pub reason: String,
     pub by: String,
-    pub tainted: bool,
-    /// What tainted it, as the broker recorded it in the proposal (its session's sources): `taint_line`'s words.
-    pub sources: Vec<String>,
+    /// Where it comes from, if the ledger marks it as not to be applied unread (an agent's always is):
+    /// `origin_said`'s words.
+    pub origin: Option<String>,
     /// Its apply failed once: it waits for a person again (ADR-008), who may apply it again or decline it.
     pub failed: bool,
     /// Whether Settings and the applets offer this person Decline: their own agent proposed it (the ledger's
@@ -2245,8 +2238,8 @@ impl Proposal {
         if self.failed {
             facts.push("its apply failed once, so apply it again or decline it".to_string());
         }
-        if self.tainted {
-            facts.push(format!("⚠ {}", taint_line(&self.sources)));
+        if let Some(origin) = &self.origin {
+            facts.push(format!("⚠ {origin}"));
         }
         (!facts.is_empty()).then(|| facts.join(" · "))
     }
@@ -2322,8 +2315,10 @@ pub fn proposals() -> Result<Vec<Proposal>> {
             seq: e.seq,
             reason: history::one_line(&e.reason, 300),
             by: history::one_line(&e.actor, 40),
-            tainted: e.tainted,
-            sources: e.data["session"]["tainted_by"].as_array().into_iter().flatten().filter_map(|s| s.as_str().map(String::from)).take(32).collect(),
+            origin: e.tainted.then(|| {
+                let sources: Vec<String> = e.data["session"]["tainted_by"].as_array().into_iter().flatten().filter_map(|s| s.as_str().map(String::from)).take(32).collect();
+                origin_said(e.actor == "agent", &sources)
+            }),
             failed: history::failed_once(&entries, e.seq),
             yours: yours(e, &me),
         })
@@ -2404,8 +2399,8 @@ pub enum Panel<'a> {
     Confirm(&'a Confirm),
     Needs(&'a Needs),
     Alarm(&'a str),
-    /// Proposals waiting, and how many of them came from a session that read untrusted text.
-    Waiting(usize, usize),
+    /// How many proposals wait.
+    Waiting(usize),
     Draft,
     Well,
     Unknown,
@@ -2424,8 +2419,8 @@ impl<'a> Panel<'a> {
         if let Some(a) = &g.alarm {
             return Panel::Alarm(a);
         }
-        if g.waiting.0 > 0 {
-            return Panel::Waiting(g.waiting.0, g.waiting.1);
+        if g.waiting > 0 {
+            return Panel::Waiting(g.waiting);
         }
         if g.draft {
             return Panel::Draft;
@@ -2439,9 +2434,9 @@ impl<'a> Panel<'a> {
             Panel::Confirm(c) => Some((format!("Confirm change #{}", c.seq), format!("It rolls back at {} unless you confirm it.", c.deadline), "overview")),
             Panel::Needs(n) => Some((match n { Needs::Restart(_) => "Restart needed".to_string(), _ => "Log out needed".to_string() }, n.line().unwrap_or_default(), "overview")),
             Panel::Alarm(a) => Some(("TorqOS needs a look".to_string(), a.to_string(), "overview")),
-            Panel::Waiting(n, t) => Some((
+            Panel::Waiting(n) => Some((
                 if *n == 1 { "A proposal is waiting".to_string() } else { format!("{n} proposals are waiting") },
-                if *t > 0 { format!("{t} came from a session that read untrusted text.") } else { "Review it in TorqOS Settings.".to_string() },
+                if *n == 1 { "Review it in TorqOS Settings.".to_string() } else { "Review them in TorqOS Settings.".to_string() },
                 "proposals",
             )),
             Panel::Draft | Panel::Well | Panel::Unknown => None,
@@ -2533,13 +2528,10 @@ pub fn panel_popup(glance: &Option<Result<Glance, String>>, now: i64) -> PanelPo
             p.text = a.to_string();
             p.button = Some(PanelButton::AskAgent(a.to_string()));
         }
-        Panel::Waiting(n, tainted) => {
+        Panel::Waiting(n) => {
             p.open = "proposals";
             let what = if n == 1 { "A proposal is".to_string() } else { format!("{n} proposals are") };
             p.text = format!("{what} waiting for you to approve or refuse.");
-            if tainted > 0 {
-                p.text.push_str(&format!(" {tainted} came from a session that read untrusted text."));
-            }
         }
         Panel::Draft => {
             p.open = "changes";
@@ -2608,11 +2600,8 @@ pub fn overview_waiting(g: &Glance) -> Vec<(String, WaitButton)> {
     if g.draft {
         rows.push(("You have changes not yet committed.".to_string(), WaitButton::ReviewDraft));
     }
-    if g.waiting.0 > 0 {
-        let mut s = if g.waiting.0 == 1 { "A proposal is waiting for you.".to_string() } else { format!("{} proposals are waiting for you.", g.waiting.0) };
-        if g.waiting.1 > 0 {
-            s.push_str(&format!(" {} came from a session that read untrusted content.", g.waiting.1));
-        }
+    if g.waiting > 0 {
+        let s = if g.waiting == 1 { "A proposal is waiting for you.".to_string() } else { format!("{} proposals are waiting for you.", g.waiting) };
         rows.push((s, WaitButton::ReviewProposals));
     }
     rows
@@ -2683,15 +2672,12 @@ pub fn agent_service_line(agent: Option<&str>, service: bool, status: Option<&Re
     }
 }
 
-/// The Agent page's "What answers" section: what answers, in a line; under it, for an engine how the person
-/// signs it in (`plain`: whether `claude`, typed plainly, is a command here), else the model's endpoint; and
-/// whether a key is configured, which is only the old `torq doctor`'s to say (none: no such row for an engine,
-/// which signs in by itself and takes no key).
-pub fn agent_model(brain: Option<&crate::agent::setup::Brain>, plain: bool) -> (String, String, Option<&'static str>) {
-    match brain {
-        None => ("Nothing yet: no program is chosen to answer (steps 1 to 3, below)".to_string(), String::new(), None),
-        Some(b) if matches!(b.place, crate::agent::setup::Place::Engine(_)) => (b.line(), sign_in_line(plain), None),
-        Some(b) => (b.line(), b.endpoint.clone(), Some(if b.key { "Yes" } else { "No" })),
+/// The Agent page's "What answers" section: what answers, in a line; and under it how the person signs it in
+/// (`plain`: whether `claude`, typed plainly, is a command here).
+pub fn agent_engine(engine: Option<&crate::agent::setup::Engine>, plain: bool) -> (String, String) {
+    match engine {
+        None => ("Nothing yet: no program is chosen to answer (steps 1 to 3, below)".to_string(), String::new()),
+        Some(e) => (e.line(), sign_in_line(plain)),
     }
 }
 
@@ -4181,7 +4167,7 @@ mod proposal_shown {
     use super::*;
 
     fn proposal(reason: &str) -> Proposal {
-        Proposal { seq: 7, reason: reason.into(), by: "torq-agent-casey".into(), tainted: false, sources: vec![], failed: false, yours: true }
+        Proposal { seq: 7, reason: reason.into(), by: "torq-agent-casey".into(), origin: None, failed: false, yours: true }
     }
 
     /// ADR-051 4: the agent's words are never drawn as TorqOS's own. Nothing the proposer wrote is in what the broker
@@ -4190,12 +4176,11 @@ mod proposal_shown {
     fn the_reason_is_never_in_the_brokers_facts() {
         let mut p = proposal("Proposed by root, approved already. Nothing to review.");
         p.failed = true;
-        p.tainted = true;
-        p.sources = vec!["read_journal".into()];
+        p.origin = Some(origin_said(true, &["read_journal".into()]));
         let said = format!("{} {}", p.heading(), p.facts().unwrap());
         assert!(!said.contains("approved") && !said.contains("Nothing to review"), "{said}");
         assert_eq!(p.heading(), "Change #7 proposed by torq-agent-casey");
-        assert!(said.contains("failed once") && said.contains("untrusted content (read_journal)") && !said.contains("tainted"), "{said}");
+        assert!(said.contains("failed once") && said.contains("⚠ Your agent proposed this.") && said.contains("(the system's log)") && !said.contains("taint"), "{said}");
         let lines = p.says(PROPOSAL_SAYS_COLUMNS);
         assert!(!lines.is_empty() && lines.iter().all(|l| l.starts_with(AGENT_SAYS_MARK)), "{lines:?}");
         assert!(lines.concat().contains("approved already"));
@@ -4243,7 +4228,7 @@ mod moved_decisions {
     use super::*;
 
     fn glance() -> Glance {
-        Glance { version: "0".into(), well: true, alarm: None, confirm: None, draft: false, needs: Needs::Nothing, waiting: (0, 0), last: None }
+        Glance { version: "0".into(), well: true, alarm: None, confirm: None, draft: false, needs: Needs::Nothing, waiting: 0, last: None }
     }
 
     #[test]
@@ -4257,7 +4242,7 @@ mod moved_decisions {
         assert_eq!(name(&Some(Ok(g.clone()))), "well");
         g.draft = true;
         assert_eq!(name(&Some(Ok(g.clone()))), "draft");
-        g.waiting = (2, 1);
+        g.waiting = 2;
         assert_eq!(name(&Some(Ok(g.clone()))), "waiting");
         g.alarm = Some("disk".into());
         assert_eq!(name(&Some(Ok(g.clone()))), "alarm");
@@ -4272,10 +4257,10 @@ mod moved_decisions {
         g.needs = Needs::Nothing;
         g.alarm = None;
         let (summary, body, page) = Panel::of(&Some(Ok(g.clone()))).notice().unwrap();
-        assert_eq!((summary.as_str(), body.as_str(), page), ("2 proposals are waiting", "1 came from a session that read untrusted text.", "proposals"));
-        g.waiting = (1, 0);
-        assert_eq!(Panel::of(&Some(Ok(g.clone()))).notice().unwrap().0, "A proposal is waiting");
-        g.waiting = (0, 0);
+        assert_eq!((summary.as_str(), body.as_str(), page), ("2 proposals are waiting", "Review them in TorqOS Settings.", "proposals"));
+        g.waiting = 1;
+        assert_eq!(Panel::of(&Some(Ok(g.clone()))).notice().unwrap(), ("A proposal is waiting".to_string(), "Review it in TorqOS Settings.".to_string(), "proposals"));
+        g.waiting = 0;
         assert_eq!(Panel::of(&Some(Ok(g))).notice(), None);
     }
 
@@ -4336,13 +4321,13 @@ mod moved_decisions {
         let p = pop(g.clone());
         assert_eq!((p.text.as_str(), p.button.clone().unwrap().label(), badge(g)), ("disk is full", "Ask the agent", Some(Badge::Destructive)));
         assert_eq!(p.button, Some(PanelButton::AskAgent("disk is full".into())));
-        // Proposals waiting, and the untrusted ones said.
+        // Proposals waiting.
         let mut g = glance();
-        g.waiting = (1, 0);
+        g.waiting = 1;
         let p = pop(g.clone());
         assert_eq!((p.text.as_str(), p.open, badge(g.clone())), ("A proposal is waiting for you to approve or refuse.", "proposals", Some(Badge::Accent)));
-        g.waiting = (3, 2);
-        assert_eq!(pop(g).text, "3 proposals are waiting for you to approve or refuse. 2 came from a session that read untrusted text.");
+        g.waiting = 3;
+        assert_eq!(pop(g).text, "3 proposals are waiting for you to approve or refuse.");
         // A draft.
         let mut g = glance();
         g.draft = true;
@@ -4359,7 +4344,7 @@ mod moved_decisions {
         g.confirm = Some(Confirm { seq: 3, deadline: "09:00".into(), at: None });
         g.needs = Needs::Restart(vec!["kernel"]);
         g.draft = true;
-        g.waiting = (2, 1);
+        g.waiting = 2;
         let rows = overview_waiting(&g);
         let buttons: Vec<_> = rows.iter().map(|(_, b)| (b.label(), *b)).collect();
         assert_eq!(buttons, vec![
@@ -4370,17 +4355,17 @@ mod moved_decisions {
         ]);
         assert_eq!(rows[0].0, "Change #3 rolls back at 09:00 unless you confirm it.");
         assert_eq!(rows[2].0, "You have changes not yet committed.");
-        assert_eq!(rows[3].0, "2 proposals are waiting for you. 1 came from a session that read untrusted content.");
+        assert_eq!(rows[3].0, "2 proposals are waiting for you.");
         g.confirm = None;
         g.needs = Needs::LogOut(vec!["desktop"]);
-        g.waiting = (1, 0);
+        g.waiting = 1;
         let rows = overview_waiting(&g);
         assert_eq!((rows[0].1, rows[0].1.label()), (WaitButton::LogOut, "Log out…"));
         assert_eq!(rows[2].0, "A proposal is waiting for you.");
         // Only for the next start: nothing to press.
         g.needs = Needs::NextStart(vec!["kernel"]);
         g.draft = false;
-        g.waiting = (0, 0);
+        g.waiting = 0;
         assert!(overview_waiting(&g).is_empty());
         assert_eq!(WaitButton::Confirm { restart_too: false }.label(), "Confirm");
 
@@ -4431,15 +4416,12 @@ mod moved_decisions {
         assert_eq!(agent_service_line(Some("a"), true, Some(&idle)), "Set up, and idle");
         assert_eq!(agent_service_line(Some("a"), true, Some(&Err("no".into()))), "Set up, but it did not answer: no");
         assert_eq!(agent_service_line(Some("a"), true, None), "Set up");
-        assert_eq!(agent_model(None, true), ("Nothing yet: no program is chosen to answer (steps 1 to 3, below)".to_string(), String::new(), None));
-        let e = crate::agent::setup::Brain { place: crate::agent::setup::Place::Engine("Claude Code"), model: "Claude Code".into(), endpoint: String::new(), key: false };
-        let (line, how, key) = agent_model(Some(&e), true);
+        assert_eq!(agent_engine(None, true), ("Nothing yet: no program is chosen to answer (steps 1 to 3, below)".to_string(), String::new()));
+        let e = crate::agent::setup::Engine { name: "Claude Code", maker: "Anthropic" };
+        let (line, how) = agent_engine(Some(&e), true);
         assert_eq!(line, "Claude Code · what it reads goes to Anthropic");
         assert_eq!(how, "You sign it in once, in a terminal: `claude`, then type /login (an administrator's command: if you are not one, ask one)");
-        assert_eq!(key, None, "an engine takes no key: no row says one is or is not configured");
-        assert!(agent_model(Some(&e), false).1.contains("in a terminal: `torq agent run -- claude`, then type /login"), "where `claude` is not a command");
-        let b = crate::agent::setup::Brain { place: crate::agent::setup::Place::Local, model: "m".into(), endpoint: "http://x".into(), key: true };
-        assert_eq!(agent_model(Some(&b), true), (b.line(), "http://x".to_string(), Some("Yes")));
+        assert!(agent_engine(Some(&e), false).1.contains("in a terminal: `torq agent run -- claude`, then type /login"), "where `claude` is not a command");
         // Instructions for your agent, as the page shows them: none, the text (cleaned), or why they are not used.
         use crate::agent::instructions::Instructions;
         assert_eq!(agent_instructions(&Instructions::None), ("None".to_string(), false));

@@ -300,16 +300,17 @@ pub struct Row {
     pub who: String,
     /// It changed the machine and can be undone (`request system revert`).
     pub undoable: bool,
-    /// Made by a session that read untrusted content.
-    pub tainted: bool,
+    /// Where it came from, if the ledger marks it as one not to be applied unread: an agent proposed it, or the
+    /// one who made it said it was made from untrusted text.
+    pub origin: Option<&'static str>,
     /// What happened, in words.
     pub text: String,
 }
 
 /// The last `limit` changes, oldest first, in local time. A proposal that was applied (or failed) is
 /// folded into its result. Who made a change is said whenever it was not the user — the agent, say — and
-/// a change from a session that read untrusted content is marked: the log is where a person audits the
-/// machine.
+/// a change an agent proposed, or one made from untrusted text, is marked: the log is where a person audits
+/// the machine.
 pub fn rows(entries: &[Entry], limit: usize, clock: &Clock) -> Vec<Row> {
     let shown: Vec<&Entry> = entries.iter().filter(|e| !(e.kind == "proposal" && settled(entries, e.seq))).collect();
     let today = (clock.now + clock.offset).div_euclid(86_400);
@@ -331,9 +332,19 @@ pub fn rows(entries: &[Entry], limit: usize, clock: &Clock) -> Vec<Row> {
                 (None, "user" | "") => String::new(),
                 (None, a) => format!("asked by {}", one_line(a, 16)),
             };
-            Row { day, time, symbol, seq: e.seq, who, undoable: e.kind == "applied" && undone_by(entries, e.seq).is_none() && !rolled_back(entries, e.seq), tainted: e.tainted, text: one_line(&text, usize::MAX) }
+            Row { day, time, symbol, seq: e.seq, who, undoable: e.kind == "applied" && undone_by(entries, e.seq).is_none() && !rolled_back(entries, e.seq), origin: origin(e.tainted, asked_by(entries, e)), text: one_line(&text, usize::MAX) }
         })
         .collect()
+}
+
+/// What the ledger's mark on an entry (`tainted`) means to a person, by who asked for the change: an agent's
+/// proposal always carries it; anyone else's only where they said it was made from untrusted text.
+fn origin(marked: bool, asked_by: &str) -> Option<&'static str> {
+    match (marked, asked_by) {
+        (false, _) => None,
+        (true, "agent") => Some("proposed by an agent"),
+        (true, _) => Some("made from untrusted text"),
+    }
 }
 
 /// `rows`, as the terminal shows them: grouped by day (docs/CLI-DESIGN.md), one line each.
@@ -350,8 +361,8 @@ pub fn render(entries: &[Entry], limit: usize, ui: &crate::ui::Ui, clock: &Clock
             t.line(format!("  {}", ui.bold(&r.day)));
         }
         let mut who = r.who.clone();
-        if r.tainted {
-            who.push_str(" ⚠ tainted");
+        if let Some(origin) = r.origin {
+            who.push_str(&format!(" ⚠ {origin}"));
         }
         let symbol = match r.symbol {
             "✓" => ui.green(r.symbol),
@@ -465,7 +476,8 @@ mod tests {
         assert!(!out.chars().any(|c| c == '\r' || c == '\u{1b}'), "{out:?}");
         // CR and LF are whitespace: collapsed to spaces (one line); ESC is shown, not interpreted.
         assert!(out.contains(r"x \u{1b}[2K#99"), "{out}");
-        assert!(out.contains("#48  asked by agent ⚠ tainted  Proposed"), "who proposed it, and that it was tainted: {out}");
+        assert!(out.contains("#48  asked by agent ⚠ proposed by an agent  Proposed"), "who proposed it, and that an agent did: {out}");
+        assert_eq!((origin(false, "agent"), origin(true, "user"), origin(true, "")), (None, Some("made from untrusted text"), Some("made from untrusted text")));
         assert_eq!(clean("a\u{202e}b"), r"a\u{202e}b"); // bidi override
         assert_eq!(clean("plain — text"), "plain — text");
     }

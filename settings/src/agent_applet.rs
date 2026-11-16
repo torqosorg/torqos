@@ -1,6 +1,6 @@
 //! `torq-agent-applet`: the person's agent in COSMIC's panel (ADR-051 4), beside TorqOS's own. Its mark is
 //! quiet while the agent is idle, in the accent while it works, in the warning colour when something is
-//! wrong. Its popup: the agent's state and its model (REMOTE marked), a question box whose answer streams
+//! wrong. Its popup: the agent's state and what answers (the engine, and where what it reads goes), a question box whose answer streams
 //! below, the proposals the answer made with **Review** (TorqOS Settings' Proposals page), **Stop** while it
 //! works, and **Open** (the agent's window). It is the person's own program: it talks only to their own
 //! agent's socket, through torqcli's client, runs nothing as root and holds no secret.
@@ -22,7 +22,7 @@ use cosmic::widget;
 use std::time::Duration;
 use torq::agent::client::{Client, Status, Unreachable};
 use torq::agent::conversation::{self, Conversation, Fate};
-use torq::agent::setup::Brain;
+use torq::agent::setup::Engine;
 use torq::agent::Event;
 
 fn main() -> cosmic::iced::Result {
@@ -49,7 +49,7 @@ struct Applet {
     client: Result<Client, Unreachable>,
     /// What its service said when last asked (`None`: not running, not asked).
     reach: Result<Option<Status>, Unreachable>,
-    brain: Option<Brain>,
+    engine: Option<Engine>,
     /// What became of the proposals its answers made, by the ledger.
     fates: Vec<(u64, Fate)>,
     /// A look under way: no second while it is.
@@ -110,8 +110,8 @@ impl Applet {
             col = col.push(widget::button::text("Agent settings").on_press(Message::Settings));
             return self.core.applet.popup_container(col).into();
         }
-        if let Some(b) = &self.brain {
-            col = col.push(widget::text::caption(b.line()).width(Length::Fill));
+        if let Some(e) = &self.engine {
+            col = col.push(widget::text::caption(e.line()).width(Length::Fill));
         }
         col = col.push(
             widget::text_input("Ask your agent…", &self.question)
@@ -121,9 +121,9 @@ impl Applet {
         if let Some(t) = self.talk.last() {
             col = col.push(widget::text::caption(t.question.clone()).width(Length::Fill));
             // Said before the answer, never scrolled out of sight: what it proposes waits for the person.
-            if let Some(taint) = t.taint() {
+            if let Some(waits) = t.always_asked() {
                 let theme = cosmic::theme::active();
-                col = col.push(widget::text::caption(taint).class(cosmic::theme::Text::Color(theme.cosmic().warning_color().into())).width(Length::Fill));
+                col = col.push(widget::text::caption(waits).class(cosmic::theme::Text::Color(theme.cosmic().warning_color().into())).width(Length::Fill));
             }
             let mut answer = widget::column::with_capacity(4).spacing(spacing.space_xxs);
             if !t.answer.is_empty() {
@@ -216,7 +216,7 @@ impl cosmic::Application for Applet {
 
     fn init(core: cosmic::Core, _flags: ()) -> (Self, Task<cosmic::Action<Message>>) {
         let client = Client::mine();
-        let app = Applet { core, popup: None, client: client.clone(), reach: Ok(None), brain: None, fates: vec![], looking: true, talk: Conversation::default(), question: String::new(), note: None, remembered: None, tokens: None, declining: Default::default() };
+        let app = Applet { core, popup: None, client: client.clone(), reach: Ok(None), engine: None, fates: vec![], looking: true, talk: Conversation::default(), question: String::new(), note: None, remembered: None, tokens: None, declining: Default::default() };
         (app, cosmic::task::future(async move { Message::Looked(agentkit::look(client, vec![], vec![]).await) }))
     }
 
@@ -251,7 +251,7 @@ impl cosmic::Application for Applet {
                 }
                 self.client = l.client;
                 self.reach = l.reach;
-                self.brain = l.brain;
+                self.engine = l.engine;
                 self.fates = l.fates;
             }
             Message::Question(s) => self.question = s,

@@ -3,8 +3,8 @@
 //! question and its context are written to a file of the person's own, in their runtime directory (0700),
 //! and the window is handed its path — never the text on a command line, which every account on the machine
 //! can read in /proc. The window reads the file (only one of the person's own, there, not a link) and removes
-//! it. What is attached is bounded here, and is untrusted text: asked with it, the agent's session is
-//! tainted (the service reports `attached` before the model reads it).
+//! it. What is attached is bounded here, and is untrusted text: the agent is given it marked as attached,
+//! something to read, not instructions.
 
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
@@ -55,11 +55,6 @@ impl Handoff {
             question: crate::history::one_line(question, MAX_QUESTION),
             context: context.map(str::trim).filter(|c| !c.is_empty()).map(|c| bounded(&cleaned(c), MAX_CONTEXT)),
         }
-    }
-
-    /// Whether asking with it taints the session: anything attached is untrusted text.
-    pub fn taints(&self) -> bool {
-        self.context.is_some()
     }
 }
 
@@ -238,14 +233,14 @@ mod tests {
     }
 
     #[test]
-    fn bounded_and_tainting() {
+    fn bounded_and_attached() {
         let h = Handoff::new("  why did it fail?  ", Some(&"x".repeat(MAX_CONTEXT * 3)));
         assert_eq!(h.question, "why did it fail?");
         let c = h.context.as_deref().unwrap();
         assert!(c.chars().count() <= MAX_CONTEXT && c.ends_with("longer than TorqOS attaches]"), "{}", c.len());
-        assert!(h.taints(), "attached: tainting");
+        assert!(h.context.is_some(), "attached");
         assert_eq!(Handoff::new("q", Some("   ")).context, None, "nothing attached is none");
-        assert!(!Handoff::new("hello", None).taints());
+        assert!(!Handoff::new("hello", None).context.is_some());
         assert_eq!(Handoff::new("why\nis it\r\n  slow?", None).question, "why is it slow?", "one line: the box shows it all");
         assert!(Handoff::new(&"q".repeat(MAX_QUESTION + 10), None).question.chars().count() <= MAX_QUESTION);
     }
@@ -324,7 +319,7 @@ mod tests {
         }
     }
 
-    /// Each button's question, and the thing attached: tainting, the person asks, bounded.
+    /// Each button's question, and the thing attached: the person asks, bounded.
     #[test]
     fn what_each_button_hands_over() {
         let cases = [
@@ -338,7 +333,7 @@ mod tests {
             let h = about.handoff();
             assert!(h.question.contains(in_question), "{h:?}");
             assert!(h.context.as_deref().unwrap().contains(in_context), "{h:?}");
-            assert!(h.taints(), "{h:?}");
+            assert!(h.context.is_some(), "{h:?}");
         }
         let long = "x".repeat(MAX_CONTEXT * 2);
         assert!(About::Draft(&long).handoff().context.unwrap().chars().count() <= MAX_CONTEXT);

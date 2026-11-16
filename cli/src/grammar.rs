@@ -321,7 +321,7 @@ static GRANT_OWNER: &[Node] = &[fixed("user", "Your own secret, not the system's
 
 /// After `allow <name> for <minutes>`.
 static GRANT_FOR: &[Node] = &[
-    fixed("tainted-too", "Even from a session that read untrusted text (a coding tool's always has): this one secret only, never all", In::Op).whole(approval).then(GRANT_OWNER),
+    fixed("tainted-too", "Even from a session that read untrusted text (your agent's always counts as one: TorqOS cannot see what it reads): this one secret only, never all", In::Op).whole(approval).then(GRANT_OWNER),
     fixed("user", "Your own secret, not the system's", In::Op).then(&[value(Value::User, "Whose: yours").whole(approval)]),
 ];
 
@@ -377,7 +377,7 @@ static REQUEST_SECRET: &[Node] = &[
 ];
 
 static REQUEST_SYSTEM: &[Node] = &[
-    fixed("agent", "Your agent (torq-agent-<you>): what it may do without asking, and its conversation with you", In::Op).then(&[fixed("forget", "Delete your conversation with your agent (as torq ask --forget): your next question starts a new one", In::Op).whole(|_| Ok(Op::Request(Request::AgentForget))), fixed("trust", "For <minutes> (at most 60), the agent's untainted proposals in your own folder apply without asking — never the system's; ledgered; it asks your password", In::Op).then(&[fixed("revoke", "End your trust in the agent now", In::Op).whole(|_| Ok(Op::Request(Request::TrustRevoke))), value(Value::Minutes, "1 to 60").whole(|r| Ok(Op::Request(Request::Trust { minutes: r.number(Value::Minutes).unwrap_or(0) as u32 })))])]),
+    fixed("agent", "Your agent (torq-agent-<you>): its conversation with you", In::Op).then(&[fixed("forget", "Delete your conversation with your agent (as torq ask --forget): your next question starts a new one", In::Op).whole(|_| Ok(Op::Request(Request::AgentForget)))]),
     fixed("apply", "Apply a change someone else proposed (the agent's): it shows it and asks first", In::Op).then(&[value(Value::Change, "The proposal's number, from show system proposals").whole(|r| Ok(Op::Request(Request::Apply { proposal: r.value(Value::Change).map(|c| c.trim_start_matches('#')).unwrap_or_default().parse()? })))]),
     fixed("backup", "A backup the configuration declares (services restic backups)", In::Op).then(&[fixed("key", "Give its key, typed here: kept root's alone, outside the configuration, never in the ledger (it asks your password)", In::Op).then(&[value(Value::Backup, "The backup's name, from show system backups").whole(|r| Ok(Op::Request(Request::BackupKey { name: r.value(Value::Backup).unwrap_or_default().into() })))])]),
     fixed("decline", "Decline a waiting proposal: it is never applied after (your own folder's, or your agent's; anyone else's asks an administrator's password)", In::Op).then(&[value(Value::Change, "The proposal's number, from show system proposals").whole(|r| Ok(Op::Request(Request::Decline { proposal: r.value(Value::Change).map(|c| c.trim_start_matches('#')).unwrap_or_default().parse()? })))]),

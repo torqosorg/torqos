@@ -9,7 +9,7 @@ use cosmic::prelude::*;
 use cosmic::widget::icon;
 use torq::agent::client::{Client, Status, Unreachable};
 use torq::agent::conversation::Fate;
-use torq::agent::setup::{self, Brain};
+use torq::agent::setup::{self, Engine};
 use torq::agent::conversation::Mood;
 use torq::agent::Event;
 
@@ -37,7 +37,7 @@ pub fn mark(mood: Mood) -> icon::Handle {
     icon::from_svg_bytes(svg.into_bytes())
 }
 
-/// Ask `question`, with what is attached (`context`: untrusted text, it taints the session): each event of
+/// Ask `question`, with what is attached (`context`: untrusted text, given to the agent marked as attached): each event of
 /// the answer as `heard(e)`, or why there is none as `lost(why)`; on a thread of its own. If the program stops
 /// listening, the thread ends the ask (and so the task) when the next event finds no one to hear it: within the
 /// client's QUIET of the last one at most, not at once. `noted(text)`: something the person is told beside the
@@ -91,7 +91,8 @@ pub struct Look {
     pub client: Result<Client, Unreachable>,
     /// Its status, asked only of a service that runs (`None`: not running) — looking never starts it.
     pub reach: Result<Option<Status>, Unreachable>,
-    pub brain: Option<Brain>,
+    /// What answers, where an engine is chosen.
+    pub engine: Option<Engine>,
     /// What became of the proposals the conversation named.
     pub fates: Vec<(u64, Fate)>,
 }
@@ -99,7 +100,7 @@ pub struct Look {
 /// Look at the agent, off the drawing thread: `client` as it was, `seqs` the proposals to look up, `known` the fates
 /// found before (a final one is not looked up again, and with none to look up the ledger is not read).
 pub async fn look(client: Result<Client, Unreachable>, seqs: Vec<u64>, known: Vec<(u64, Fate)>) -> Look {
-    let failed = |e: String| Look { client: Err(Unreachable::Broken(e.clone())), reach: Err(Unreachable::Broken(e)), brain: None, fates: vec![] };
+    let failed = |e: String| Look { client: Err(Unreachable::Broken(e.clone())), reach: Err(Unreachable::Broken(e)), engine: None, fates: vec![] };
     off(move || {
         let client = client.or_else(|_| Client::mine());
         let reach = match &client {
@@ -117,7 +118,7 @@ pub async fn look(client: Result<Client, Unreachable>, seqs: Vec<u64>, known: Ve
             todo.iter().map(|&s| (s, Fate::Unread)).collect()
         });
         let fates = torq::app::merge_fates(&seqs, &known, looked);
-        Look { client, reach, brain: setup::brain().ok().flatten(), fates }
+        Look { client, reach, engine: setup::engine(), fates }
     })
     .await
     .unwrap_or_else(failed)
