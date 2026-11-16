@@ -90,11 +90,12 @@ pub fn pending(entries: &[Entry]) -> Vec<Scheduled> {
         .collect()
 }
 
-/// `data`, marked as what applied it with no person there, if something did: the run of a schedule
-/// (`("scheduled", <its entry>)`), or a person's trust (`("trust", <its grant>)`, session.rs).
-pub fn note(mut data: serde_json::Value, by: Option<(&str, u64)>) -> serde_json::Value {
-    if let Some((key, seq)) = by {
-        data[key] = seq.into();
+/// `data`, marked as applied with no person there, if it was: by the run of a schedule (`scheduled`, its
+/// entry). (An entry from before phase 2 of ADR-055 may say `trust` the same way, a grant of session trust:
+/// nothing writes that any more.)
+pub fn note(mut data: serde_json::Value, scheduled: Option<u64>) -> serde_json::Value {
+    if let Some(seq) = scheduled {
+        data["scheduled"] = seq.into();
     }
     data
 }
@@ -200,7 +201,7 @@ impl<'a> Scheduler<'a> {
         }
         // Read step by step, by the person, at the time: not something to leave to a timer.
         if p.body.tainted {
-            bail!("refused: proposal {proposal_seq} came from a session that read untrusted content; apply it yourself");
+            bail!("refused: proposal {proposal_seq} is an agent's, or was made from untrusted text: it is read and applied by a person who is there, not at a set time");
         }
         // One that could cut the machine off is applied as a commit confirmed: no one is there at its time to confirm.
         if crate::session::cuts_off(&p).is_some() {
@@ -274,7 +275,7 @@ impl<'a> Scheduler<'a> {
         if let Some(why) = self.refusal(&s)? {
             return self.refuse(&s, &why).map(Some);
         }
-        match b.apply_locked(&lock, s.proposal, &by, false, None, Some(("scheduled", s.seq))) {
+        match b.apply_locked(&lock, s.proposal, &by, false, None, Some(s.seq)) {
             Ok(e) => Ok(Some(e)),
             Err(e) if e.downcast_ref::<Busy>().is_some() => Err(e),
             // A refusal of apply's own (the proposal no longer does what was judged, say), or a
@@ -320,7 +321,7 @@ impl<'a> Scheduler<'a> {
     fn approver_gone(&self, s: &Scheduled, p: &Entry) -> Result<Option<String>> {
         let by = s.approved_by.as_deref().unwrap_or_default();
         let read = |f: &std::path::Path| std::fs::read_to_string(f).with_context(|| format!("reading {}", f.display()));
-        let who = match crate::socket::account(by, &read(&self.passwd)?, &read(&self.group)?, &self.b.agent_limits, self.b.residents()) {
+        let who = match crate::socket::account(by, &read(&self.passwd)?, &read(&self.group)?, &self.b.agent_limits) {
             Ok(w) => w,
             Err(e) => return Ok(Some(format!("its approver is not who they were: {e:#}"))),
         };

@@ -339,17 +339,11 @@ pub struct Use {
     pub ssh: bool,
 }
 
-/// Whose agent an account is, by the broker's map (ADR-051 3): the person it serves, and the agent account it is
-/// judged as — its own name, or for a resident account its person's agent account (one agent per person).
+/// Whose agent an account is, by the broker's map (ADR-051 3): the person it serves, and the agent account.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AgentOf {
     pub person: String,
     pub account: String,
-    /// Whether the account is its person's resident agent's (`agent.residents`). Here that rests on the uid alone:
-    /// the daemon vouches for the uid at the other end of its loopback connection, and the broker has no pidfd or
-    /// control group of the caller as on its own socket. The resident account is the service's alone (no login,
-    /// no home, ADR-051 3 amended), so its uid is the service.
-    pub resident: bool,
 }
 
 /// Whether `actor` (the person's agent when `agent` says so) may use `owner`'s secret under rule `r`
@@ -404,35 +398,19 @@ pub fn asks(whose: &str, r: &torq_wire::secrets::Rule, tainted: Option<bool>, fi
 }
 
 impl Broker {
-    /// Whose agent `account` is, by the broker's map: an agent account it names (`agent.agents`), or a resident
-    /// account whose person has one (`agent.residents`). None: a person, or an account that is no one's agent.
+    /// Whose agent `account` is, by the broker's map (`agent.agents`). None: a person, or an account that is
+    /// no one's agent.
     pub fn agent_of(&self, account: &str) -> Option<AgentOf> {
-        if let Some(p) = self.agent_limits.serves(account) {
-            return Some(AgentOf { person: p.to_string(), account: account.to_string(), resident: false });
-        }
-        let p = self.residents().get(account)?;
-        let (a, _) = self.agent_limits.agents.iter().find(|(_, q)| *q == p)?;
-        Some(AgentOf { person: p.clone(), account: a.clone(), resident: true })
+        let p = self.agent_limits.serves(account)?;
+        Some(AgentOf { person: p.to_string(), account: account.to_string() })
     }
 
-    /// Session `id`, if it is agent `a`'s own and of its own kind: a session is its agent account's (ADR-051 3), and
-    /// another agent's is none of this one's to cite; the resident agent's is cited by the resident account alone, and
-    /// another program's of the agent account by the agent account alone. A
-    /// session's id is in the ledger for every account to read: without this, a coding tool would cite the resident
-    /// agent's untainted session and use a secret no person was asked about. As `session::judge` does for proposals.
+    /// Session `id`, if it is agent `a`'s own: a session is its agent account's (ADR-051 3), and another
+    /// agent's is none of this one's to cite. As `session::judge` does for proposals.
     fn agents_session(&self, a: &AgentOf, id: &str) -> Result<crate::session::Record> {
         let r = crate::session::read(self, id)?.context("refused: the request names no session the broker holds")?;
         if r.agent != a.account {
             bail!("refused: session {id} is not {}'s", a.account);
-        }
-        if r.resident != a.resident {
-            // Said as what it is: the resident account citing a session its service did not start (another program's
-            // of the agent account, or its own from outside its service, as root's su makes it) is not "another
-            // program's" in its own eyes.
-            if r.resident {
-                bail!("refused: session {id} is the resident agent's: only it cites it");
-            }
-            bail!("refused: session {id} was not started inside the resident agent's service: the resident account cites only its service's sessions");
         }
         Ok(r)
     }
@@ -720,7 +698,7 @@ mod tests {
     }
 
     fn agent(person: &str) -> AgentOf {
-        AgentOf { person: person.into(), account: format!("torq-agent-{person}"), resident: false }
+        AgentOf { person: person.into(), account: format!("torq-agent-{person}") }
     }
 
     #[test]
@@ -730,7 +708,6 @@ mod tests {
         let sams = agent("sam");
         assert!(may_use(&r, &u(sam(), "mine", "api.github.com", "sam", None), None).is_ok(), "its owner's own");
         assert!(may_use(&r, &u(sam(), "gh", "api.github.com", "torq-agent-sam", Some("s")), Some(&sams)).is_ok(), "sam's agent, as the rule lets it");
-        assert!(may_use(&r, &u(sam(), "gh", "api.github.com", "torq-resident-sam", Some("s")), Some(&sams)).is_ok(), "sam's resident agent: the same agent");
         for (use_, of, why) in [
             (u(sam(), "gh", "api.github.com", "torq-agent-viper", Some("s")), Some(agent("viper")), "not another person's agent"),
             (u(sam(), "gh", "api.github.com", "torq-agent", Some("s")), None, "an account that is no one's agent"),
@@ -745,7 +722,7 @@ mod tests {
         // The system's: each agent by its account, each person by name, and no one else.
         let system = parse(br#"{"gh":{"kind":"token","https":{"hosts":["api.github.com"]},"actors":["torq-agent-sam","viper"],"approve":"never"}}"#).unwrap();
         let sys = |actor: &str, of: Option<&AgentOf>| may_use(&system, &u(Owner::System, "gh", "api.github.com", actor, of.map(|_| "s")), of).is_ok();
-        assert!(sys("torq-agent-sam", Some(&sams)) && sys("torq-resident-sam", Some(&sams)), "sam's agent, named");
+        assert!(sys("torq-agent-sam", Some(&sams)), "sam's agent, named");
         assert!(sys("viper", None), "viper, named");
         assert!(!sys("torq-agent-viper", Some(&agent("viper"))), "viper's agent is not named");
         assert!(!sys("sam", None), "nor is sam");

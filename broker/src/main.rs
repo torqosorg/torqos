@@ -36,8 +36,6 @@ struct Cli {
     system_profile: Option<PathBuf>,
     /// The agent account a request is for (ADR-051 3): the socket adds it, from the kernel's answer.
     agent: Option<String>,
-    /// The caller is its person's resident agent (ADR-051 step 5): the socket adds it, from the peer's control group.
-    resident: bool,
     json: bool,
     cmd: Cmd,
 }
@@ -50,9 +48,6 @@ enum Cmd {
     SessionStart,
     SessionTaint { id: String, source: String },
     SessionShow { id: String },
-    TrustGrant { minutes: u32, approved_by: String },
-    TrustRevoke { approved_by: String },
-    Trust,
     Show { seq: u64 },
     Apply { seq: u64, approved_by: String, confirm_tainted: bool, confirm: Option<u32> },
     Confirm { approved_by: String },
@@ -111,7 +106,6 @@ fn command_line() -> clap::Command {
     let by = || Arg::new("approved-by").long("approved-by").required(true);
     let seq = || Arg::new("seq").required(true).value_parser(value_parser!(u64));
     let agent = || Arg::new("agent").long("agent").help("The agent account this is for (torq-agent-<person>; the socket adds it, from the kernel's answer): its proposals and sessions are judged by the person it serves.");
-    let resident = || flag("resident", "The caller is its person's resident agent, torq-agent@<person>.service (the socket adds it, from the peer's control group; ADR-051 step 5): without it an agent's session starts tainted and its proposal is tainted.");
     Command::new("torq-broker")
         .version(env!("CARGO_PKG_VERSION"))
         .about("TorqOS change broker — the only writer of the system config repo.")
@@ -167,30 +161,20 @@ fn command_line() -> clap::Command {
                 .arg(Arg::new("diff").long("diff").required(true).value_parser(value_parser!(PathBuf)))
                 .arg(Arg::new("reason").long("reason").required(true))
                 .arg(Arg::new("actor").long("actor").default_value("user").value_parser(["user", "agent"]))
-                .arg(flag("tainted", "The proposing session ingested untrusted content (web, email, downloads): only adds to what the broker's record of the session says."))
+                .arg(flag("tainted", "The change was made from untrusted content (web, email, downloads): the one who applies it is asked to confirm that. An agent's proposal is always marked so."))
                 .arg(Arg::new("base").long("base").help("The commit this change was prepared against: refused if the configuration has moved on."))
-                .arg(Arg::new("session").long("session").help("The agent's session (session-start): the proposal is tainted as the broker's record of it says; an agent's proposal without one is tainted."))
-                .arg(agent())
-                .arg(resident()),
+                .arg(Arg::new("session").long("session").help("The agent's session (session-start): the proposal's entry carries what the session reported reading."))
+                .arg(agent()),
         )
-        .subcommand(Command::new("session-start").about("The agent starts a session (ADR-042): its record kept by the broker (ledgered in the proposals that cite it); its id printed.").arg(agent()).arg(resident()))
+        .subcommand(Command::new("session-start").about("The agent starts a session (ADR-042): its record kept by the broker (ledgered in the proposals that cite it); its id printed.").arg(agent()))
         .subcommand(
             Command::new("session-taint")
-                .about("The agent's session read untrusted text: marked tainted for good (nothing clears it).")
+                .about("The agent's session read untrusted text: added to its record for good (nothing clears it).")
                 .arg(Arg::new("id").required(true))
                 .arg(Arg::new("source").long("source").required(true).help("What it read: a tool's name."))
-                .arg(agent())
-                .arg(resident()),
+                .arg(agent()),
         )
         .subcommand(Command::new("session").about("The broker's record of one of the agent's sessions.").arg(Arg::new("id").required(true)))
-        .subcommand(
-            Command::new("trust-grant")
-                .about("Session trust (ADR-042): for the next MINUTES (at most 60), the agent's untainted user-tier proposals in the approver's own folder apply without asking; ledgered.")
-                .arg(Arg::new("minutes").long("minutes").required(true).value_parser(value_parser!(u32)))
-                .arg(by()),
-        )
-        .subcommand(Command::new("trust-revoke").about("End the approver's trust in the agent now (ledgered).").arg(by()))
-        .subcommand(Command::new("trust").about("The trust that holds now: whose, and until when."))
         .subcommand(Command::new("show").about("Show a proposal or applied change.").arg(seq()))
         .subcommand(
             Command::new("apply")
@@ -314,9 +298,6 @@ fn parse_cli() -> Cli {
         "session-start" => Cmd::SessionStart,
         "session-taint" => Cmd::SessionTaint { id: s(sub, "id").unwrap_or_default(), source: s(sub, "source").unwrap_or_default() },
         "session" => Cmd::SessionShow { id: s(sub, "id").unwrap_or_default() },
-        "trust-grant" => Cmd::TrustGrant { minutes: sub.get_one::<u32>("minutes").copied().unwrap_or_default(), approved_by: by(sub) },
-        "trust-revoke" => Cmd::TrustRevoke { approved_by: by(sub) },
-        "trust" => Cmd::Trust,
         "apply" => Cmd::Apply {
             seq: seq(sub).unwrap_or_default(),
             approved_by: by(sub),
@@ -383,7 +364,6 @@ fn parse_cli() -> Cli {
         current_system: p(&m, "current-system"),
         system_profile: p(&m, "system-profile"),
         agent: sub.try_get_one::<String>("agent").ok().flatten().cloned(),
-        resident: sub.try_get_one::<bool>("resident").ok().flatten().copied().unwrap_or(false),
         json: m.get_flag("json"),
         cmd,
     }
@@ -413,11 +393,6 @@ fn main() {
         }
         std::process::exit(if busy { BUSY } else { REFUSED });
     }
-}
-
-/// The trust in an agent's proposals that holds now: of every grant, those that cover proposals.
-fn proposals_trust(entries: &[Entry]) -> Vec<torq_broker::session::Grant> {
-    torq_broker::session::active(entries).into_iter().filter(|g| g.covers == torq_broker::session::Covers::Proposals).collect()
 }
 
 fn print_entry(e: &Entry) -> Result<()> {
@@ -480,10 +455,7 @@ fn run(mut cli: Cli, via: Option<String>, caller: Option<String>) -> Result<()> 
         .with_backup_restore(&s.restore)
         .with_people(&s.people)
         .with_agent_limits(&s.agent)
-        .with_model(s.model.as_deref())
-        .with_residents(&s.residents)
         .as_agent(cli.agent.as_deref())
-        .from_resident(cli.resident)
         .with_remote(s.remote.as_deref())
         .with_nix_cache(s.home.join(".cache/nix"))
         // On a real machine the rollback uses the old system's own commands (its etc/torq/broker.json).
@@ -493,7 +465,7 @@ fn run(mut cli: Cli, via: Option<String>, caller: Option<String>) -> Result<()> 
     // afterwards (ADR-036): best-effort, never failing the command.
     let writes = matches!(
         cli.cmd,
-        Cmd::Init | Cmd::Setup | Cmd::Password { .. } | Cmd::Propose { .. } | Cmd::Apply { .. } | Cmd::Confirm { .. } | Cmd::SessionStart | Cmd::SessionTaint { .. } | Cmd::TrustGrant { .. } | Cmd::TrustRevoke { .. } | Cmd::SecretGrant { .. } | Cmd::SecretRevoke { .. } | Cmd::SecretAnswer { .. }
+        Cmd::Init | Cmd::Setup | Cmd::Password { .. } | Cmd::Propose { .. } | Cmd::Apply { .. } | Cmd::Confirm { .. } | Cmd::SessionStart | Cmd::SessionTaint { .. } | Cmd::SecretGrant { .. } | Cmd::SecretRevoke { .. } | Cmd::SecretAnswer { .. }
             | Cmd::ExpireConfirm { .. } | Cmd::Schedule { .. } | Cmd::RunScheduled { .. } | Cmd::CancelScheduled { .. } | Cmd::Decline { .. } | Cmd::ResumeScheduled | Cmd::Revert { .. } | Cmd::Reconcile { .. } | Cmd::Repair { .. } | Cmd::RemoteClear { .. } | Cmd::RestoreData { .. } | Cmd::Acknowledge { .. } | Cmd::SnapshotTake { .. } | Cmd::SnapshotDelete { .. } | Cmd::BackupKey { .. } | Cmd::BackupRestore { .. } | Cmd::SecretSet { .. } | Cmd::SecretDelete { .. } | Cmd::SecretShow { .. }
     );
     let _push = writes.then_some(PushAfter(&b, b.ledger.read_all().map_or(0, |l| l.len())));
@@ -689,22 +661,8 @@ fn run(mut cli: Cli, via: Option<String>, caller: Option<String>) -> Result<()> 
                 anyhow::bail!("refused: --agent goes with --actor agent");
             }
             let e = b.propose_in(base.as_deref(), &diff, &reason, actor, tainted, session.as_deref())?;
-            // Under a person's trust, applied now (session.rs): the proposal stands either way.
-            let trusted = torq_broker::session::apply_trusted(&b, &e);
             if json {
-                let mut v = serde_json::to_value(&e)?;
-                match &trusted {
-                    Ok(Some(a)) => v["trust_applied"] = serde_json::to_value(a)?,
-                    Ok(None) => {}
-                    Err(err) => v["trust_error"] = format!("{err:#}").into(),
-                }
-                println!("{v}");
-                return Ok(());
-            }
-            match &trusted {
-                Ok(Some(a)) => println!("applied under {}'s trust as change #{}", printable(a.body.approved_by.as_deref().unwrap_or("?")), a.body.seq),
-                Ok(None) => {}
-                Err(err) => println!("not applied under trust: {}", printable(&format!("{err:#}"))),
+                return print_entry(&e);
             }
             println!("proposal #{} · tier: {} · actor: {}{}", e.body.seq, e.body.tier, e.body.actor,
                 if e.body.tainted { " · TAINTED" } else { "" });
@@ -722,19 +680,6 @@ fn run(mut cli: Cli, via: Option<String>, caller: Option<String>) -> Result<()> 
             Some(r) => println!("{}", serde_json::to_string(&r)?),
             None => anyhow::bail!("no such session"),
         },
-        Cmd::TrustGrant { minutes, approved_by } => {
-            let e = torq_broker::session::grant(&b, &approved_by, minutes)?;
-            if json {
-                return print_entry(&e);
-            }
-            println!("{} (ledger #{}): until {}", printable(&e.body.reason), e.body.seq, e.body.data["until"].as_str().unwrap_or("?"));
-        }
-        Cmd::TrustRevoke { approved_by } => match (torq_broker::session::revoke(&b, &approved_by)?, json) {
-            (e, true) => println!("{}", json!({ "revoked": e })),
-            (Some(e), false) => println!("{} (ledger #{})", printable(&e.body.reason), e.body.seq),
-            (None, false) => println!("{} has no trust in the agent to revoke", printable(&approved_by)),
-        },
-        Cmd::Trust => println!("{}", json!({ "trust": proposals_trust(&b.ledger.read_all()?) })),
         Cmd::SecretGrant { name, user, minutes, tainted_too, replace, approved_by } => {
             use torq_broker::session::{grant_secret, Covers, Scope};
             // A person's own secret is the approver's own, and no one else's: whose, the socket says from the kernel.
@@ -777,8 +722,7 @@ fn run(mut cli: Cli, via: Option<String>, caller: Option<String>) -> Result<()> 
             }
         }
         Cmd::SecretGrants => {
-            let grants: Vec<_> = torq_broker::session::active(&b.ledger.read_all()?).into_iter().filter(|g| g.covers != torq_broker::session::Covers::Proposals).collect();
-            println!("{}", json!({ "grants": grants }));
+            println!("{}", json!({ "grants": torq_broker::session::active(&b.ledger.read_all()?) }));
         }
         Cmd::SecretWaiting { approved_by } => println!("{}", json!({ "waiting": b.waiting_asks(&approved_by)? })),
         Cmd::SecretAnswer { n, approved, rest, place, approved_by } => {
@@ -944,8 +888,6 @@ fn run(mut cli: Cli, via: Option<String>, caller: Option<String>) -> Result<()> 
                         "torn": s.torn,
                         "store_modified": s.store_modified,
                         "remote_alarm": s.remote_alarm.as_ref().map(|a| json!({ "at": a.at, "why": a.why })),
-                        // A person's trust in the agent, while it holds: shown, not a problem.
-                        "trust": proposals_trust(&b.ledger.read_all().unwrap_or_default()),
                     })
                 );
                 std::process::exit(if s.busy.is_some() { BUSY } else if problems.is_empty() { OK } else { REFUSED });
@@ -1057,7 +999,7 @@ fn connected(client: u16, server: u16) -> Result<(String, u32)> {
     let tables = format!("{}{}", read("/proc/net/tcp"), read("/proc/net/tcp6"));
     let (passwd, group) = (read("/etc/passwd"), read("/etc/group"));
     // Only the account's name is wanted: whom an agent serves is not read here (no agent map is passed).
-    let account = |uid: u32| torq_broker::socket::caller(uid, &passwd, &group, &Default::default(), &Default::default()).map(|c| c.name);
+    let account = |uid: u32| torq_broker::socket::caller(uid, &passwd, &group, &Default::default()).map(|c| c.name);
     let daemon = uid_of_connection(&tables, server, client).map(account).transpose()?;
     if daemon.as_deref() != Some(DAEMON) {
         anyhow::bail!("refused: no connection from 127.0.0.1:{client} to the secrets daemon");

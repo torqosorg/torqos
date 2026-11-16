@@ -49,7 +49,8 @@ const COLLECT_SECONDS: i64 = 30;
 pub struct Facts {
     /// The person the agent serves: the only one who answers.
     pub person: String,
-    /// The agent account the use is judged as, and the account that called (the agent's or the resident's).
+    /// The agent account the use is judged as, and the account that called, as the kernel named it (the same
+    /// account: a waiting use kept from before phase 2 of ADR-055 could name the old loop's second one).
     pub agent: String,
     pub caller: String,
     pub owner: Owner,

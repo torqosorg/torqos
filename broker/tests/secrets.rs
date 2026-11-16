@@ -46,7 +46,7 @@ impl Machine {
         let creds = dir.path().join("creds");
         fs::write(&creds, script).unwrap();
         fs::set_permissions(&creds, fs::Permissions::from_mode(0o755)).unwrap();
-        let b = Broker::new(&repo, dir.path().join("state"), "true").with_secrets(dir.path().join("store"), &creds.to_string_lossy()).with_agent_limits(&agents()).with_residents(&residents()).with_ask_wait(WAIT);
+        let b = Broker::new(&repo, dir.path().join("state"), "true").with_secrets(dir.path().join("store"), &creds.to_string_lossy()).with_agent_limits(&agents()).with_ask_wait(WAIT);
         b.init().unwrap();
         Machine { dir, b }
     }
@@ -56,11 +56,9 @@ impl Machine {
     fn ledger(&self) -> String {
         fs::read_to_string(self.b.ledger.path()).unwrap()
     }
-    /// The broker as one agent account's request finds it (`--agent`, and `--resident` for the resident's), its model a
-    /// remote one over TLS (not this machine, said here: the test's host may not resolve it, and this_host fails
-    /// closed), the one kind a resident session starts untainted with.
-    fn as_agent(&self, account: &str, resident: bool) -> Broker {
-        Broker::new(self.b.repo.root(), self.dir.path().join("state"), "true").with_agent_limits(&agents()).with_residents(&residents()).with_model(Some("https://api.example.org/v1")).with_this_host(|_| false).as_agent(Some(account)).from_resident(resident)
+    /// The broker as one agent account's request finds it (`--agent`).
+    fn as_agent(&self, account: &str) -> Broker {
+        Broker::new(self.b.repo.root(), self.dir.path().join("state"), "true").with_agent_limits(&agents()).as_agent(Some(account))
     }
 }
 
@@ -68,11 +66,6 @@ impl Machine {
 fn agents() -> torq_broker::agent::Limits {
     let agents = [("torq-agent-alice", "alice"), ("torq-agent-bob", "bob")].iter().map(|(a, p)| (a.to_string(), p.to_string())).collect();
     torq_broker::agent::Limits { agents, settings: vec![] }
-}
-
-/// Alice's resident agent's own account.
-fn residents() -> std::collections::BTreeMap<String, String> {
-    [("torq-resident-alice".to_string(), "alice".to_string())].into_iter().collect()
 }
 
 /// One use from its start to its end, as the secrets daemon carries it: begun, and while it waits for its person
@@ -203,7 +196,7 @@ fn a_use_is_judged_by_its_rule_and_the_agents_first_is_recorded() {
     fs::create_dir_all(repo.join("users/alice")).unwrap();
     fs::write(
         repo.join("users/alice/secrets.json"),
-        r#"{"gh":{"kind":"token","https":{"hosts":["api.github.com"]},"actors":["torq-agent"],"approve":"never"},"own":{"kind":"token","https":{"hosts":["api.github.com"]}}}"#,
+        r#"{"gh":{"kind":"token","https":{"hosts":["api.github.com"]},"actors":["torq-agent"],"approve":"never-even-tainted"},"asks":{"kind":"token","https":{"hosts":["api.github.com"]},"actors":["torq-agent"],"approve":"never"},"own":{"kind":"token","https":{"hosts":["api.github.com"]}}}"#,
     )
     .unwrap();
     let git = |args: &[&str]| assert!(std::process::Command::new("git").arg("-C").arg(&repo).args(args).status().unwrap().success());
@@ -211,17 +204,18 @@ fn a_use_is_judged_by_its_rule_and_the_agents_first_is_recorded() {
     git(&["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "rules"]);
     m.b.set_secret(&alice(), "gh", VALUE, "alice").unwrap();
     m.b.set_secret(&alice(), "own", "alice's own", "alice").unwrap();
-    let resident = m.as_agent("torq-agent-alice", true);
-    let session = torq_broker::session::start(&resident).unwrap().id;
-    // Alice's agent is her resident agent's account and her agent account, judged as one (ADR-051 3): `torq-agent`
-    // in her own rules (ADR-052, amended 2026-11-12).
+    m.b.set_secret(&alice(), "asks", VALUE, "alice").unwrap();
+    let hers = m.as_agent("torq-agent-alice");
+    let session = torq_broker::session::start(&hers).unwrap().id;
+    // Alice's agent is her agent account (ADR-051 3): `torq-agent` in her own rules (ADR-052, amended 2026-11-12).
+    // Its sessions are tainted from their start, so what goes without asking here is `never-even-tainted`.
     let as_ = |actor: &str, name: &str, host: &str, session: Option<&str>| Use { owner: alice(), name: name.into(), host: host.into(), actor: actor.into(), session: session.map(String::from), ssh: false };
-    let agent = |name: &str, host: &str, session: Option<&str>| as_("torq-resident-alice", name, host, session);
+    let agent = |name: &str, host: &str, session: Option<&str>| as_("torq-agent-alice", name, host, session);
     let count = |kind: &str| m.ledger().matches(&format!("\"kind\":\"{kind}\"")).count();
     assert_eq!(used(&m.b, &agent("gh", "api.github.com", Some(&session))).unwrap().value, VALUE);
     assert_eq!(used(&m.b, &agent("gh", "api.github.com", Some(&session))).unwrap().value, VALUE);
     assert_eq!(count("secret_first_use"), 1, "the first use in a session, once");
-    let other = torq_broker::session::start(&resident).unwrap().id;
+    let other = torq_broker::session::start(&hers).unwrap().id;
     used(&m.b, &agent("gh", "api.github.com", Some(&other))).unwrap();
     assert_eq!(count("secret_first_use"), 2, "and once in each session");
     for _ in 0..3 {
@@ -234,28 +228,20 @@ fn a_use_is_judged_by_its_rule_and_the_agents_first_is_recorded() {
     assert_eq!(count("secret_use_refused"), 2, "each refusal once, not each time; a name with no rule, never: the daemon's log has it");
     // No one else's agent, and no account that is no one's agent, whatever session it names. Bob's agent's
     // refusal is on the record (an agent's, of a secret with a rule); an account that is no agent's is not.
-    let bobs = torq_broker::session::start(&m.as_agent("torq-agent-bob", false)).unwrap().id;
-    for (actor, s) in [("torq-agent-bob", bobs.as_str()), ("torq-agent", session.as_str())] {
+    let bobs = torq_broker::session::start(&m.as_agent("torq-agent-bob")).unwrap().id;
+    // (The old loop's second account, `torq-resident-<person>`, is no one's agent now.)
+    for (actor, s) in [("torq-agent-bob", bobs.as_str()), ("torq-agent", session.as_str()), ("torq-resident-alice", session.as_str())] {
         assert!(used(&m.b, &as_(actor, "gh", "api.github.com", Some(s))).is_err(), "{actor}");
     }
     assert_eq!(count("secret_use_refused"), 3, "bob's agent's, once");
     let e = format!("{:#}", used(&m.b, &agent("gh", "api.github.com", Some(&bobs))).unwrap_err());
     assert!(e.contains("is not torq-agent-alice's"), "another agent's session is none of hers to cite: {e}");
-    // Her agent account outside the resident agent (a coding tool, torq agent run): its session starts tainted, so
-    // each use asks a person, which is not built yet.
-    let tool = torq_broker::session::start(&m.as_agent("torq-agent-alice", false)).unwrap().id;
-    let e = format!("{:#}", used(&m.b, &as_("torq-agent-alice", "gh", "api.github.com", Some(&tool))).unwrap_err());
-    assert!(e.contains("untrusted text"), "a coding tool's session is tainted: {e}");
-    // Each kind of caller cites its own kind of session alone: a session's id
-    // is in the ledger for every account to read, so a coding tool citing the resident agent's clean session would
-    // otherwise use the secret untainted; and the resident agent cites none of another program's.
-    let e = format!("{:#}", used(&m.b, &as_("torq-agent-alice", "gh", "api.github.com", Some(&session))).unwrap_err());
-    assert!(e.contains("the resident agent's"), "a coding tool citing the resident's session: {e}");
-    let e = format!("{:#}", used(&m.b, &agent("gh", "api.github.com", Some(&tool))).unwrap_err());
-    assert!(e.contains("not started inside the resident agent's service"), "the resident citing a coding tool's session: {e}");
-    torq_broker::session::taint(&resident, &session, "web").unwrap();
-    assert!(used(&m.b, &agent("gh", "api.github.com", Some(&session))).is_err(), "tainted: a person approves, not built yet");
-    assert!(used(&m.b, &agent("gh", "api.github.com", None)).is_err(), "no session is a tainted one");
+    // Every session of her agent's is tainted from its start: a secret that is not `never-even-tainted` asks a
+    // person, whatever its rule says of when (here `never`), and no one answers.
+    let e = format!("{:#}", used(&m.b, &agent("asks", "api.github.com", Some(&session))).unwrap_err());
+    assert!(e.contains("untrusted text"), "an agent's session is tainted: {e}");
+    let e = format!("{:#}", used(&m.b, &agent("asks", "api.github.com", None)).unwrap_err());
+    assert!(e.contains("names no session"), "no session is a tainted one: {e}");
     assert!(used(&m.b, &agent("gh", "api.github.com", Some("0123456789abcdef0123456789abcdef"))).is_err(), "no such session");
     let before = m.ledger();
     let own = Use { owner: alice(), name: "own".into(), host: "api.github.com".into(), actor: "alice".into(), session: None, ssh: false };
@@ -276,20 +262,12 @@ fn an_agent_sockets_grant_is_who_asked() {
     assert_eq!((read.actor.as_str(), read.uid, read.session), ("alice", 1000, None));
     assert!(m.b.grant_agent("alice", 1000, Some("0123456789abcdef0123456789abcdef")).is_err(), "a person names no session");
     assert!(m.b.grant_agent("torq-agent-alice", 990, Some("0123456789abcdef0123456789abcdef")).is_err(), "no such session");
-    let s = torq_broker::session::start(&m.as_agent("torq-agent-alice", false)).unwrap().id;
+    let s = torq_broker::session::start(&m.as_agent("torq-agent-alice")).unwrap().id;
     let a = m.b.grant_agent("torq-agent-alice", 990, Some(&s)).unwrap();
     assert_eq!(m.b.grant(&a).unwrap().session.as_deref(), Some(s.as_str()));
     assert!(m.b.grant_agent("torq-agent-bob", 991, Some(&s)).is_err(), "another agent's session");
     assert!(m.b.grant_agent("torq-agent", 989, Some(&s)).is_err(), "an account that is no one's agent names no session");
-    // Its own kind of session alone: the agent account's grant names none of the resident agent's, nor the
-    // resident account's one of another program's.
-    let clean = torq_broker::session::start(&m.as_agent("torq-agent-alice", true)).unwrap().id;
-    let e = format!("{:#}", m.b.grant_agent("torq-agent-alice", 990, Some(&clean)).unwrap_err());
-    assert!(e.contains("the resident agent's"), "{e}");
-    let e = format!("{:#}", m.b.grant_agent("torq-resident-alice", 980, Some(&s)).unwrap_err());
-    assert!(e.contains("not started inside the resident agent's service"), "{e}");
-    let r = m.b.grant_agent("torq-resident-alice", 980, Some(&clean)).unwrap();
-    assert_eq!(m.b.grant(&r).unwrap().session.as_deref(), Some(clean.as_str()), "the resident's own");
+    assert!(m.b.grant_agent("torq-resident-alice", 980, Some(&s)).is_err(), "the old loop's second account is no agent");
     for bad in ["", "../x", "0123456789abcdef0123456789abcdeg", "00000000000000000000000000000000"] {
         assert!(m.b.grant(bad).is_err(), "{bad:?}");
     }
@@ -332,17 +310,17 @@ const LONG: std::time::Duration = std::time::Duration::from_secs(30);
 
 /// A broker on `dir`'s machine, as a request of its own finds it: the one a use waits in, beside the test's.
 fn broker_at(dir: &std::path::Path, wait: std::time::Duration) -> Broker {
-    Broker::new(dir.join("config"), dir.join("state"), "true").with_secrets(dir.join("store"), &dir.join("creds").to_string_lossy()).with_agent_limits(&agents()).with_residents(&residents()).with_ask_wait(wait)
+    Broker::new(dir.join("config"), dir.join("state"), "true").with_secrets(dir.join("store"), &dir.join("creds").to_string_lossy()).with_agent_limits(&agents()).with_ask_wait(wait)
 }
 
 /// A machine with rules and values: alice's own (`gh` never asks, `each` each use, `first` the first, `std`
 /// never-even-tainted, `own` not the agent's), bob's own `gh`, and the system's (`sys` for both agents, `bobs` for
-/// bob's alone), every one a token for api.github.com. And two sessions of alice's agent: the resident's (clean),
-/// and a coding tool's (tainted from its start).
+/// bob's alone), every one a token for api.github.com. And two sessions of alice's agent, each tainted from its
+/// start as every session of an agent's is.
 struct Asked {
     m: Machine,
-    clean: String,
     tool: String,
+    second: String,
 }
 
 impl Asked {
@@ -368,19 +346,19 @@ impl Asked {
         m.b.set_secret(&Owner::System, "bobs", VALUE, "casey").unwrap();
         // A system secret of the same name as one of alice's own: the two are never taken for each other.
         m.b.set_secret(&Owner::System, "each", VALUE, "casey").unwrap();
-        let clean = session::start(&m.as_agent("torq-agent-alice", true)).unwrap().id;
-        let tool = session::start(&m.as_agent("torq-agent-alice", false)).unwrap().id;
-        Asked { m, clean, tool }
+        let tool = session::start(&m.as_agent("torq-agent-alice")).unwrap().id;
+        let second = session::start(&m.as_agent("torq-agent-alice")).unwrap().id;
+        Asked { m, tool, second }
     }
 
-    /// The resident agent's use of alice's secret `name`, from its clean session.
-    fn clean(&self, name: &str) -> Use {
-        Use { owner: alice(), name: name.into(), host: "api.github.com".into(), actor: "torq-resident-alice".into(), session: Some(self.clean.clone()), ssh: false }
-    }
-
-    /// A coding tool's use of it, from its tainted session.
+    /// Her agent's use of alice's secret `name`, from its session.
     fn tool(&self, name: &str) -> Use {
-        Use { actor: "torq-agent-alice".into(), session: Some(self.tool.clone()), ..self.clean(name) }
+        Use { owner: alice(), name: name.into(), host: "api.github.com".into(), actor: "torq-agent-alice".into(), session: Some(self.tool.clone()), ssh: false }
+    }
+
+    /// The same, from its other session.
+    fn second(&self, name: &str) -> Use {
+        Use { session: Some(self.second.clone()), ..self.tool(name) }
     }
 
     /// `u`, begun in a request of its own that waits up to `wait`: its value, or why not.
@@ -422,22 +400,22 @@ impl Asked {
 #[test]
 fn a_use_that_asks_waits_and_the_persons_yes_lets_it_through() {
     let a = Asked::new();
-    let waiter = a.begin(a.clean("each"), "deploying the site", LONG);
+    let waiter = a.begin(a.tool("each"), "deploying the site", LONG);
     let w = a.waiting("alice", 1);
     let f = &w[0].facts;
-    assert_eq!((f.person.as_str(), f.agent.as_str(), f.caller.as_str(), f.secret.as_str(), f.host.as_str(), f.tainted, f.ssh), ("alice", "torq-agent-alice", "torq-resident-alice", "each", "api.github.com", false, false));
-    assert_eq!((f.owner.clone(), f.session.as_deref(), w[0].agent_says.as_str()), (alice(), Some(a.clean.as_str()), "deploying the site"));
+    assert_eq!((f.person.as_str(), f.agent.as_str(), f.caller.as_str(), f.secret.as_str(), f.host.as_str(), f.tainted, f.ssh), ("alice", "torq-agent-alice", "torq-agent-alice", "each", "api.github.com", true, false));
+    assert_eq!((f.owner.clone(), f.session.as_deref(), w[0].agent_says.as_str()), (alice(), Some(a.tool.as_str()), "deploying the site"));
     assert!(a.m.b.waiting_asks("bob").unwrap().is_empty(), "asked of alice, and of no one else");
     let e = a.m.b.answer_ask(w[0].n, "alice", true, false, "terminal").unwrap();
     assert_eq!(waiter.join().unwrap().unwrap(), VALUE);
     assert_eq!((e.body.kind.as_str(), e.body.approved_by.as_deref(), e.body.actor.as_str()), ("secret_use_approved", Some("alice"), "user"));
     let d = &e.body.data;
-    assert_eq!((d["secret"].as_str(), d["user"].as_str(), d["host"].as_str(), d["session"].as_str(), d["by"].as_str(), d["where"].as_str()), (Some("each"), Some("alice"), Some("api.github.com"), Some(a.clean.as_str()), Some("alice"), Some("terminal")));
-    assert_eq!((d["agent"].as_str(), d["asked_by"].as_str(), d["ask"].as_u64()), (Some("torq-agent-alice"), Some("torq-resident-alice"), Some(w[0].n)));
+    assert_eq!((d["secret"].as_str(), d["user"].as_str(), d["host"].as_str(), d["session"].as_str(), d["by"].as_str(), d["where"].as_str()), (Some("each"), Some("alice"), Some("api.github.com"), Some(a.tool.as_str()), Some("alice"), Some("terminal")));
+    assert_eq!((d["agent"].as_str(), d["asked_by"].as_str(), d["ask"].as_u64()), (Some("torq-agent-alice"), Some("torq-agent-alice"), Some(w[0].n)));
     assert_eq!((a.count("secret_use_approved"), a.count("secret_use_denied"), a.count("secret_use_timed_out")), (1, 0, 0));
     assert!(a.m.b.waiting_asks("alice").unwrap().is_empty(), "answered: it waits no more");
     // Once: the next use of an each-use secret asks again.
-    assert!(a.unanswered(&a.clean("each")).contains("no one answered"));
+    assert!(a.unanswered(&a.tool("each")).contains("no one answered"));
     assert!(!a.m.ledger().contains(VALUE) && !a.m.ledger().contains("deploying the site"), "no value on the record, nor the agent's words");
 }
 
@@ -445,14 +423,14 @@ fn a_use_that_asks_waits_and_the_persons_yes_lets_it_through() {
 #[test]
 fn a_no_refuses_and_so_does_no_answer() {
     let a = Asked::new();
-    let waiter = a.begin(a.clean("each"), "", LONG);
+    let waiter = a.begin(a.tool("each"), "", LONG);
     let n = a.waiting("alice", 1)[0].n;
     let e = a.m.b.answer_ask(n, "alice", false, false, "dialog").unwrap();
     assert_eq!((e.body.kind.as_str(), e.body.data["where"].as_str(), e.body.data.get("for")), ("secret_use_denied", Some("dialog"), None));
     let why = waiter.join().unwrap().unwrap_err();
     assert!(why.contains("alice denied"), "{why}");
     let t = std::time::Instant::now();
-    let why = a.unanswered(&a.clean("each"));
+    let why = a.unanswered(&a.tool("each"));
     assert!(why.contains("no one answered"), "{why}");
     assert!(t.elapsed() >= WAIT && t.elapsed() < WAIT * 10, "it waited its time, and no longer: {:?}", t.elapsed());
     assert_eq!((a.count("secret_use_approved"), a.count("secret_use_denied"), a.count("secret_use_timed_out")), (0, 1, 1));
@@ -466,7 +444,7 @@ fn a_no_refuses_and_so_does_no_answer() {
     assert!(a.m.b.answer_ask(n, "alice", true, false, "window").is_err(), "an answer is given in the dialog or at a terminal");
 }
 
-/// Only the person the agent serves answers: not the agent's own two accounts, not another person, not an
+/// Only the person the agent serves answers: not the agent's own account, not another person, not an
 /// administrator, not root. And the first answer stands.
 #[test]
 fn only_the_agents_person_answers_and_the_first_answer_stands() {
@@ -492,12 +470,12 @@ fn only_the_agents_person_answers_and_the_first_answer_stands() {
 #[test]
 fn a_waiting_use_holds_nothing_up() {
     let a = Asked::new();
-    let waiter = a.begin(a.clean("each"), "", LONG);
+    let waiter = a.begin(a.tool("each"), "", LONG);
     let n = a.waiting("alice", 1)[0].n;
     let t = std::time::Instant::now();
     let own = Use { owner: alice(), name: "own".into(), host: "api.github.com".into(), actor: "alice".into(), session: None, ssh: false };
     assert_eq!(used(&a.m.b, &own).unwrap().value, VALUE);
-    assert_eq!(used(&a.m.b, &a.clean("gh")).unwrap().value, VALUE, "and the agent's own unasked use");
+    assert_eq!(used(&a.m.b, &a.tool("std")).unwrap().value, VALUE, "and the agent's own unasked use");
     assert!(t.elapsed() < std::time::Duration::from_secs(5), "{:?}", t.elapsed());
     a.m.b.answer_ask(n, "alice", true, false, "terminal").unwrap();
     waiter.join().unwrap().unwrap();
@@ -534,7 +512,7 @@ fn a_fourth_waiting_use_is_refused_at_once() {
     assert_eq!(a.waiting("alice", 3).len(), 3, "and it does not wait");
     assert_eq!(a.entries("secret_use_refused").iter().filter(|e| e["data"]["error"].as_str().is_some_and(|s| s.contains("3 uses are waiting"))).count(), 1);
     // Bob's agent asks bob all the same.
-    let bobs = session::start(&a.m.as_agent("torq-agent-bob", false)).unwrap().id;
+    let bobs = session::start(&a.m.as_agent("torq-agent-bob")).unwrap().id;
     let bob = a.begin(Use { owner: Owner::Person("bob".into()), name: "gh".into(), host: "api.github.com".into(), actor: "torq-agent-bob".into(), session: Some(bobs), ssh: false }, "", LONG);
     let b = a.waiting("bob", 1);
     a.m.b.answer_ask(b[0].n, "bob", true, false, "terminal").unwrap();
@@ -556,17 +534,17 @@ fn a_fourth_waiting_use_is_refused_at_once() {
 fn a_session_asks_at_most_ten_times() {
     let a = Asked::new();
     for i in 0..10 {
-        assert!(a.unanswered(&a.clean("each")).contains("no one answered"), "{i}");
+        assert!(a.unanswered(&a.tool("each")).contains("no one answered"), "{i}");
     }
     assert_eq!(a.count("secret_use_timed_out"), 10);
     let t = std::time::Instant::now();
-    let more = a.unanswered(&a.clean("each"));
+    let more = a.unanswered(&a.tool("each"));
     assert!(more.contains("asked 10 times") && more.contains("no more are asked"), "{more}");
     assert!(t.elapsed() < WAIT, "at once: {:?}", t.elapsed());
-    assert!(a.unanswered(&a.clean("first")).contains("asked 10 times"), "any secret, for the rest of the session");
+    assert!(a.unanswered(&a.tool("first")).contains("asked 10 times"), "any secret, for the rest of the session");
     assert_eq!(a.count("secret_use_timed_out"), 10, "no one was asked");
-    assert_eq!(used(&a.m.b, &a.clean("gh")).unwrap().value, VALUE, "what asks no one still goes");
-    assert!(a.unanswered(&a.tool("each")).contains("no one answered"), "another session is asked");
+    assert_eq!(used(&a.m.b, &a.tool("std")).unwrap().value, VALUE, "what asks no one still goes");
+    assert!(a.unanswered(&a.second("each")).contains("no one answered"), "another session is asked");
 }
 
 /// "Deny, and don't ask again this session": that secret's uses in that session are refused at once from then on,
@@ -574,19 +552,19 @@ fn a_session_asks_at_most_ten_times() {
 #[test]
 fn a_denial_for_the_rest_of_the_session_stops_the_asking() {
     let a = Asked::new();
-    let waiter = a.begin(a.clean("each"), "", LONG);
+    let waiter = a.begin(a.tool("each"), "", LONG);
     let n = a.waiting("alice", 1)[0].n;
     assert!(a.m.b.answer_ask(n, "alice", true, true, "terminal").is_err(), "a yes is never for the rest of a session: that is a grant");
     let e = a.m.b.answer_ask(n, "alice", false, true, "dialog").unwrap();
     assert_eq!((e.body.kind.as_str(), e.body.data["for"].as_str()), ("secret_use_denied", Some("session")));
     waiter.join().unwrap().unwrap_err();
     let t = std::time::Instant::now();
-    let again = a.unanswered(&a.clean("each"));
+    let again = a.unanswered(&a.tool("each"));
     assert!(again.contains("not to be asked again in this session"), "{again}");
     assert!(t.elapsed() < WAIT && a.m.b.waiting_asks("alice").unwrap().is_empty(), "refused at once, and no one is asked");
     assert_eq!(a.count("secret_use_timed_out"), 0);
-    assert!(a.unanswered(&a.clean("first")).contains("no one answered"), "another secret asks");
-    assert!(a.unanswered(&a.tool("each")).contains("no one answered"), "another session asks");
+    assert!(a.unanswered(&a.tool("first")).contains("no one answered"), "another secret asks");
+    assert!(a.unanswered(&a.second("each")).contains("no one answered"), "another session asks");
 }
 
 /// What was left behind is no waiting use: a file whose time is over (its waiter died, the machine restarted) is
@@ -595,7 +573,7 @@ fn a_denial_for_the_rest_of_the_session_stops_the_asking() {
 #[test]
 fn a_use_left_behind_is_ended_once_and_its_number_not_given_again() {
     let a = Asked::new();
-    assert!(a.unanswered(&a.clean("each")).contains("no one answered"));
+    assert!(a.unanswered(&a.tool("each")).contains("no one answered"));
     let first = a.entries("secret_use_timed_out")[0]["data"]["ask"].as_u64().unwrap();
     let asks = a.m.dir.path().join("state/secret-asks");
     assert_eq!(fs::metadata(&asks).unwrap().permissions().mode() & 0o777, 0o700, "root's alone");
@@ -620,7 +598,7 @@ fn a_use_left_behind_is_ended_once_and_its_number_not_given_again() {
     // The next number is past every one given or found, even with the count lost.
     fs::remove_file(asks.join("next")).unwrap();
     left(77, now - minutes(10), now - minutes(8));
-    let waiter = a.begin(a.clean("each"), "", LONG);
+    let waiter = a.begin(a.tool("each"), "", LONG);
     let w = a.waiting("alice", 1);
     assert!(w[0].n > 77 && w[0].n > first, "{}", w[0].n);
     assert_eq!(fs::metadata(asks.join(format!("{}.json", w[0].n))).unwrap().permissions().mode() & 0o777, 0o600);
@@ -628,17 +606,17 @@ fn a_use_left_behind_is_ended_once_and_its_number_not_given_again() {
     waiter.join().unwrap().unwrap();
 }
 
-/// What a person approved is the use they were shown: a session that read untrusted text while its use waited is
-/// refused though approved, and so is a use whose rule was taken away meanwhile.
+/// What a person approved is the use they were shown: a use whose rule was taken away while it waited is refused
+/// though approved. (What its session reports reading meanwhile changes nothing a person was shown: an agent's
+/// session is tainted from its start.)
 #[test]
 fn what_changed_while_it_waited_is_not_what_was_approved() {
     let a = Asked::new();
-    let waiter = a.begin(a.clean("each"), "", LONG);
+    let waiter = a.begin(a.tool("each"), "", LONG);
     let n = a.waiting("alice", 1)[0].n;
-    session::taint(&a.m.as_agent("torq-agent-alice", true), &a.clean, "web").unwrap();
+    session::taint(&a.m.as_agent("torq-agent-alice"), &a.tool, "web").unwrap();
     a.m.b.answer_ask(n, "alice", true, false, "terminal").unwrap();
-    let why = waiter.join().unwrap().unwrap_err();
-    assert!(why.contains("while this use waited"), "{why}");
+    assert_eq!(waiter.join().unwrap().unwrap(), VALUE, "as it was shown: tainted then, tainted now");
     let waiter = a.begin(a.tool("each"), "", LONG);
     let n = a.waiting("alice", 1)[0].n;
     let repo = a.m.b.repo.root().to_path_buf();
@@ -651,6 +629,8 @@ fn what_changed_while_it_waited_is_not_what_was_approved() {
 
 /// A grant lets the uses it covers go without asking, for its time, and each first use under it names it; taken
 /// back, the asking is back at once. Given by a person for their own agent; one secret, for 1 to 480 minutes.
+/// Every session of an agent's is tainted from its start, so the grant that lets a use through is one that says
+/// `tainted-too`: a plain one, and one of all the person's own, are on the record and cover no use of an agent's.
 #[test]
 fn a_grant_lets_its_secrets_uses_through_until_it_ends() {
     let a = Asked::new();
@@ -660,25 +640,28 @@ fn a_grant_lets_its_secrets_uses_through_until_it_ends() {
     }
     assert!(session::grant_secret(&a.m.b, "carol", each(), Scope::Minutes(5), false, false).is_err(), "a person with no agent");
     assert!(session::grant_secret(&a.m.b, "alice", Covers::Secret { name: "none".into(), system: false }, Scope::Minutes(5), false, false).is_err(), "a secret with no rule");
-    assert!(session::grant_secret(&a.m.b, "alice", Covers::Proposals, Scope::Minutes(5), false, false).is_err(), "trust in proposals is not given here");
-    let g = session::grant_secret(&a.m.b, "alice", each(), Scope::Minutes(480), false, false).unwrap();
-    assert!(g.body.reason.contains("alice lets the agent use their secret each without asking, for 480 minutes"), "{}", g.body.reason);
+    let plain = session::grant_secret(&a.m.b, "alice", each(), Scope::Minutes(480), false, false).unwrap();
+    assert!(plain.body.reason.contains("alice lets the agent use their secret each without asking, for 480 minutes"), "{}", plain.body.reason);
+    assert!(a.unanswered(&a.tool("each")).contains("untrusted text"), "a grant that does not say tainted-too covers no agent's session");
+    let g = session::grant_secret(&a.m.b, "alice", each(), Scope::Minutes(480), true, true).unwrap();
     assert_eq!((g.body.kind.as_str(), g.body.approved_by.as_deref(), g.body.data["covers"].as_str(), g.body.data["owner"].as_str(), g.body.data["minutes"].as_u64()), ("trust_granted", Some("alice"), Some("secret each"), Some("user"), Some(480)));
     assert!(session::grant_secret(&a.m.b, "alice", each(), Scope::Minutes(5), false, false).is_err(), "one at a time");
-    assert_eq!(used(&a.m.b, &a.clean("each")).unwrap().value, VALUE);
-    assert_eq!(used(&a.m.b, &a.clean("each")).unwrap().value, VALUE);
+    assert_eq!(used(&a.m.b, &a.tool("each")).unwrap().value, VALUE);
+    assert_eq!(used(&a.m.b, &a.tool("each")).unwrap().value, VALUE);
     let first = a.entries("secret_first_use");
     assert_eq!((first.len(), first[0]["data"]["grant"].as_u64()), (1, Some(g.body.seq)), "its use names the grant it went under");
-    assert_eq!(a.count("secret_use_approved") + a.count("secret_use_timed_out"), 0, "no one was asked");
-    assert!(a.unanswered(&a.clean("first")).contains("no one answered"), "another secret is not covered");
+    assert_eq!((a.count("secret_use_approved"), a.count("secret_use_timed_out")), (0, 1), "no one was asked but for the plain grant's use");
+    assert!(a.unanswered(&a.tool("first")).contains("no one answered"), "another secret is not covered");
     let ended = session::revoke_secrets(&a.m.b, "alice", &Ending::Secret { name: "each".into(), system: false }).unwrap();
     assert_eq!((ended.len(), ended[0].body.kind.as_str(), ended[0].body.data["grant"].as_u64(), ended[0].body.data["covers"].as_str()), (1, "trust_revoked", Some(g.body.seq), Some("secret each")));
-    assert!(a.unanswered(&a.clean("each")).contains("no one answered"), "taken back: it asks again");
+    assert_eq!(a.entries("trust_revoked")[0]["data"]["grant"].as_u64(), Some(plain.body.seq), "the plain one ended when the other replaced it");
+    assert!(a.unanswered(&a.tool("each")).contains("no one answered"), "taken back: it asks again");
     assert!(session::revoke_secrets(&a.m.b, "alice", &Ending::Everything).unwrap().is_empty(), "nothing left to end");
-    // All of a person's own, for a time; ended with every other of theirs, and no one else's.
+    // All of a person's own, for a time: never from a session that read untrusted text, which an agent's is. Ended
+    // with every other of theirs, and no one else's.
     session::grant_secret(&a.m.b, "alice", Covers::AllSecrets, Scope::Minutes(30), false, false).unwrap();
     session::grant_secret(&a.m.b, "bob", Covers::AllSecrets, Scope::Minutes(30), false, false).unwrap();
-    assert_eq!(used(&a.m.b, &a.clean("first")).unwrap().value, VALUE);
+    assert!(a.unanswered(&a.tool("first")).contains("untrusted text"), "all at once covers no agent's session");
     assert_eq!(session::revoke_secrets(&a.m.b, "alice", &Ending::Everything).unwrap().len(), 1);
     assert_eq!(session::active(&a.m.b.ledger.read_all().unwrap()).iter().map(|g| g.person.as_str()).collect::<Vec<_>>(), ["bob"]);
 }
@@ -748,33 +731,33 @@ fn what_a_grant_never_covers() {
     let named = |name: &str, system: bool| Covers::Secret { name: name.into(), system };
     session::grant_secret(&a.m.b, "alice", Covers::AllSecrets, Scope::Minutes(480), false, false).unwrap();
     // Whose secret a grant is of is said in its entry, which the terminal prints and the dialog words alike.
-    let g = session::grant_secret(&a.m.b, "alice", named("sys", true), Scope::Minutes(480), false, false).unwrap();
+    let g = session::grant_secret(&a.m.b, "alice", named("sys", true), Scope::Minutes(480), true, false).unwrap();
     assert!(g.body.reason.contains("the system's secret sys") && g.body.data["owner"] == "system", "{}", g.body.reason);
     let system = |name: &str, u: Use| Use { owner: Owner::System, name: name.into(), ..u };
     // A system secret whose rule does not name this agent: no grant is given of it, and none widens its rule.
     let e = format!("{:#}", session::grant_secret(&a.m.b, "alice", named("bobs", true), Scope::Minutes(5), false, false).unwrap_err());
     assert!(e.contains("widens no rule"), "{e}");
-    assert!(a.unanswered(&system("bobs", a.clean("x"))).contains("may not use"));
-    assert_eq!(used(&a.m.b, &system("sys", a.clean("x"))).unwrap().value, VALUE, "one whose rule names it, and its grant");
+    assert!(a.unanswered(&system("bobs", a.tool("x"))).contains("may not use"));
+    assert_eq!(used(&a.m.b, &system("sys", a.tool("x"))).unwrap().value, VALUE, "one whose rule names it, and its grant");
     // A secret its rule gives to no agent: all her own are granted, and it is still not the agent's.
-    assert!(a.unanswered(&a.clean("own")).contains("may not use"));
+    assert!(a.unanswered(&a.tool("own")).contains("may not use"));
     assert!(session::grant_secret(&a.m.b, "alice", named("own", false), Scope::Minutes(5), false, false).is_err());
     // Another person's secret, or another person's agent: alice's grants are of her agent's uses alone.
-    let bobs = session::start(&a.m.as_agent("torq-agent-bob", false)).unwrap().id;
+    let bobs = session::start(&a.m.as_agent("torq-agent-bob")).unwrap().id;
     let bob = |u: Use| Use { actor: "torq-agent-bob".into(), session: Some(bobs.clone()), ..u };
-    assert!(a.unanswered(&bob(system("sys", a.clean("x")))).contains("no one answered"), "bob's agent, of a system secret alice let hers use: bob is asked");
-    assert!(a.unanswered(&bob(a.clean("each"))).contains("may not use"), "bob's agent, of alice's secret");
-    assert!(a.unanswered(&Use { owner: Owner::Person("bob".into()), ..a.clean("gh") }).contains("may not use"), "alice's agent, of bob's secret");
+    assert!(a.unanswered(&bob(system("sys", a.tool("x")))).contains("no one answered"), "bob's agent, of a system secret alice let hers use: bob is asked");
+    assert!(a.unanswered(&bob(a.tool("each"))).contains("may not use"), "bob's agent, of alice's secret");
+    assert!(a.unanswered(&Use { owner: Owner::Person("bob".into()), ..a.tool("gh") }).contains("may not use"), "alice's agent, of bob's secret");
     // A host or an operation the rule does not name.
-    assert!(a.unanswered(&Use { host: "evil.example.com".into(), ..a.clean("each") }).contains("is not sent to"));
-    assert!(a.unanswered(&Use { ssh: true, ..a.clean("each") }).contains("signs for nothing"));
+    assert!(a.unanswered(&Use { host: "evil.example.com".into(), ..a.tool("each") }).contains("is not sent to"));
+    assert!(a.unanswered(&Use { ssh: true, ..a.tool("each") }).contains("signs for nothing"));
     // Reading a value back, setting one, deleting one: a grant is of uses.
     assert!(format!("{:#}", a.m.b.show_secret(&alice(), "each", "torq-agent-alice").unwrap_err()).contains("theirs alone"));
     assert!(format!("{:#}", a.m.b.set_secret(&alice(), "each", "another", "torq-agent-alice").unwrap_err()).contains("theirs alone"));
     // A session that read untrusted text: all never, and one secret only where its grant says so.
     assert!(a.unanswered(&a.tool("each")).contains("untrusted text"), "all her own, and tainted: asked");
-    assert!(a.unanswered(&system("sys", a.tool("x"))).contains("untrusted text"), "a grant that does not say tainted-too");
-    assert!(a.unanswered(&Use { session: None, ..a.clean("each") }).contains("names no session"), "no session is a tainted one");
+    assert!(a.unanswered(&system("each", a.tool("x"))).contains("untrusted text"), "a system secret with no grant of its own");
+    assert!(a.unanswered(&Use { session: None, ..a.tool("each") }).contains("names no session"), "no session is a tainted one");
     let e = format!("{:#}", session::grant_secret(&a.m.b, "bob", Covers::AllSecrets, Scope::Minutes(5), true, false).unwrap_err());
     assert!(e.contains("tainted-too is of one named secret"), "{e}");
     let g = session::grant_secret(&a.m.b, "alice", named("each", false), Scope::Minutes(5), true, false).unwrap();
@@ -784,8 +767,10 @@ fn what_a_grant_never_covers() {
     assert_eq!(a.count("secret_use_approved"), 0);
 }
 
-/// "This session" is the agent's sessions running when the person said so: one started after is asked. And
-/// `never-even-tainted`, the person's own standing word for one secret, asks no one even from a tainted session.
+/// "This session" is the agent's sessions running when the person said so, and never one that read untrusted
+/// text: so it covers no session of an agent's as they are now (each tainted from its start), running then or
+/// started after. And `never-even-tainted`, the person's own standing word for one secret, asks no one even from
+/// a tainted session.
 #[test]
 fn a_session_grant_and_the_standing_word() {
     let a = Asked::new();
@@ -794,37 +779,28 @@ fn a_session_grant_and_the_standing_word() {
     assert!(session::grant_secret(&a.m.b, "alice", Covers::AllSecrets, Scope::Session, false, false).is_err(), "all is for minutes");
     let g = session::grant_secret(&a.m.b, "alice", each, Scope::Session, false, false).unwrap();
     assert_eq!(g.body.data["scope"].as_str(), Some("session"));
-    assert_eq!(used(&a.m.b, &a.clean("each")).unwrap().value, VALUE, "a session that was running");
+    assert!(a.unanswered(&a.tool("each")).contains("untrusted text"), "a session that was running: tainted, so asked");
     std::thread::sleep(std::time::Duration::from_millis(1100));
-    let later = session::start(&a.m.as_agent("torq-agent-alice", true)).unwrap().id;
-    assert!(a.unanswered(&Use { session: Some(later), ..a.clean("each") }).contains("no one answered"), "one started after is asked");
+    let later = session::start(&a.m.as_agent("torq-agent-alice")).unwrap().id;
+    assert!(a.unanswered(&Use { session: Some(later), ..a.tool("each") }).contains("no one answered"), "one started after is asked");
     assert_eq!(used(&a.m.b, &a.tool("std")).unwrap().value, VALUE, "never-even-tainted");
     assert_eq!(used(&a.m.b, &Use { session: None, ..a.tool("std") }).unwrap().value, VALUE);
     assert!(a.unanswered(&a.tool("gh")).contains("untrusted text"), "plain never still asks a tainted session");
     assert_eq!(a.count("secret_use_approved"), 0);
 }
 
-/// The first use in a session that a person approved is the first: a `first-use` secret's later uses in that
-/// session go without asking, and another session's first asks again.
+/// A `first-use` secret asks at an agent's first use in a session, and, an agent's session being tainted from its
+/// start, at every use after it too: a person's yes is for the one use. On the record once for each, as approved.
 #[test]
-fn a_first_use_approved_is_not_asked_again_in_its_session() {
+fn a_first_use_approved_is_still_asked_again_in_a_tainted_session() {
     let a = Asked::new();
-    let waiter = a.begin(a.clean("first"), "", LONG);
+    let waiter = a.begin(a.tool("first"), "", LONG);
     let n = a.waiting("alice", 1)[0].n;
     a.m.b.answer_ask(n, "alice", true, false, "terminal").unwrap();
     waiter.join().unwrap().unwrap();
-    assert_eq!(used(&a.m.b, &a.clean("first")).unwrap().value, VALUE);
-    assert!(a.m.b.waiting_asks("alice").unwrap().is_empty());
+    assert!(a.unanswered(&a.tool("first")).contains("untrusted text"), "asked again");
     assert_eq!((a.count("secret_use_approved"), a.count("secret_first_use")), (1, 0), "on the record once, as approved");
-    let other = session::start(&a.m.as_agent("torq-agent-alice", true)).unwrap().id;
-    assert!(a.unanswered(&Use { session: Some(other), ..a.clean("first") }).contains("no one answered"));
-    // A first use that was denied is still to come: it asks again.
-    let third = session::start(&a.m.as_agent("torq-agent-alice", true)).unwrap().id;
-    let waiter = a.begin(Use { session: Some(third.clone()), ..a.clean("first") }, "", LONG);
-    let n = a.waiting("alice", 1)[0].n;
-    a.m.b.answer_ask(n, "alice", false, false, "terminal").unwrap();
-    waiter.join().unwrap().unwrap_err();
-    assert!(a.unanswered(&Use { session: Some(third), ..a.clean("first") }).contains("no one answered"));
+    assert!(a.unanswered(&a.second("first")).contains("no one answered"), "and in another session");
 }
 
 /// Whatever an entry on the record says, all of a person's secrets are never used unasked from a tainted session:
@@ -834,7 +810,7 @@ fn an_entry_that_says_all_tainted_too_is_not_honoured() {
     let a = Asked::new();
     let until = (chrono::Utc::now() + chrono::Duration::minutes(30)).to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
     a.m.b.ledger.append(torq_broker::ledger::NewEntry { actor: "user".into(), approved_by: Some("alice".into()), kind: "trust_granted".into(), tier: "user".into(), tainted: false, reason: "forged".into(), data: serde_json::json!({ "person": "alice", "minutes": 30, "until": until, "covers": "all-secrets", "tainted_too": true }) }).unwrap();
-    assert_eq!(used(&a.m.b, &a.clean("each")).unwrap().value, VALUE, "it is a grant of all, as far as one goes");
+    assert_eq!(session::active(&a.m.b.ledger.read_all().unwrap()).len(), 1, "it is a grant of all, as far as one goes");
     assert!(a.unanswered(&a.tool("each")).contains("untrusted text"), "and no further");
 }
 
@@ -844,19 +820,19 @@ fn an_entry_that_says_all_tainted_too_is_not_honoured() {
 fn a_use_that_asks_is_told_its_number_at_once_and_only_it_collects_the_answer() {
     let a = Asked::new();
     let t = std::time::Instant::now();
-    let Used::Waiting(n) = a.m.b.begin_use(&a.clean("each"), "").unwrap() else { panic!("it asks") };
+    let Used::Waiting(n) = a.m.b.begin_use(&a.tool("each"), "").unwrap() else { panic!("it asks") };
     assert!(t.elapsed() < WAIT, "told at once: {:?}", t.elapsed());
-    assert_eq!(a.m.b.resume_use(&a.clean("each"), n).unwrap(), Used::Waiting(n), "not answered yet");
+    assert_eq!(a.m.b.resume_use(&a.tool("each"), n).unwrap(), Used::Waiting(n), "not answered yet");
     a.m.b.answer_ask(n, "alice", true, false, "terminal").unwrap();
     // Approved, and still not anyone's but its own: another secret, host, session, caller or operation.
     let own = Use { owner: alice(), name: "own".into(), host: "api.github.com".into(), actor: "alice".into(), session: None, ssh: false };
-    for other in [a.clean("gh"), a.clean("first"), a.tool("each"), Use { host: "evil.example.com".into(), ..a.clean("each") }, Use { ssh: true, ..a.clean("each") }, Use { owner: Owner::System, ..a.clean("each") }, Use { actor: "torq-agent-alice".into(), ..a.clean("each") }, own] {
+    for other in [a.tool("gh"), a.tool("first"), a.second("each"), Use { host: "evil.example.com".into(), ..a.tool("each") }, Use { ssh: true, ..a.tool("each") }, Use { owner: Owner::System, ..a.tool("each") }, Use { actor: "torq-agent-bob".into(), ..a.tool("each") }, own] {
         let e = format!("{:#}", a.m.b.resume_use(&other, n).unwrap_err());
         assert!(e.contains("is not this use") || e.contains("only an agent's use waits") || e.contains("refused: session"), "{other:?}: {e}");
     }
-    let Used::Granted(g) = a.m.b.resume_use(&a.clean("each"), n).unwrap() else { panic!("approved") };
+    let Used::Granted(g) = a.m.b.resume_use(&a.tool("each"), n).unwrap() else { panic!("approved") };
     assert_eq!(g.value, VALUE);
-    let again = format!("{:#}", a.m.b.resume_use(&a.clean("each"), n).unwrap_err());
+    let again = format!("{:#}", a.m.b.resume_use(&a.tool("each"), n).unwrap_err());
     assert!(again.contains("no one answered"), "an answer is spent once: {again}");
     assert_eq!((a.count("secret_use_approved"), a.count("secret_use_timed_out")), (1, 0));
 }
@@ -866,12 +842,12 @@ fn a_use_that_asks_is_told_its_number_at_once_and_only_it_collects_the_answer() 
 #[test]
 fn an_answer_in_the_last_moment_is_still_collected() {
     let a = Asked::new();
-    let Used::Waiting(n) = a.m.b.begin_use(&a.clean("each"), "").unwrap() else { panic!("it asks") };
+    let Used::Waiting(n) = a.m.b.begin_use(&a.tool("each"), "").unwrap() else { panic!("it asks") };
     a.m.b.answer_ask(n, "alice", true, false, "terminal").unwrap();
     std::thread::sleep(WAIT + std::time::Duration::from_millis(200));
     assert!(a.m.b.waiting_asks("alice").unwrap().is_empty(), "whatever else looks at the store meanwhile");
     assert!(format!("{:#}", a.m.b.answer_ask(n, "alice", false, false, "terminal").unwrap_err()).contains("answered already"));
-    assert!(matches!(a.m.b.resume_use(&a.clean("each"), n).unwrap(), Used::Granted(_)));
+    assert!(matches!(a.m.b.resume_use(&a.tool("each"), n).unwrap(), Used::Granted(_)));
     assert_eq!((a.count("secret_use_approved"), a.count("secret_use_timed_out"), a.count("secret_use_denied")), (1, 0, 0));
 }
 
@@ -888,7 +864,7 @@ fn an_agent_asks_at_most_thirty_times_an_hour_across_its_sessions() {
             Used::Granted(_) => Err("it was not asked".into()),
         }
     };
-    let nowhere = Use { session: None, ..a.clean("each") };
+    let nowhere = Use { session: None, ..a.tool("each") };
     for i in 0..10 {
         asked(&nowhere).unwrap_or_else(|e| panic!("{i}: {e}"));
     }
@@ -898,19 +874,19 @@ fn an_agent_asks_at_most_thirty_times_an_hour_across_its_sessions() {
     let mut session = String::new();
     for i in 0..19 {
         if i % 10 == 0 {
-            session = session::start(&a.m.as_agent("torq-agent-alice", true)).unwrap().id;
+            session = session::start(&a.m.as_agent("torq-agent-alice")).unwrap().id;
         }
-        asked(&Use { session: Some(session.clone()), ..a.clean("each") }).unwrap_or_else(|e| panic!("{i}: {e}"));
+        asked(&Use { session: Some(session.clone()), ..a.tool("each") }).unwrap_or_else(|e| panic!("{i}: {e}"));
     }
     assert_eq!(a.count("secret_use_denied"), 29);
-    let fresh = session::start(&a.m.as_agent("torq-agent-alice", true)).unwrap().id;
-    let e = asked(&Use { session: Some(fresh.clone()), ..a.clean("each") }).unwrap_err();
+    let fresh = session::start(&a.m.as_agent("torq-agent-alice")).unwrap().id;
+    let e = asked(&Use { session: Some(fresh.clone()), ..a.tool("each") }).unwrap_err();
     assert!(e.contains("asked 30 times about this agent's uses this hour"), "{e}");
     assert!(a.m.b.waiting_asks("alice").unwrap().is_empty(), "no one is asked");
     assert_eq!(a.entries("secret_use_refused").iter().filter(|e| e["data"]["error"].as_str().is_some_and(|s| s.contains("30 times"))).count(), 1);
-    assert_eq!(used(&a.m.b, &Use { session: Some(fresh), ..a.clean("gh") }).unwrap().value, VALUE, "what asks no one still goes");
+    assert_eq!(used(&a.m.b, &Use { session: Some(fresh), ..a.tool("std") }).unwrap().value, VALUE, "what asks no one still goes");
     // Another person's agent has its own count.
-    let bobs = session::start(&a.m.as_agent("torq-agent-bob", false)).unwrap().id;
+    let bobs = session::start(&a.m.as_agent("torq-agent-bob")).unwrap().id;
     let Used::Waiting(n) = a.m.b.begin_use(&Use { owner: Owner::Person("bob".into()), name: "gh".into(), host: "api.github.com".into(), actor: "torq-agent-bob".into(), session: Some(bobs), ssh: false }, "").unwrap() else { panic!("bob is asked") };
     a.m.b.answer_ask(n, "bob", false, false, "terminal").unwrap();
 }
@@ -920,7 +896,7 @@ fn an_agent_asks_at_most_thirty_times_an_hour_across_its_sessions() {
 #[test]
 fn a_denial_that_cannot_be_kept_still_ends_the_use_once() {
     let a = Asked::new();
-    let Used::Waiting(n) = a.m.b.begin_use(&a.clean("each"), "").unwrap() else { panic!("it asks") };
+    let Used::Waiting(n) = a.m.b.begin_use(&a.tool("each"), "").unwrap() else { panic!("it asks") };
     let sessions = a.m.dir.path().join("state/sessions");
     fs::set_permissions(&sessions, fs::Permissions::from_mode(0o500)).unwrap();
     let e = a.m.b.answer_ask(n, "alice", false, true, "terminal");
@@ -928,7 +904,7 @@ fn a_denial_that_cannot_be_kept_still_ends_the_use_once() {
     let e = format!("{:#}", e.unwrap_err());
     assert!(e.contains("the use is refused"), "{e}");
     assert!(a.m.b.answer_ask(n, "alice", true, false, "terminal").is_err(), "not answered again");
-    assert!(a.m.b.resume_use(&a.clean("each"), n).is_err(), "and it does not go through");
+    assert!(a.m.b.resume_use(&a.tool("each"), n).is_err(), "and it does not go through");
     assert!(a.m.b.waiting_asks("alice").unwrap().is_empty());
     assert_eq!((a.count("secret_use_denied"), a.count("secret_use_approved"), a.count("secret_use_timed_out")), (1, 0, 0), "one outcome");
 }

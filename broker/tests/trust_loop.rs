@@ -4053,20 +4053,6 @@ fn the_not_done_limit_is_exactly_its_number() {
     }
 }
 
-/// The resident agent's not-done limit is its own (step 5's second review): a coding tool's 100 dead proposals do
-/// not stop the resident agent proposing, nor the resident's a coding tool.
-#[test]
-fn the_resident_agents_not_done_limit_is_its_own() {
-    let (dir, b) = setup("true");
-    let casey = [("torq-agent-casey".to_string(), "casey".to_string())].into_iter().collect();
-    let resident = Broker::new(b.repo.root(), dir.path().join("state"), "true").with_agent_limits(&torq_broker::agent::Limits { agents: casey, settings: vec![] }).as_agent(Some("torq-agent-casey")).from_resident(true);
-    dead_proposal(&b, "torq-agent-casey", torq_broker::AGENT_WAITING_LOOK);
-    let d = write_diff(dir.path(), "p.diff", "--- /dev/null\n+++ b/users/casey/packages.json\n@@ -0,0 +1 @@\n+[\"htop\"]\n");
-    assert!(b.propose_on(Some(&b.repo.head().unwrap()), &d, "htop", Actor::Agent, false).is_err(), "the coding tool's own: used up");
-    let p = resident.propose_on(Some(&b.repo.head().unwrap()), &d, "htop", Actor::Agent, false).unwrap();
-    assert_eq!(p.body.data["resident"], true);
-}
-
 /// Step 5's second review: schedule says a declined proposal was declined, before anything else it would say of it
 /// (that it is tainted, here) — so a person is told the one thing that settles it.
 #[test]

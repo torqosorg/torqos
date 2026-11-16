@@ -11,8 +11,8 @@ use std::collections::BTreeMap;
 pub const SYSTEM_RULES: &str = "secrets/system.json";
 /// A person's own rules: `users/<person>/` and this.
 pub const PERSON_RULES: &str = "secrets.json";
-/// The word for the agent in a person's own rules: that person's own agent, both of its accounts (`torq-agent-<person>`
-/// and `torq-resident-<person>`, ADR-051 3), and no one else's. A system rule names each agent by its account
+/// The word for the agent in a person's own rules: that person's own agent (`torq-agent-<person>`, ADR-051 3),
+/// and no one else's. A system rule names each agent by its account
 /// instead (`torq-agent-<person>`): this word there would say no one's agent (ADR-052, amended 2026-11-12).
 pub const AGENT: &str = "torq-agent";
 /// The daemon that uses secrets (`torq-secrets`, its own account): the only caller of the broker's `secret-use`.

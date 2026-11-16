@@ -1,7 +1,10 @@
 //! The ledger's bytes never change (ADR-044, step 0). `wire/tests/fixtures/` holds ledgers the broker
 //! wrote before its words moved into `torq-wire` — from its own tests: the trust loop, `commit at`,
 //! backups, snapshots, passwords, session trust, a mended tear and break-glass, confirmed and expired
-//! commits — and one written by hand with a kind, a tier and an actor no torq knows yet. Every line read
+//! commits — one written by the broker as it was before phase 2 of ADR-055, with the old agent loop's
+//! words in it (session trust and a change applied under it, the resident agent, its model: none of which
+//! this broker writes any more, all of which it must go on reading) — and one written by hand with a kind,
+//! a tier and an actor no torq knows yet. Every line read
 //! as an `Entry` and written again must be byte for byte the line, and every fixture must verify: a
 //! change of a field's name, its order or its spelling would change a hash, and the record with it.
 
@@ -19,7 +22,7 @@ fn every_fixture_line_is_written_back_as_it_was_and_verifies() {
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../wire/tests/fixtures");
     let mut files: Vec<_> = fs::read_dir(&dir).unwrap().map(|e| e.unwrap().path()).collect();
     files.sort();
-    assert!(files.len() >= 15, "the fixtures are missing: {}", dir.display());
+    assert!(files.len() >= 17, "the fixtures are missing: {}", dir.display());
     let mut kinds = std::collections::BTreeSet::new();
     for f in &files {
         let text = fs::read_to_string(f).unwrap();

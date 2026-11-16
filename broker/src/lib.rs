@@ -80,15 +80,6 @@ pub struct Broker {
     nix_cache: Option<PathBuf>,
     /// The agent account this run acts for (ADR-051 3; `--agent`): None, a person or the machine.
     agent: Option<String>,
-    /// Whether that agent account calls from its person's resident agent (ADR-051 step 5; `--resident`, which
-    /// only the socket adds): only then is its session untainted at its start, and its proposal judged by it.
-    resident: bool,
-    /// The model the agents' harness asks (broker.json's `model`): whether a resident session can start clean.
-    model: Option<String>,
-    /// Whether a host is this machine (`this_host`; a test's own answer).
-    here: fn(&str) -> bool,
-    /// Each resident account and the person it serves (broker.json's `residents`).
-    residents: std::collections::BTreeMap<String, String>,
     /// The backups the configuration declares, and where their keys are (ADR-038, backup.rs).
     backup: backup::Backups,
     /// Where the values of the secrets are, and what encrypts them (ADR-052, secrets.rs).
@@ -731,10 +722,6 @@ impl Broker {
             releases_file: PathBuf::from(torq_wire::releases::FILE),
             nix_cache: None,
             agent: None,
-            resident: false,
-            model: None,
-            here: this_host,
-            residents: Default::default(),
             backup: backup::Backups::default(),
             secrets: secrets::Store::default(),
             ask_wait: std::time::Duration::from_secs(ask::WAIT_SECONDS),
@@ -1351,81 +1338,6 @@ impl Broker {
     pub fn as_agent(mut self, account: Option<&str>) -> Self {
         self.agent = account.map(String::from);
         self
-    }
-
-    /// Whether the acting agent calls from its person's resident agent, `torq-agent@<person>.service` (the
-    /// socket's word, from the peer's control group: ADR-051 step 5).
-    pub fn from_resident(mut self, yes: bool) -> Self {
-        self.resident = yes;
-        self
-    }
-
-    /// See `from_resident`.
-    pub fn resident(&self) -> bool {
-        self.resident
-    }
-
-    /// Each person's resident agent's own account (broker.json's `residents`, ADR-051 3 amended 2026-11-11).
-    pub fn with_residents(mut self, residents: &std::collections::BTreeMap<String, String>) -> Self {
-        self.residents = residents.clone();
-        self
-    }
-
-    /// Every resident account and the person it serves.
-    pub fn residents(&self) -> &std::collections::BTreeMap<String, String> {
-        &self.residents
-    }
-
-    /// The resident account of `person`'s agent, if the map names one and the person has an agent.
-    pub fn resident_of(&self, person: &str) -> Option<&str> {
-        self.agent_limits.has_agent(person).then(|| self.residents.iter().find(|(_, p)| p.as_str() == person).map(|(r, _)| r.as_str())).flatten()
-    }
-
-    /// How this run asks whether a host is this machine (`this_host`, the system's own answer, by default).
-    pub fn with_this_host(mut self, here: fn(&str) -> bool) -> Self {
-        self.here = here;
-        self
-    }
-
-    /// Whether ledger entry `e` (an agent's proposal or refusal) counts against this run's budget: the resident
-    /// agent's and every other program's of the agent account are counted apart (step 5's second review), so a
-    /// coding tool cannot use up what the resident agent may propose — and the resident agent not a coding tool's.
-    /// Each has the whole limit; together, at most twice it.
-    pub fn same_budget(&self, e: &Entry) -> bool {
-        e.body.data["resident"].as_bool().unwrap_or(false) == self.resident
-    }
-
-    /// The model the agents' harness asks (broker.json's `model`, as agent.json names it).
-    pub fn with_model(mut self, endpoint: Option<&str>) -> Self {
-        self.model = endpoint.map(String::from);
-        self
-    }
-
-    /// Why a resident session cannot start clean because of its model (`agent::model_taint`), read now: the
-    /// socket's directories as they are, people and agent accounts by /etc/passwd and the broker's map.
-    pub fn model_taint(&self) -> Option<&'static str> {
-        use std::os::unix::fs::MetadataExt;
-        let passwd = std::fs::read_to_string("/etc/passwd").ok();
-        self.model_taint_from(
-            passwd.as_deref(),
-            |p| std::fs::symlink_metadata(p).ok().map(|m| agent::Dir { uid: m.uid(), mode: m.mode(), dir: m.is_dir() }),
-            self.here,
-        )
-    }
-
-    /// `model_taint`, with /etc/passwd's text (None: it could not be read — then nothing can be said of who owns
-    /// what, and the model is not believed), the directories' metadata and whether a host is this machine given.
-    /// People's uids and every agent and resident account's (the maps') may not hold the socket's directory.
-    pub fn model_taint_from(&self, passwd: Option<&str>, stat: impl Fn(&std::path::Path) -> Option<agent::Dir>, here: impl Fn(&str) -> bool) -> Option<&'static str> {
-        let Some(passwd) = passwd else { return Some(agent::MODEL_UNKNOWN) };
-        let agent_uids: Vec<u32> = passwd
-            .lines()
-            .filter_map(|l| {
-                let f: Vec<&str> = l.split(':').collect();
-                (f.len() > 2 && (self.agent_limits.serves(f[0]).is_some() || self.residents.contains_key(f[0]))).then(|| f[2].parse().ok()).flatten()
-            })
-            .collect();
-        agent::model_taint(self.model.as_deref(), stat, |uid| crate::socket::PEOPLE_UIDS.contains(&uid) || agent_uids.contains(&uid), here)
     }
 
     /// The agent account this run acts for, and the person it serves; refused if it names none, or one
@@ -2119,19 +2031,18 @@ impl Broker {
         self.propose_in(base, diff_path, reason, actor, tainted, None)
     }
 
-    /// `propose_on`, naming the agent's `session` (session.rs): an agent's proposal is tainted as
-    /// the broker's record of its session says — `tainted` (the caller's word) only adds to it — and
-    /// one that names no session is tainted.
+    /// `propose_on`, naming the agent's `session` (session.rs): an agent's proposal is always tainted —
+    /// it waits for a person, who reads it — and carries what its session reported reading; a person's
+    /// is tainted only if `tainted` says so (the caller's word).
     pub fn propose_in(&self, base: Option<&str>, diff_path: &Path, reason: &str, actor: Actor, tainted: bool, session: Option<&str>) -> Result<Entry> {
         let _l = Lock::acquire(&self.state_dir)?;
-        session::settle_trust(self)?;
         let judged = session::judge(self, actor, tainted, session);
         let tainted = judged.as_ref().map_or(true, |j| j.0);
         let proposed = judged.and_then(|(t, cited)| self.propose_locked(base, diff_path, reason, actor, t, cited));
         // Its session's record notes it, for what the agent is told it did (session.rs).
         if let (Ok(e), Some(id)) = (&proposed, session) {
             // (Only for telling: the proposal and what its session read are in the ledger already.)
-            let _ = session::cite(self, id, e.body.seq, None);
+            let _ = session::cite(self, id, e.body.seq);
         }
         // Every refusal of the agent's is on the record, whatever refused it — the forbidden paths,
         // bad data, a diff that does not apply, the list (the audit of ADR-041): an agent that tries
@@ -2158,7 +2069,7 @@ impl Broker {
         let hour_ago = chrono::Utc::now() - chrono::Duration::hours(1);
         let recent = entries
             .iter()
-            .filter(|e| e.body.kind == "refused" && e.body.actor == "agent" && e.body.data["agent"] == json!(self.agent) && self.same_budget(e))
+            .filter(|e| e.body.kind == "refused" && e.body.actor == "agent" && e.body.data["agent"] == json!(self.agent))
             .filter(|e| chrono::DateTime::parse_from_rfc3339(&e.body.ts).is_ok_and(|t| t > hour_ago))
             .count();
         if recent >= AGENT_REFUSALS_AN_HOUR {
@@ -2177,13 +2088,7 @@ impl Broker {
             tier: Tier::System.to_string(),
             tainted,
             reason: if reason.trim().is_empty() { "(no reason)".into() } else { reason },
-            data: {
-                let mut d = json!({ "diff_sha256": hex::encode(Sha256::digest(&diff)), "why": one_line(why, 1000), "agent": self.agent });
-                if self.resident {
-                    d["resident"] = true.into();
-                }
-                d
-            },
+            data: json!({ "diff_sha256": hex::encode(Sha256::digest(&diff)), "why": one_line(why, 1000), "agent": self.agent }),
         })?;
         Ok(())
     }
@@ -2422,7 +2327,7 @@ impl Broker {
             let mine: Vec<&Entry> = entries
                 .iter()
                 .rev()
-                .filter(|p| p.body.kind == "proposal" && p.body.actor == "agent" && p.body.data["agent"].as_str() == Some(account) && self.same_budget(p) && !done.contains(&p.body.seq))
+                .filter(|p| p.body.kind == "proposal" && p.body.actor == "agent" && p.body.data["agent"].as_str() == Some(account) && !done.contains(&p.body.seq))
                 .collect();
             // However many of them could land: at most AGENT_WAITING_LOOK not done, so that the window below
             // always holds every one of them — dying proposals (a file the desktop saves, say) can never push
@@ -2507,15 +2412,11 @@ impl Broker {
         if let Some(s) = session {
             data["session"] = s;
         }
-        // Which agent proposed it, and for whom: trust is the person's for their own agent alone.
+        // Which agent proposed it, and for whom.
         if actor == Actor::Agent {
             let (account, person) = self.acting_agent()?;
             data["agent"] = account.into();
             data["agent_for"] = person.into();
-            // The resident agent's own, counted apart from any other program's of the agent's (step 5's second review).
-            if self.resident {
-                data["resident"] = true.into();
-            }
         }
         if !cuts_off.is_empty() {
             data["cuts_off"] = cuts_off.into();
@@ -3034,7 +2935,7 @@ impl Broker {
 
     /// Apply under a lock already held; `scheduled`: what applies it with no person there — the `commit
     /// at` schedule this is the run of (at.rs), or the trust it is applied under (session.rs).
-    fn apply_locked(&self, lock: &Lock, proposal_seq: u64, approved_by: &str, confirm_tainted: bool, confirm: Option<u32>, scheduled: Option<(&str, u64)>) -> Result<Entry> {
+    fn apply_locked(&self, lock: &Lock, proposal_seq: u64, approved_by: &str, confirm_tainted: bool, confirm: Option<u32>, scheduled: Option<u64>) -> Result<Entry> {
         self.reconcile_locked(lock, approved_by)?;
         self.refuse_unledgered_head()?;
         // An outside `nixos-rebuild` switching now would interleave with this one, and the system
@@ -3077,7 +2978,7 @@ impl Broker {
             bail!("proposal {proposal_seq} was already applied");
         }
         // Declined by a person (ADR-051, amended): never applied, by any path — a person's apply, a
-        // commit confirmed, a scheduled commit's run, or session trust's.
+        // commit confirmed, or a scheduled commit's run.
         if let Some(d) = self.find_child("declined", "proposal", proposal_seq)? {
             bail!("refused: proposal {proposal_seq} was declined by {} (#{}): it is never applied; propose it again", d.body.approved_by.as_deref().unwrap_or("a person"), d.body.seq);
         }
@@ -3689,56 +3590,4 @@ mod tests {
         let p = status(None, false, "/nix/store/old").problems();
         assert!(p.len() == 1 && p[0].contains("next boot"), "{p:?}");
     }
-}
-
-/// Whether `host` (as an https URL names it, lowercased) is this machine: its own host name, or a name or address
-/// that resolves to a loopback, unspecified or own address (the system's resolver: /etc/hosts, then DNS). One that
-/// cannot be resolved is taken for this machine — not believed — since nothing can say it is not (step 5's second
-/// review: https to this host is a local TCP model).
-pub fn this_host(host: &str) -> bool {
-    let name = std::fs::read_to_string("/proc/sys/kernel/hostname").unwrap_or_default().trim().to_ascii_lowercase();
-    if !name.is_empty() && (host == name || host.split('.').next() == Some(name.as_str())) {
-        return true;
-    }
-    let own = own_addresses();
-    let local = |ip: std::net::IpAddr| ip.is_loopback() || ip.is_unspecified() || own.contains(&ip) || agent::loopback_name(&ip.to_string());
-    if let Ok(ip) = host.parse::<std::net::IpAddr>() {
-        return local(ip);
-    }
-    use std::net::ToSocketAddrs;
-    match (host, 443).to_socket_addrs() {
-        Ok(addrs) => {
-            let addrs: Vec<_> = addrs.collect();
-            addrs.is_empty() || addrs.iter().any(|a| local(a.ip()))
-        }
-        Err(_) => true,
-    }
-}
-
-/// This machine's own addresses, as the kernel lists them: IPv6 from /proc/net/if_inet6, IPv4 from the local
-/// routing table (/proc/net/fib_trie's `/32 host LOCAL`).
-pub fn own_addresses() -> Vec<std::net::IpAddr> {
-    let mut out = Vec::new();
-    for l in std::fs::read_to_string("/proc/net/if_inet6").unwrap_or_default().lines() {
-        let Some(hex) = l.split_whitespace().next().filter(|h| h.len() == 32) else { continue };
-        let bytes: Option<Vec<u8>> = (0..16).map(|i| u8::from_str_radix(&hex[2 * i..2 * i + 2], 16).ok()).collect();
-        if let Some(b) = bytes.and_then(|b| <[u8; 16]>::try_from(b).ok()) {
-            out.push(std::net::IpAddr::V6(std::net::Ipv6Addr::from(b)));
-        }
-    }
-    let trie = std::fs::read_to_string("/proc/net/fib_trie").unwrap_or_default();
-    let mut last = None;
-    for l in trie.lines() {
-        let t = l.trim_start_matches([' ', '|', '+', '-']).trim();
-        if let Ok(a) = t.parse::<std::net::Ipv4Addr>() {
-            last = Some(a);
-        } else if t.starts_with("/32 host LOCAL") {
-            if let Some(a) = last {
-                out.push(std::net::IpAddr::V4(a));
-            }
-        }
-    }
-    out.sort();
-    out.dedup();
-    out
 }

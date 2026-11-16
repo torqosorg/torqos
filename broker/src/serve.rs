@@ -178,7 +178,7 @@ fn answer(reply: &Reply) -> std::result::Result<i32, Refusal> {
     socket::check_args(&req.args).map_err(&refused)?;
     let settings = Settings::read(Path::new(config::FIXED), false).map_err(&refused)?.context("no /etc/torq/broker.json").map_err(&refused)?;
     // Which accounts are agents, and whose: the broker's map (ADR-051 3), never the caller's word.
-    let mut who = socket::caller(uid, &read("/etc/passwd").map_err(&refused)?, &read("/etc/group").map_err(&refused)?, &settings.agent, &settings.residents).map_err(&refused)?;
+    let who = socket::caller(uid, &read("/etc/passwd").map_err(&refused)?, &read("/etc/group").map_err(&refused)?, &settings.agent).map_err(&refused)?;
 
     // The request's files, private to root, gone when this is.
     let scratch = Scratch::new(Path::new(SCRATCH)).map_err(&refused)?;
@@ -186,12 +186,6 @@ fn answer(reply: &Reply) -> std::result::Result<i32, Refusal> {
     let hash = req.hash.as_deref().map(|h| scratch.write("hash", h)).transpose().map_err(&refused)?;
     let key = req.key.as_deref().map(|k| scratch.write("key", k)).transpose().map_err(&refused)?;
     let cmd = req.args.iter().find(|a| !a.starts_with('-')).cloned().unwrap_or_default();
-    // Whether an agent account calls from its person's resident agent (ADR-051 step 5): the kernel's answer, read
-    // here, for what the broker judges by it — a session's start, a report into one, and a proposal.
-    if matches!(cmd.as_str(), "propose" | "session-start" | "session-taint") {
-        // From its uid first (the resident's own account), then its control group (ADR-051 3 amended 2026-11-11).
-        who.resident = socket::found_resident(&who, &std::io::stdin(), pid);
-    }
     let diff_s = diff.as_ref().map(|p| p.to_string_lossy().into_owned());
     let hash_s = hash.as_ref().map(|p| p.to_string_lossy().into_owned());
     let key_s = key.as_ref().map(|p| p.to_string_lossy().into_owned());
