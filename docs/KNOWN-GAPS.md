@@ -1491,7 +1491,7 @@ Its §5 lists claims without a test.
    - **`torq-agent-key@…` is no longer a reserved unit name** (it was the old loop's key unit's, refused by the
      check on the agent's units since phase 1 though nothing wrote it). A unit so named is now another unit:
      systemd applies none of its files or drop-ins to `torq-agent@<person>` (`tests/agent-units.nix`,
-     `a-unit-named-past-the-dash`; evaluated, its build not run here).
+     `a-unit-named-past-the-dash`; the check was built on 2026-11-16).
    - **Not looked at, not run.** TorqOS Settings' Agent and Proposals pages, the agent's window and the applets
      are type-checked only, as before. Of the VM tests only three were run for this phase (the plan says which).
 
