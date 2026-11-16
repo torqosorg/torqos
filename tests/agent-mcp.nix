@@ -12,8 +12,8 @@
 #   reading it cannot see);
 # - alice applies what waits, herself.
 #
-# torqcli's own commit as the agent cannot run in a VM (it evaluates the configuration: KNOWN-GAPS 6zn): a
-# stand-in `torqcli` makes the proposal the commit would, over the broker's socket as the agent, naming the
+# torqcli's own commit as the agent runs for real, on a real configuration, in tests/agent-check.nix (ADR-056).
+# This VM's config repo is a stub: a stand-in `torqcli` makes the proposal the commit would, over the broker's socket as the agent, naming the
 # session it is given; everything else torqcli is asked, the real one does.
 { pkgs, self }:
 

@@ -5,8 +5,9 @@
 # the machine off is applied only as a commit confirmed. And nothing applies an agent's proposal without a
 # person: session trust is gone, its commands are no commands, and the old loop's second account does not exist.
 #
-# (torqcli's commit as the agent is covered by the crates' tests: a VM cannot evaluate a configuration for
-# torqcli to commit — KNOWN-GAPS 6zn.)
+# (torqcli's commit as the agent, and the broker's check of what it proposes, run for real on a real
+# configuration in tests/agent-check.nix, ADR-056. This VM's config repo is a stub that does not evaluate,
+# as it is or changed: every proposal here is recorded as not checked.)
 { pkgs, self }:
 
 let

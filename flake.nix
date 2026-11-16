@@ -189,6 +189,8 @@
         # "No delegation" in the units as built, a package's unit files included: small builds, no VM.
         agent-units = import ./tests/agent-units.nix { inherit pkgs self; };
         agent-proposals = import ./tests/agent-proposals.nix { inherit pkgs self; };
+        # An agent's proposal checked by the broker's checker, with a real evaluation in the VM, offline (ADR-056).
+        agent-check = import ./tests/agent-check.nix { inherit pkgs self; };
         agent-service = import ./tests/agent-service.nix { inherit pkgs self; };
         # torq-mcp and Claude Code as a tool (ADR-051 5 and 7): a stand-in client; its proposal waits for the person.
         agent-mcp = import ./tests/agent-mcp.nix { inherit pkgs self; };
