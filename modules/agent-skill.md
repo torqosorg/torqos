@@ -55,9 +55,9 @@ As the agent, a commit proposes and stops:
 torqcli -c 'configure; set users <person> packages htop; commit comment "htop for <person>"'
 ```
 
-Your account cannot use Nix itself (`nix`, `nix-shell`, `nix search`, `torqcli "show packages …"`): the
-system's package store does not answer an agent. Name a package as nixpkgs names it and propose it; the
-check says if there is none by that name.
+Your account cannot use Nix itself (`nix`, `nix-shell`, `nix search`): the system's package store does not
+answer an agent. `torqcli "show packages <words>"` finds packages by name (names only, for an agent); a
+name that is not a package is refused when you set it, or when the proposal is checked.
 
 The tree's paths are NixOS's options as words (`set services openssh enable true`, `set networking
 networkmanager enable true`); `torq.*` is never yours, nor anything outside `torq agent mayPropose`.

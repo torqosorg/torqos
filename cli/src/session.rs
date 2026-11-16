@@ -211,6 +211,27 @@ pub struct SshFacts {
     pub admits: serde_json::Value,
 }
 
+/// How many package names an agent's search shows.
+const NAMES_SHOWN: usize = 60;
+
+/// `show packages <words>` for an agent: the names in `packages` (this machine's nixpkgs, as torqcli has
+/// them) that hold every word, the closest first; said to be names only.
+fn names_found(packages: &std::collections::BTreeSet<String>, terms: &[String]) -> String {
+    let words: Vec<String> = terms.iter().map(|t| t.to_lowercase()).collect();
+    let mut found: Vec<&String> = packages.iter().filter(|n| words.iter().all(|w| n.to_lowercase().contains(w.as_str()))).collect();
+    // The name itself, then names that begin with the words, then the rest, each by name.
+    found.sort_by_key(|n| {
+        let n = n.to_lowercase();
+        (!(words.len() == 1 && n == words[0]), !words.iter().all(|w| n.starts_with(w.as_str())))
+    });
+    if found.is_empty() {
+        return format!("No package of this machine has {} in its name. (By name only: an agent's account cannot search the descriptions.)\n", crate::history::one_line(&terms.join(" "), 80));
+    }
+    let more = if found.len() > NAMES_SHOWN { format!("… and {} more: add a word.\n", found.len() - NAMES_SHOWN) } else { String::new() };
+    let names: String = found.iter().take(NAMES_SHOWN).map(|n| format!("  {}\n", crate::history::one_line(n, 80))).collect();
+    format!("By name only (an agent's account cannot search the descriptions):\n{names}{more}")
+}
+
 /// An agent's proposal as the broker recorded it (`Machine::propose`).
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Proposed {
@@ -1180,9 +1201,10 @@ impl<'a> Session<'a> {
                 Ok(out)
             }
             Op::ShowPackages { terms } => {
-                // The search asks the Nix daemon, which refuses an agent's account (ADR-056): said plainly.
+                // The search asks the Nix daemon, which refuses an agent's account (ADR-056): an agent is
+                // given what torqcli itself knows, the names of this machine's nixpkgs, and told so.
                 if crate::agent::is_agent(&self.me) {
-                    bail!("an agent's account cannot search the packages on this machine; propose the package by its name, and TorqOS says if there is none by that name");
+                    return Ok(names_found(&self.tree.packages, &terms));
                 }
                 // What the configuration in effect installs, for everyone or for anyone.
                 let head = self.repo.head()?;
@@ -5016,8 +5038,9 @@ mod tests {
         assert!(m.checks.borrow().is_empty(), "the agent's commit check evaluated something");
         // The package search asks the Nix daemon too: said in plain words, not tried.
         let mut s = Session::new(Schema::parse(include_str!("schema-fixture.json")).unwrap(), nixos_tree(), Repo::new(d.path()), None, &m, "torq-agent-dev");
-        let e = format!("{:#}", s.exec("show packages available htop").unwrap_err());
-        assert!(e.contains("cannot search the packages") && e.contains("propose the package by its name"), "{e}");
+        let out = s.exec("show packages top").unwrap();
+        assert!(out.starts_with("By name only (an agent's account cannot search the descriptions):\n") && out.contains("  btop\n") && out.contains("  htop\n"), "{out}");
+        assert!(s.exec("show packages nosuchthing").unwrap().starts_with("No package of this machine has nosuchthing in its name."));
         let m = Fake { proposal_check: Some(ProposalCheck::NotChecked("the check did not finish in time".into())), ..Fake::default() };
         let out = agent(&m, &["configure", "set system time-zone UTC", "commit"]);
         assert!(out.contains("proposed as #41: a person applies it (request system apply 41). It could not be checked first (the check did not finish in time): it may fail when applied."), "{out}");
