@@ -30,7 +30,7 @@ let
     torq.agent.engine = "claude-code";
     torq.agent.claudeCode = pkgs.hello;
   };
-  ours = ms: lib.filter (m: lib.hasInfix "torq.agent" m || lib.hasInfix "torq-agent" m || lib.hasInfix "ptrace_scope" m) ms;
+  ours = ms: lib.filter (m: lib.hasInfix "torq.agent" m || lib.hasInfix "torq-agent" m || lib.hasInfix "torq-check" m || lib.hasInfix "ptrace_scope" m) ms;
   # `name` fails evaluation with a message holding `text`.
   refuses = name: extra: text:
     let ms = failing extra; in
@@ -172,6 +172,35 @@ let
       if ok (configOf (withEngine { }))
       then "a failed start leaves the socket"
       else throw "agent-assertions: the agent's socket or unit would let failed starts stop the socket for good")
+    # The checker's account (ADR-056, modules/broker.nix): what an agent's proposal is evaluated as. It is in
+    # its own group and no other, never one the Nix daemon trusts (by its name, by its group, or as everyone),
+    # and has no password, no shell, no home and no SSH key: each set by TorqOS's module, and each refused
+    # where another part of the configuration says otherwise. (The control is "plain", above, whose failing
+    # messages `ours` now takes this one among.)
+    (let said = "users.users.torq-check: the account an agent's proposal is checked as (ADR-056) is a system account in its own group and no other, with no password, no shell, no home and no SSH key, and never one the Nix daemon trusts"; in lib.concatStringsSep ", " [
+      (let c = configOf { }; u = c.users.users.torq-check; in
+        if u.hashedPassword == "!" && lib.hasSuffix "/bin/nologin" u.shell && u.home == "/var/empty" && !u.createHome && u.group == "torq-check"
+          && builtins.elem "torq-check" c.nix.settings.allowed-users && lib.unique c.nix.settings.trusted-users == [ "root" ]
+        then "the checker's account is locked, allowed and not trusted"
+        else throw "agent-assertions: the checker's account is not as TorqOS's module sets it")
+      (refuses "the checker trusted by name" { nix.settings.trusted-users = [ "torq-check" ]; } said)
+      (refuses "the checker trusted by its group" { nix.settings.trusted-users = [ "@torq-check" ]; } said)
+      (refuses "everyone trusted" { nix.settings.trusted-users = [ "*" ]; } said)
+      (refuses "the checker in another group" { users.users.torq-check.extraGroups = [ "wheel" ]; } said)
+      (refuses "the checker a member of another group" { users.groups.wheel.members = [ "torq-check" ]; } said)
+      (refuses "the checker's group changed" { users.users.torq-check.group = lib.mkForce "users"; } said)
+      (refuses "the checker a person" { users.users.torq-check = { isSystemUser = lib.mkForce false; isNormalUser = true; }; } said)
+      (refuses "a password for the checker" { users.users.torq-check.hashedPassword = lib.mkForce "$6$x$y"; } said)
+      (refuses "a password for the checker, in the clear" { users.users.torq-check.password = "x"; } said)
+      (refuses "a password file for the checker" { users.users.torq-check.hashedPasswordFile = "/etc/torq-check.pw"; } said)
+      (refuses "a first password for the checker" { users.users.torq-check.initialPassword = "x"; } said)
+      (refuses "a first password's hash for the checker" { users.users.torq-check.initialHashedPassword = "$6$x$y"; } said)
+      (refuses "a shell for the checker" ({ pkgs, ... }: { users.users.torq-check.shell = lib.mkForce pkgs.bash; }) said)
+      (refuses "a home for the checker" { users.users.torq-check.home = lib.mkForce "/var/lib/torq-check"; } said)
+      (refuses "a home made for the checker" { users.users.torq-check.createHome = lib.mkForce true; } said)
+      (refuses "an SSH key for the checker" { users.users.torq-check.openssh.authorizedKeys.keys = [ "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAsQmVpCCIItKDMwqNcgAQIAJH9uMP0VsxjvXJkusubc x" ]; } said)
+      (refuses "an SSH key file for the checker" { users.users.torq-check.openssh.authorizedKeys.keyFiles = [ ./removed-settings/nixos/torq.json ]; } said)
+    ])
     (refuses "SETENV in sudoers text" ({ config, ... }: {
       security.sudo.extraConfig = "%wheel ALL=(root) NOPASSWD: SETENV: ${config.torq.agent.launcher}/bin/torq-agent-run";
     }) "a rule for torq-agent-run with SETENV")

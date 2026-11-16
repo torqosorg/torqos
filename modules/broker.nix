@@ -2,6 +2,9 @@
 
 let
   cfg = config.torq.broker;
+  # The checker's account's shell (ADR-056): none. By its path in the store, so that it is this whatever
+  # the system's own programs are.
+  checkShell = "${pkgs.shadow}/bin/nologin";
   # Read only, and root's alone: what a snapshot holds is every person's files as they were, and
   # keeping it from them is what lets it outlast what they, or a process of theirs, deletes.
   snapshot = pkgs.writeShellApplication {
@@ -245,14 +248,20 @@ in
     environment.systemPackages = [ cfg.package ];
 
     # The checker's account (ADR-056): what an agent's proposal is evaluated as. It owns nothing, is in
-    # no group but its own, has no home, no shell and no password, and nothing runs as it but the
-    # broker's check (`checkCommand`). It is the one account besides root and the administrators that
-    # may talk to the Nix daemon (an evaluation needs it): allowed, never trusted. The agents'
-    # accounts stay out (modules/base.nix; tests/agent-check.nix holds both).
+    # no group but its own, has no home, no shell, no password and no SSH key, and nothing runs as it but
+    # the broker's check (`checkCommand`). Each of these is set here, as the agents' accounts are
+    # (modules/agent.nix), not left to what NixOS gives a system account, and asserted below. It is the
+    # one account besides root and the administrators that may talk to the Nix daemon (an evaluation
+    # needs it): allowed, never trusted. The agents' accounts stay out (modules/base.nix;
+    # tests/agent-check.nix holds both).
     users.users.torq-check = {
       isSystemUser = true;
       group = "torq-check";
       description = "TorqOS checker of what an agent proposes";
+      hashedPassword = "!";
+      shell = checkShell;
+      home = "/var/empty";
+      createHome = false;
     };
     users.groups.torq-check = { };
     nix.settings.allowed-users = [ "torq-check" ];
@@ -449,11 +458,20 @@ in
     '';
     system.activationScripts.etc.deps = lib.mkIf cfg.guardEtcNixos [ "torq-guard-etc-nixos" ];
     assertions = lib.mkMerge [ [{
-      assertion = let u = config.users.users.torq-check; in
+      # The checker's account (ADR-056) is what it is said to be, whatever else the configuration says of
+      # it: each line is one way it could become more (tests/agent-assertions.nix has each).
+      assertion = let u = config.users.users.torq-check; trusted = config.nix.settings.trusted-users; in
         u.isSystemUser && !u.isNormalUser && u.group == "torq-check" && u.extraGroups == [ ]
         && lib.all (g: !(builtins.elem "torq-check" g.members)) (lib.attrValues config.users.groups)
-        && !(builtins.elem "torq-check" config.nix.settings.trusted-users);
-      message = "users.users.torq-check: the account an agent's proposal is checked as (ADR-056) is a system account in its own group and no other, and never one the Nix daemon trusts: what it is given to evaluate is an agent's.";
+        # Never one the Nix daemon trusts: by its name, by its group, or as everyone.
+        && lib.all (t: !(builtins.elem t trusted)) [ "torq-check" "@torq-check" "*" ]
+        # No password: locked, and none of the other ways NixOS takes one (they come before `hashedPassword`).
+        && u.hashedPassword == "!" && u.password == null && u.hashedPasswordFile == null
+        && u.initialPassword == null && u.initialHashedPassword == null
+        # No shell, no home, no SSH key.
+        && u.shell == checkShell && u.home == "/var/empty" && !u.createHome
+        && u.openssh.authorizedKeys.keys == [ ] && u.openssh.authorizedKeys.keyFiles == [ ];
+      message = "users.users.torq-check: the account an agent's proposal is checked as (ADR-056) is a system account in its own group and no other, with no password, no shell, no home and no SSH key, and never one the Nix daemon trusts (nix.settings.trusted-users names neither it, nor its group, nor `*`): what it is given to evaluate is an agent's.";
     } {
       assertion = !config.torq.snapshots.enable || (lib.all (m: (config.fileSystems.${m}.fsType or "") == "btrfs") [ "/home" "/var/lib" "/.snapshots" ] && config.fileSystems ? "/var/lib/torq" && config.fileSystems."/var/lib/torq".device != config.fileSystems."/var/lib".device);
       message = "torq.snapshots: /home, /var/lib and /.snapshots must each be a btrfs subvolume, and /var/lib/torq a file system of its own: otherwise every snapshot of /var/lib would hold the ledger and the password hashes, and filling the disk would leave the record no room. Without that layout, set torq.snapshots.enable = false.";
