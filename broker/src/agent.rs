@@ -267,6 +267,12 @@ mod tests {
         // Even listed: torq.* holds the agent's own limits.
         let l = limits(&["torq", "torq.agent", "services"]);
         assert!(refusal(&l, VIPER, &[t("nixos/torq.json", Some(json!({})), Some(json!({"agent": {"mayPropose": {"settings": ["nix"]}}})))]).is_some());
+        // The sites the agents may reach and the web's switch are there too (ADR-057): no agent opens its own
+        // network, even where the owner's list names the very setting.
+        let net = limits(&["torq.agent.network", "torq.agent.network.web", "torq.agent.network.hosts"]);
+        assert!(refusal(&net, VIPER, &[t("nixos/torq.json", Some(json!({})), Some(json!({"agent": {"network": {"web": true}}})))]).is_some());
+        assert!(refusal(&net, VIPER, &[t("nixos/torq.json", Some(json!({})), Some(json!({"agent": {"network": {"hosts": ["evil.example"]}}})))]).is_some());
+        assert!(refusal(&net, VIPER, &[t("nixos/torq.json", Some(json!({"agent": {"network": {"hosts": ["a.example"]}}})), Some(json!({"agent": {"network": {"hosts": ["a.example", "*.example"]}}})))]).is_some());
         // The secrets' rules (ADR-052), the system's and a person's own, even one whose packages it may propose.
         for f in ["flake.nix", "flake.lock", "config-files.json", "hardware-configuration.nix", "nixos/x.nix", "nixos/sub/services.json", "nixos/.json", "secrets/x.json", "secrets/system.json", "users/viper/secrets.json"] {
             assert!(refusal(&l, VIPER, &[t(f, None, Some(json!({})))]).is_some(), "{f}");
