@@ -184,7 +184,7 @@ removed since phase 2; the agent as it is now (ADR-055) is unreleased.
   have not been seen on any real desktop (`docs/HANDOFF-agents.md`).
 - **Secrets:** `torq-secrets` (`secrets/`, `modules/secrets.nix`). ADR-052 steps 1 to 3 are in rc1.
   Step 4 (an agent's use that asks waits for its person, who approves or denies it at a terminal or in
-  the panel applet's dialog; grants such as `allow <name> session`; `secret-grant --replace`) and
+  the panel applet's dialog; a grant of one secret for minutes, `allow <name> for <minutes>`; `secret-grant --replace`) and
   step 5 (the Secrets page in TorqOS Settings) are on `main`.
 - **The agent is experimental.** The `torq-agent-<person>` accounts, `torq agent run`, the agent's service
   (`torq-agent@<person>`, the bridge to the engine, `torq agent engine`), `claude` typed plainly, `torq ask`,
@@ -193,11 +193,12 @@ removed since phase 2; the agent as it is now (ADR-055) is unreleased.
   proposal of an agent's waits for its person; the ledger's field for that is still called `tainted`, and a
   person is shown plain words instead. The real Claude Code 2.1.316 was driven through the bridge once, by
   hand, outside its unit, on the check host (2026-11-15); inside the unit only a stand-in has run. The
-  default allow-list is the owner's own packages. Secrets' rules still speak of a clean and a tainted session,
-  and no agent has a clean one any more (KNOWN-GAPS 6zzu: the owner's to decide).
-- **Tests.** Unit tests are `#[test]` functions: torqcli 495, broker 319 (across its test binaries), wire 23,
+  default allow-list is the owner's own packages. Each use of a secret by an agent asks its
+  person, unless the secret's rule says `without-asking` or a grant of that one secret covers it (ADR-052,
+  amended 2026-11-16: two words, one kind of grant; a person reads no word about taint or sessions for it).
+- **Tests.** Unit tests are `#[test]` functions: torqcli 501, broker 317 (across its test binaries), wire 24,
   secrets 15, agent 59 (+2 ignored) (run 2026-11-16 on `work/harness-p2`, after phase 2 removed the old loop
-  and its tests). The
+  and its tests, and after secrets were reduced to what they do). The
   `settings/` crate has no tests of its own; it is type-checked with `nix develop .#torq-settings`.
   VM tests are `checks` in `flake.nix`, one file each in `tests/`. CI's `test` workflow runs on pull
   requests, by hand and inside each release, **not on pushes to `main`**, and GitHub does not run the

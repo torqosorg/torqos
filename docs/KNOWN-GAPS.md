@@ -1483,24 +1483,43 @@ Its §5 lists claims without a test.
      `tainted: false`) is an agent's all the same, by who proposed it: applied only with the person's word that
      they read it, never by a `commit at`, and shown with where it comes from (`read_first` in the broker,
      the same rule in torqcli; `broker/tests/sessions.rs`, the old broker's own entry among them).
-   - **Secrets: a session of an agent's is always one that "read untrusted text" (open; the owner's to
-     decide).** ADR-052 4's rules are written in terms of a clean and a tainted session, and only the old loop's
-     resident agent ever had a clean one. Nothing was loosened: every agent session is now tainted from its start
-     (and one kept from before is read as tainted). So, for an agent's use of a secret: `first-use` and `never`
-     ask at every use, as `each-use` does; `request system secret allow all for <minutes>` and `allow <name>
-     session` are accepted, ledgered and listed, and cover no use; only `allow <name> for <minutes> tainted-too`
-     and a secret's own `never-even-tainted` let a use through unasked. This has been so in practice since phase 1
-     (the service has run as the agent account since then). The broker's code for the clean case is still there
-     and is tested as pure functions (`asks`, `Grant::covers_use`); no test can reach it through a session any
-     more (`broker/tests/secrets.rs` now says what happens instead). The dialog's and the Secrets page's offers
-     for a clean use (`For this session`, plain minutes) are never drawn. Either the rules are reworded for a
-     world where every agent session is unseen (three approval words become one, two kinds of grant go), or
-     taint comes back with meaning from what the model proxy sees (phase 3; "Later" in the plan). Not decided here.
+   - **Secrets: every use of an agent's is one that follows untrusted text (closed 2026-11-16; ADR-052's
+     amendment of that day).** ADR-052 4's rules were written in terms of a clean and a tainted session, and
+     only the old loop's resident agent ever had a clean one. So `first-use` and `never` asked at every use,
+     as `each-use` did; `allow all for <minutes>` and `allow <name> session` were accepted, ledgered and
+     listed, and covered no use; only `allow <name> for <minutes> tainted-too` and a secret's own
+     `never-even-tainted` let a use through unasked. The owner decided that secrets say only what they do, and
+     it is built: what happens is what happened the day before, with only the words that do something. Two
+     words for when a person is asked, `each-use` and `without-asking`; a rule stored with an old word reads
+     as what it did (`first-use`, `never`: `each-use`; `never-even-tainted`: `without-asking`), never looser.
+     One kind of grant, one named secret for minutes (`allow <name> for <minutes>`), with no `tainted-too` to
+     type; the grant of all one's secrets, the grant for "this session" and the grant that did not hold after
+     untrusted text are gone from the broker, the wire crate, torqcli, the panel's dialog and the Secrets
+     page, and an old ledger's grants of those kinds read as none. The broker's code for the clean case and
+     the tests that reached it only as pure functions are deleted. What is left of this, and known:
+       - a rules file keeps its old word until torqcli next changes that file, when the whole file is written
+         in today's words: that change's diff shows the old words replaced beside what the person asked for,
+         and they are not told so first. Nothing changes in what is asked;
+       - a person who typed `allow all for 30` before now names a secret called all: refused by the broker
+         unless they have one and their agent may use it. `allow all` alone, `allow all revoke`, `allow <name>
+         session` and `tainted-too` are refused by torqcli as no command;
+       - a repository whose ledger has a grant of a removed kind still standing was refused by a new machine
+         adopting it, and is adopted now (nothing honours the grant);
+       - a use approved while it waited is no longer refused because its session read something meanwhile
+         (that check told a clean session from one that no longer was);
+       - "Deny, and don't ask again this session" keeps its word: the broker still refuses that secret's
+         later uses in that session of the agent's. A person is not told what a session of their agent's is
+         beyond "a new session asks again" (the help of `deny <n> session`);
+       - the Secrets page now offers the allowance for 60 or 480 minutes as torqcli's line, which it did not
+         before. It is type-checked only, as the rest of the page is;
+       - taint may come back with meaning from what the model proxy sees (phase 3; "Later" in the plan): its
+         own decision then, and nothing is kept in the tree for it.
    - **The ledger's word for it is still `tainted`**, and the broker's `--confirm-tainted`, `session-taint` and
-     `torqcli agent session taint`: the ledger's bytes never change, and the secrets' words are built on it. A
-     person no longer reads the word for a proposal (torqcli and TorqOS Settings say "your agent proposed this",
-     "proposed by an agent", "made from untrusted text"); they still read "a session that read untrusted text" of
-     secrets, and `tainted-too` and `never-even-tainted` are commands they type.
+     `torqcli agent session taint`: the ledger's bytes never change. A person no longer reads the word for a
+     proposal (torqcli and TorqOS Settings say "your agent proposed this", "proposed by an agent", "made from
+     untrusted text"), nor for a secret since 2026-11-16: why they are asked is one sentence, and `tainted-too`
+     and `never-even-tainted` are no commands any more (above). A grant's entry in the ledger still carries
+     `tainted_too: true`, read by the broker and shown to no one.
    - **`torq-agent-key@…` is no longer a reserved unit name** (it was the old loop's key unit's, refused by the
      check on the agent's units since phase 1 though nothing wrote it). A unit so named is now another unit:
      systemd applies none of its files or drop-ins to `torq-agent@<person>` (`tests/agent-units.nix`,
@@ -1791,16 +1810,16 @@ Its §5 lists claims without a test.
 
 6zzs. **An agent's use of a secret waits for its person, who answers at a terminal or in the panel's dialog; the
   dialog has not run on a desktop (ADR-051 and ADR-052 4, both amended 2026-11-13; the VM subtests passed in the full check of 2026-11-14).**
-  *Since 2026-11-16 (6zzu) every session of an agent's counts as one that read untrusted text: where this item
-  speaks of a clean session, the resident agent or a use that goes without asking under `never`, `first-use`, `allow
-  all` or `allow <name> session`, no agent has that any more.*
+  *Since 2026-11-16 (6zzu; ADR-052's amendment of that day) every use of an agent's asks unless the secret's rule
+  says `without-asking` or a grant of that one secret covers it: where this item speaks of a clean session or
+  the resident agent, there is none any more.*
   `torq-agent` in a person's rules is their own agent, and a system rule names each agent's account. A use that
-  asks (the rule says each use, or the first; no session; a tainted session) waits for up to two minutes for the
+  asks (every use of an agent's, unless the rule says `without-asking` or a grant covers it) waits for up to two minutes for the
   person the agent serves. They answer with `request system secret approve <n>` or `deny <n> [session]`
   (`show system secrets waiting`), or in the popup of TorqOS's panel applet. No request and no connection waits
   at the broker: the use is given a number, and the secrets daemon asks the broker about it again once a second.
-  A grant (`request system secret allow <name> session`, `… for <minutes> [tainted-too]`, `allow all for
-  <minutes>`; their password) or the rule's `never-even-tainted` lets uses through unasked (`broker/src/ask.rs`,
+  A grant (`request system secret allow <name> for <minutes>`; their password) or the rule's `without-asking`
+  lets uses through unasked (`broker/src/ask.rs`,
   `broker/src/session.rs`; `broker/tests/secrets.rs`). What is not there, and what a person should know:
    - **the dialog has been type-checked and nothing more.** It has not been drawn or pressed on any machine, and
      no test clicks in the panel. What decides its content, what its buttons send, which note is shown and when
@@ -1813,9 +1832,8 @@ Its §5 lists claims without a test.
      the panel, so it is opened without taking the pointer, and is closed with the panel's button. Whether
      COSMIC shows it, and where, has not been seen. If it does not, the panel's mark has the warning badge
      while a use waits, and a press on it opens the same dialog;
-   - **"Allow for…" on a use from a session that read untrusted text offers only grants that say so**
-     (`tainted-too`, this one secret, 60 or 480 minutes), which is every coding tool's use (the owner,
-     2026-11-13: kept). The plain ones, given there, would not stop that session asking;
+   - **"Allow for…" offers the one kind of grant there is**: this one secret, for 60 or 480 minutes, in the
+     destructive style, with what it gives up said under it (since 2026-11-16);
    - **"Allow for…" replaces a grant of that secret the person already gave.** The broker gives no second grant of a
      secret while one holds, so the dialog says that one holds and, on the press, asks the password and sends the grant
      with `--replace`, which ends the old one in the same step that makes the new one (changed 2026-11-14: it first
@@ -1859,14 +1877,10 @@ Its §5 lists claims without a test.
      journal for a line the applet writes to its standard error. On the laptop, cosmic-panel writes what
      another applet prints to the journal under that applet's name, and its source does the same for every
      applet; no line of `torq-applet`'s own has been seen there (it had printed none);
-   - every program run as `torq-agent-<person>` (a coding tool, `torq agent run`) starts its session tainted
-     (`not-the-resident-agent`, 6zzo), so each of its uses asks unless a `tainted-too` grant of that one secret
-     or `never-even-tainted` covers it. It cannot borrow the resident agent's clean session, though its id is in
-     the ledger: a use or an SSH socket cites only its own kind of session;
-   - the resident agent, whose session can start untainted, has no tool that sends an HTTPS request or signs;
-   - the limit of three waiting uses is one agent's across both its accounts: a coding tool holding all three
-     has the resident agent's asks refused meanwhile ("3 uses are waiting for you already"), and the other way
-     round;
+   - every program run as `torq-agent-<person>` (a coding tool, `torq agent run`) has each of its uses asked,
+     unless a grant of that one secret or the rule's `without-asking` covers it;
+   - the limit of three waiting uses is one agent's, whatever programs of it ask ("3 uses are waiting for you
+     already");
    - a denial "for the rest of the session" (`deny <n> session`, or the dialog's second Deny) ends with the
      session: the agent can start a new one, which may ask about that secret again. What bounds the asking is
      the hour, not the session: a person is asked about one agent's uses at most 30 times in an hour of the
@@ -1886,11 +1900,12 @@ Its §5 lists claims without a test.
      terminal names no one session, and neither does the dialog's offer); the broker knows no end of a session
      but the eight hours a grant may last.
   `tests/secrets.nix` states the waiting, the answers, the time-out, four uses waiting at once beside a
-  person's own, and a grant given at a terminal, used under, and ended by whose secret it is and all one's own
-  alone; `tests/desktop.nix` the applet seeing a use. Their edits of 2026-11-13 passed in the full check of 2026-11-14. Not in either: a
-  clean session's use let through by a grant that does not say `tainted-too` (those machines have no resident
-  agent; the broker's own tests have it), `allow <name> session`, and "Allow for…" replacing a grant (torqcli's
-  units have what it sends, against a stand-in broker).
+  person's own, a grant given at a terminal, used under, and ended by whose secret it is, and (since
+  2026-11-16) a rule stored in a word from before asking each time, the commands that went refused, and
+  `without-asking` set with the person's password and then used under; `tests/desktop.nix` the applet seeing a
+  use. Their edits of 2026-11-13 passed in the full check of 2026-11-14; those of 2026-11-16 are in
+  `docs/HARNESS-AS-A-SYSTEM.md`. Not in either: "Allow for…" replacing a grant (torqcli's units have what it
+  sends, against a stand-in broker).
 
 6zzt. **TorqOS's defaults reach a person who already has their own shortcuts or panel (2026-11-15; the VM test
   `tests/desktop-defaults.nix` is written, not yet run).** COSMIC reads a person's own `~/.config/cosmic/<component>/v1/<key>`

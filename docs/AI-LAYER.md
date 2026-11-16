@@ -137,12 +137,13 @@ told. So it treats everything an agent proposes as possibly steered by text some
   (a tool's name), for good. A proposal that names its session carries that list in its ledger entry. One
   agent never cites or reports into another's session. The same sessions count and bound an agent's uses of
   secrets (ADR-052 4).
-- **What this means for secrets** (ADR-052 4, unchanged in its rules): a secret's rule and a person's grant
-  both speak of "a session that read untrusted text". Every session of an agent's now counts as one, so a
-  use asks its person unless the secret is `never-even-tainted` or a grant that says `tainted-too` covers it;
-  `first-use` and `never` ask at each use, and `allow all` and `allow <name> session` cover no use of an
-  agent's (KNOWN-GAPS 6zzu). That was already so in practice since phase 1, when the service stopped running
-  as the old loop's account.
+- **What this means for secrets** (ADR-052 4, amended 2026-11-16): the broker cannot see what an agent has
+  read, so each use of a secret by an agent asks its person, each time. Two things let a use through unasked,
+  each for one named secret and each given with the person's password: the secret's own rule saying
+  `without-asking` (a person's own secret only), or a grant of that secret for some minutes (`request system
+  secret allow <name> for <minutes>`). There is no other word for when a person is asked and no other kind of
+  grant; a rule or a ledger from before is read as what it did then (`first-use` and `never` as `each-use`,
+  `never-even-tainted` as `without-asking`; the grants of the kinds that went as none).
 
 A person's own proposal is marked the same way only if the one who made it says so (`torq-broker propose
 --tainted`, the root path).
@@ -153,8 +154,9 @@ Append-only JSON Lines at `/var/lib/torq/state/ledger.jsonl`, owned by the broke
 Entry kinds: `init`, `proposal`, `applied`, `apply_failed`, `reverted`, `revert_failed`,
 `interrupted`, `repaired`, `confirmed`, `rolled_back` (an unconfirmed `commit confirmed`), `declined` (a
 waiting proposal turned down), and a person's `trust_granted`, `trust_revoked` and `trust_expired`, which
-today are leave for their agent to use a secret without asking (`data.covers`: `secret <name>` or
-`all-secrets`). Failures and restores carry `restored: true|false` (ADR-008).
+today are leave for their agent to use one secret without asking (`data.covers`: `secret <name>`; a ledger
+from before 2026-11-16 may also say `all-secrets`, and `proposals` from before phase 2 of ADR-055: neither is
+honoured). Failures and restores carry `restored: true|false` (ADR-008).
 
 ```json
 {"seq":1042,"ts":"2026-10-30T15:20:11Z","actor":"agent","approved_by":"casey",

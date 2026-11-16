@@ -330,9 +330,10 @@ the acceptance tests, each a VM test.
 - [x] **Step 4** (built 2026-11-13; ADR-051 and ADR-052, amended that day): approvals and taint. An agent's use
       that asks waits two minutes for the person whose agent it is, who answers at a terminal (`show system
       secrets waiting`, `request system secret approve <n>`, `deny <n> [session]`) or in the panel applet's
-      popup; a person lets their agent use a secret without asking for a while (`allow <name> session`, `for
-      <minutes> [tainted-too]`, `allow all for <minutes>`, their password), and ends it (`allow revoke`, or the
-      Secrets page); `never-even-tainted` in their own rules. The VM tests' edits of that day ran and passed in the full check of 2026-11-14
+      popup; a person lets their agent use a secret without asking for a while (`allow <name> for <minutes>`,
+      their password), and ends it (`allow revoke`, or the Secrets page); `without-asking` in their own rules
+      (as amended 2026-11-16, ADR-052: before that there were three kinds of grant and four words, of which
+      these are the ones that did something). The VM tests' edits of that day ran and passed in the full check of 2026-11-14
       (`tests/secrets.nix`, `tests/desktop.nix`). The dialog is type-checked only and has not been drawn on any
       machine (KNOWN-GAPS 6zzs).
 - [x] **Step 5**: the Secrets page in TorqOS Settings (built 2026-11-12, after v0.4.0-rc1; deferred on

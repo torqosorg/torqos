@@ -99,7 +99,7 @@ each command beside its button:
   your own needs no password; a system secret needs an administrator, who approves in COSMIC's
   dialog, as for any system change.
 - It shows what your agent may use without asking for now (below), with a button that ends each, and
-  marks in red a secret that is used with no one asked even after untrusted text.
+  marks in red a secret that your agent uses without ever asking you.
 - It deletes a secret, after asking once more: a deleted value cannot be brought back.
 - It takes a value, typed twice in fields that show dots. The value goes to the broker the way
   `torqcli` sends it. It is not part of any command, log or history entry.
@@ -118,12 +118,10 @@ What the page does not do:
 
 ### When your agent asks to use a secret
 
-You decide whether your agent may use a secret at all (`request system secret allow <name> agent …`),
-and when you are asked first (`approve`): never, the first time in each of its sessions, or every
-time. Whatever you chose, a use from a session that read untrusted text (a web page, an email, a
-downloaded file) always asks. And TorqOS cannot see what your agent reads, so it treats every session of
-your agent's as one that did. In practice, then, your agent asks at every use, unless you gave it leave
-that says "even from a session that read untrusted text" (below).
+You decide whether your agent may use a secret at all (`request system secret allow <name> agent …`).
+When it does, you are asked. TorqOS cannot see what your agent has read (a web page or a log line can
+carry instructions meant for it), so it asks you each time unless you said otherwise for this secret
+([below](#letting-your-agent-use-a-secret-without-asking)).
 
 A use that asks waits two minutes for you. Only you are asked: the person whose agent it is, also for
 a system secret. With no answer, the use is refused. The agent never gets the value either way.
@@ -132,7 +130,7 @@ a system secret. With no answer, the use is refused. The agent never gets the va
 in the panel, whose mark has a badge while a use waits. The panel shows:
 
 - First, what TorqOS knows for itself: the secret and whose it is, whether it is for an HTTPS request
-  or an SSH sign-in and to which host, what is known of its session, and how long you have left.
+  or an SSH sign-in and to which host, why you are asked, and how long you have left.
 - Then, under a line that says so, what your agent says about it. These are the agent's own words.
   Nothing has checked them, and text the agent has read can put words in its mouth. Decide by the
   lines above them.
@@ -140,11 +138,11 @@ in the panel, whose mark has a badge while a use waits. The panel shows:
 The buttons:
 
 - **Allow once**: this one use goes ahead.
-- **Allow for…**: this use goes ahead, and so do later uses of this one secret, for a time you pick.
-  It asks your password first. If you cancel the password, nothing is allowed and the use still waits.
-  If you already let your agent use this secret for a while, the panel says so: choosing a time then
-  ends what you allowed before and asks for the new one. If you cancel the password at that point,
-  the old one stays ended.
+- **Allow for…**: this use goes ahead, and so do later uses of this one secret, without asking you,
+  for 60 minutes or for 480 (8 hours). It asks your password first. If you cancel the password,
+  nothing is allowed and the use still waits. If you already let your agent use this secret for a
+  while, the panel says so: choosing a time then asks your password and puts the new time in place of
+  the old. If you cancel the password at that point, the old one stays.
 - **Deny**: this use is refused.
 - **Deny, and don't ask again this session**: this use is refused, and so is every later use of that
   secret in that session of the agent's, at once. A new session can ask again. This button is there
@@ -182,33 +180,27 @@ words.
 
 ### Letting your agent use a secret without asking
 
-You can let your own agent use a secret without asking you, for a while. This asks your password, and
-is recorded. It never lets the agent use a secret its rule does not allow, send it to another host, or
-change the system.
+You can let your own agent use one secret without asking you. There are two ways, each for one named
+secret, and each asks your password and is recorded:
 
 | What | Command | How long |
 |---|---|---|
-| One secret, in your agent's sessions that are running now | `request system secret allow <name> session` | until those sessions are 8 hours old |
 | One secret, for a time | `request system secret allow <name> for <minutes>` | 1 to 480 minutes |
-| All your own secrets, for a time | `request system secret allow all for <minutes>` | 1 to 480 minutes |
+| One secret of your own, until you say otherwise | `request system secret approve <name> without-asking user <you>` | until you choose `each-use` again |
 
-Add `user <you>` for a secret of your own; without it, the command means a system secret that your
-agent is allowed. In the panel, **Allow for…** does the first two for the secret being asked about.
+For the first, add `user <you>` for a secret of your own; without it, the command means a system
+secret that your agent is allowed. In the panel, **Allow for…** gives it for the secret being asked
+about, for 60 or 480 minutes, and so does the Secrets page of TorqOS Settings. The second is only for
+a secret of your own: an administrator cannot say it for a system secret. To take it back:
+`request system secret approve <name> each-use user <you>`.
 
-None of these covers a session that read untrusted text, and every session of your agent's counts as
-one (TorqOS cannot see what it reads). So today none of the three lets a use through: your agent still
-asks every time. Two things do, and each is for one named secret only, never for all of them:
-
-- `request system secret allow <name> for <minutes> tainted-too`: for up to 480 minutes, the agent
-  uses that secret without asking, even from a session that read untrusted text. In the panel, this
-  is what **Allow for…** offers, in red.
-- `request system secret approve <name> never-even-tainted user <you>`: the same, with no end, for a
-  secret of your own. It asks your password, and holds until you choose another `approve` rule.
-
-Think before using either. Text your agent reads (a web page, a file, an issue someone wrote) can
+Think before using either. Text your agent has read (a web page, a file, an issue someone wrote) can
 then make it use that secret without you being asked. What still holds: the secret goes only to the
-hosts its rule names, and the agent never reads it. So give such a secret as little power as you can
-at those hosts: a fine-grained token, a deploy key.
+hosts its rule names, the agent never reads it, and neither way lets the agent use a secret its rule
+does not allow or change the system. So give such a secret as little power as you can at those hosts:
+a fine-grained token, a deploy key.
+
+`show system secrets` marks a secret that never asks with `[!! NEVER ASKS YOU]`.
 
 To see what is allowed now, and to end it:
 
@@ -216,20 +208,35 @@ To see what is allowed now, and to end it:
 alice@torq> show system secrets allowed
 alice@torq> request system secret allow revoke gh user alice
 alice@torq> request system secret allow revoke ci
-alice@torq> request system secret allow all revoke
 alice@torq> request system secret allow revoke all
 ```
 
 Ending needs no password. `allow revoke <name> user <you>` ends what you allowed for your own secret
 of that name; without `user <you>` it means the system's secret of that name, as when you allowed
-it. `allow all revoke` ends "all your own secrets" and leaves what you allowed for one secret.
-`allow revoke all` (or just `allow revoke`) ends everything you allowed. Times in these lists are
-your machine's local time. A line that says "at most" is one you allowed for your agent's sessions:
-it ends for each session when that session is 8 hours old, which may be sooner.
+it. `allow revoke all` (or just `allow revoke`) ends everything you allowed. Times in these lists are
+your machine's local time.
 
 The Secrets page of TorqOS Settings shows everything you allowed at the top, with a button that ends
-each one, and shows in red what holds even from a session that read untrusted text. Under a secret
-you choose it also lists anyone else's agent that is allowed it for now; that is theirs to end.
+each one. Under a secret you choose it also lists anyone else's agent that is allowed it for now;
+that is theirs to end.
+
+#### If you set this up before 2026-11-16
+
+Earlier builds after 0.4.0-rc1 had more words here, and most of them did nothing. What you will
+notice:
+
+- **A rule that said `first-use` or `never`** asked you at every use, and still does: it now reads as
+  `each-use`. A rule that said `never-even-tainted` did not ask, and still does not: it reads as
+  `without-asking`. Your rules file keeps the old word until `torqcli` next changes that file (any
+  `request system secret allow`, `disallow`, `approve` or `delete` of yours); that change then writes
+  the whole file in today's words, so its record shows the old words replaced beside what you asked
+  for. Nothing changes in what you are asked.
+- **`allow <name> session` and `allow all for <minutes>`** let no use through. `allow <name> session`
+  is no command now, and `allow all for <minutes>` now means a secret that is itself named `all`. If
+  you had allowed something either way, it no longer shows in `show system secrets allowed`.
+- **`allow <name> for <minutes> tainted-too`** is `allow <name> for <minutes>`. What you allowed that
+  way holds until its time.
+- **`allow all revoke`** is gone with what it ended. `allow revoke all` ends everything you allowed.
 
 ## Checking a release yourself
 

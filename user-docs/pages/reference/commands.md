@@ -47,16 +47,14 @@ command can be abbreviated to a unique beginning, and `?` or `help` works anywhe
 | `request system secret set <name>` | give a secret's value (typed, or `file <path>`): kept encrypted, outside the configuration, never in the ledger |
 | `request system secret allow <name> https <host>` or `ssh <host>`, or `agent user <you>` / `agent <person>` | let a secret be used for that host (a token in an HTTPS header, or an SSH key), or by an agent, which uses it without reading it: your own secret by your own agent (`agent user <you>`), a system secret by the agent of the person named (`agent alice`: alice's agent, `torq-agent-alice`) |
 | `request system secret disallow <name> …` | take a use back |
-| `request system secret approve <name> each-use`, `first-use` or `never` | when you are asked before your agent uses it. A session that read untrusted text is always asked, and your agent's always counts as one (TorqOS cannot see what it reads), so today each of these asks at every use. A use that asks waits two minutes for you, then is refused |
-| `request system secret approve <name> never-even-tainted user <you>` | your own secret is used with no one asked, even from a session that read untrusted text, until you choose another rule (asks your password) |
+| `request system secret approve <name> each-use` | you are asked each time your agent uses it (as it is unless you say otherwise). A use that asks waits two minutes for you, then is refused |
+| `request system secret approve <name> without-asking user <you>` | your agent uses your own secret without asking you, whatever it has read, until you say `each-use` again (asks your password) |
 | `show system secrets waiting` | your agent's uses of secrets that wait for your answer, each with its number |
 | `request system secret approve <n>` | your yes to the waiting use `<n>`, once |
 | `request system secret deny <n> [session]` | your no to it; with `session`, also to every later use of that secret in that session of the agent's |
-| `request system secret allow <name> session` or `for <minutes> [tainted-too]` | for a while, your agent uses that secret without asking you (asks your password): in its sessions running now, or for 1 to 480 minutes. `tainted-too`: even from a session that read untrusted text. `user <you>` for a secret of your own |
-| `request system secret allow all for <minutes>` | the same for all your own secrets, 1 to 480 minutes; never from a session that read untrusted text |
+| `request system secret allow <name> for <minutes>` | for 1 to 480 minutes, your agent uses that one secret without asking you, whatever it reads meanwhile (asks your password). `user <you>` for a secret of your own |
 | `show system secrets allowed` | what agents may use without asking for now, and until when |
 | `request system secret allow revoke <name> [user <you>]` | end what you allowed for that one secret: the system's, or with `user <you>` your own (no password) |
-| `request system secret allow all revoke` | end what you allowed for all your own secrets at once; what you allowed for one secret stays |
 | `request system secret allow revoke` or `allow revoke all` | end everything you allowed |
 | `request system secret show <name>` | print its value here (asks your password) |
 | `request system secret delete <name>` | delete its value and its rule |
@@ -71,8 +69,8 @@ page of TorqOS Settings runs these same commands, except two that stay in a term
 `request system secret set <name> file <path>`. On the page a value is typed twice in masked fields
 instead; a value pasted there stays in your clipboard. A use that waits for you is answered in the
 panel or with `approve <n>` and `deny <n>`, not on the page; and the page lists and ends what your
-agent may use without asking, but does not give it: that is **Allow for…** in the panel, or
-`allow … session` and `allow … for <minutes>` here. See
+agent may use without asking, and gives it for 60 or 480 minutes (as **Allow for…** in the panel
+does, and `allow … for <minutes>` here). See
 [When your agent asks to use a secret](security.md#when-your-agent-asks-to-use-a-secret).
 
 ## Configuration mode

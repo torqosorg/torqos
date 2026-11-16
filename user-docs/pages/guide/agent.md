@@ -201,8 +201,8 @@ and the agent's own words below, marked as the agent's. At a terminal, `show sys
 lists what waits, and `request system secret approve <n>` or `deny <n>` answers it. With no answer the use
 is refused.
 
-Your agent asks every time, because TorqOS cannot see what it has read. To let it use one secret without
-asking for a while, see
+Your agent asks every time, because TorqOS cannot see what it has read (a web page or a log line can carry
+instructions meant for it). To let it use one secret without asking, for a while or until you say otherwise, see
 [Letting your agent use a secret without asking](../reference/security.md#letting-your-agent-use-a-secret-without-asking):
 it asks your password, and that page says what you are giving.
 

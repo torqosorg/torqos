@@ -341,9 +341,13 @@ Kimi); a person's own Claude Code outside the fence.
   - *A machine that still sets a removed setting* is told what is set, in which file, and what to type
     (`delete torq agent doctor`, in the commit that updates TorqOS), not that an option is unknown; the
     journal's new setting is a second commit after the update.
-  - *Not decided here, for the owner:* secrets' rules (ADR-052 4) still tell a clean session from a tainted
-    one, and no agent has a clean one now, so `first-use` and `never` ask every time and `allow all` and
-    `allow <name> session` cover nothing (KNOWN-GAPS 6zzu).
+  - *Secrets say only what they do* (decided by the owner and built the same day; ADR-052's amendment of
+    2026-11-16, KNOWN-GAPS 6zzu). Their rules told a clean session from a tainted one, and no agent has a
+    clean one now. So: two words for when a person is asked (`each-use`, `without-asking`; a stored
+    `first-use` or `never` reads as `each-use`, `never-even-tainted` as `without-asking`), and one kind of
+    grant (one named secret, for minutes). `allow all`, `allow <name> session` and `tainted-too` are gone
+    from the broker, torqcli, the dialog and the Secrets page; a person reads why they are asked in one
+    sentence, and no word about sessions or taint.
 - **What was run for phase 2** (2026-11-16, the check host, on `work/harness-p2`). Unit tests, each
     crate's whole suite: agent 59 (+2 ignored: the tests' helper, and the by-hand entry), torqcli 495, wire 23,
     secrets 15, broker 319 (across its test binaries; they include every ledger fixture read and written back
@@ -365,3 +369,24 @@ Kimi); a person's own Claude Code outside the fence.
     `desktop-agent` and `agent-run` were edited or touch what changed, and only evaluate); nothing on a
     machine that has the old settings or an old ledger (the fixture stands in for the ledger; the removed
     settings' refusal is held at evaluation only); nothing on a desktop.
+- **What was run for "secrets say only what they do"** (2026-11-16, the check host, on `work/harness-p2`,
+    after the above). Unit tests, each crate's whole suite: torqcli 501, broker 317 (across its test
+    binaries, `trust_loop` among them), wire 24, secrets 15, agent 59 (+2 ignored). TorqOS Settings:
+    type-checked, not started; the Secrets page's new rows and the dialog's new line have been drawn nowhere.
+    Each guard was broken once and a test seen to fail, then put back: in the wire crate, a stored `never`
+    and a stored `first-use` read as `without-asking`; in the broker, a grant read without its
+    `tainted_too`, and one read with a `scope`, the rule's word ignored (`asks` always no), and an old
+    waiting-use file read with its `tainted` and `why` left in; in torqcli, an answer the dialog does not
+    offer taken, an allowance offered where the agent may not use the secret, where the rule never asks and
+    where one holds already, a grant in the broker's answer read without whose secret it is, an allowance
+    taken to cover a secret by its name alone, and the dialog's "you already allow this" found by name
+    alone. (One more was tried and no test failed: reading the old shape's name alone still lists nothing,
+    because whose secret it is cannot be read from that shape either.) VM tests: `secrets` passed, 16
+    subtests, on its third run (the first never started: the broker's package runs its tests when it is
+    built, and two of `trust_loop`'s still said the old word, since rewritten; the second stopped at an
+    expectation of the test's own, the exit code of an apply that needs a password). Four more whose
+    expectations changed: `agent-proposals` (7 subtests), `agent-mcp` (6) and `agents-per-person` (7) passed
+    the first time (a session's record no longer has `tainted` beside what it read); `desktop` (13 subtests) passed the first time (the applet sees a waiting use whose facts have no `tainted`).
+    Every check of the flake evaluates. Not run: `nix flake check`; `desktop-agent` and every other VM test
+    (not edited); anything on a machine with rules or a ledger from before (the wire crate's units and the
+    broker's fixture stand in); anything on a desktop.
