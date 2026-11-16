@@ -45,6 +45,45 @@ pub fn warnings(stderr: &str) -> Vec<String> {
     found
 }
 
+/// Nix was stopped by a signal (the kernel, out of memory; its unit's time or memory limit).
+pub const STOPPED: &str = "Nix was stopped before it ended";
+pub const NO_DAEMON: &str = "Nix could not reach its daemon or its store";
+pub const NO_SPACE: &str = "no space left";
+pub const NO_MEMORY: &str = "out of memory";
+
+/// What a failed `nix eval` failed for, where that is plainly not the configuration it evaluated; None: it
+/// may be the configuration's, and is taken as that. `code` is Nix's exit code (None: a signal ended it),
+/// `stderr` what it wrote.
+///
+/// Nix exits 1 for all of these, as for a configuration that is wrong, so beyond the signal only its
+/// words tell them apart. As little of them is read as will do: the error that stopped Nix (`message`),
+/// and in it only how Nix itself begins when it cannot reach its daemon or its store, and how the
+/// system's own words for a failed call end it (`<what Nix did>: <the system's words>`): never a word
+/// anywhere inside the message, where a configuration's own text can be quoted. What this misses is
+/// taken for the configuration's; the broker asks about the configuration as it is before it believes
+/// that (ADR-056).
+pub fn outside(code: Option<i32>, stderr: &str) -> Option<&'static str> {
+    if code.is_none() {
+        return Some(STOPPED);
+    }
+    let m = message(stderr)?;
+    // Nix's own first words: the client's socket to the daemon, and the store it opens through it.
+    if ["cannot connect to socket at ", "cannot open connection to remote store "].iter().any(|w| m.starts_with(w)) {
+        return Some(NO_DAEMON);
+    }
+    // The system's words (strerror, in the C locale the checker runs in), which end Nix's error for a failed call.
+    let ends = |words: &[&str]| words.iter().any(|w| m.ends_with(w));
+    if ends(&["Connection refused", "Connection reset by peer", "Broken pipe"]) {
+        Some(NO_DAEMON)
+    } else if ends(&["No space left on device", "Disk quota exceeded"]) {
+        Some(NO_SPACE)
+    } else if ends(&["Cannot allocate memory"]) || m == "out of memory" {
+        Some(NO_MEMORY)
+    } else {
+        None
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -70,5 +109,41 @@ mod tests {
         assert!(m.starts_with("A definition for option `users.users.alice.shell' is not of type") && m.ends_with("\"zsh\""), "{m}");
         assert_eq!(message("warning: Git tree is dirty\n"), None, "no error");
         assert_eq!(message("error:\n"), None, "an error with no words");
+    }
+
+    #[test]
+    fn what_is_plainly_not_the_configurations() {
+        // As Nix 2.34 writes them: under an evaluation's trace, or alone.
+        let no_daemon = "error:\n       … while calling the 'toFile' builtin\n         at «string»:1:1:\n            1| builtins.toFile \"x\" \"y\"\n             | ^\n\n       error: cannot connect to socket at '/nix/var/nix/daemon-socket/socket': No such file or directory\n";
+        assert_eq!(outside(Some(1), no_daemon), Some(NO_DAEMON));
+        assert_eq!(outside(Some(1), "error: cannot open connection to remote store 'daemon': error: reading from file: Connection reset by peer\n"), Some(NO_DAEMON));
+        assert_eq!(outside(Some(1), "error: writing to file: Broken pipe\n"), Some(NO_DAEMON));
+        assert_eq!(outside(Some(1), "error: writing to file: No space left on device\n"), Some(NO_SPACE));
+        assert_eq!(outside(Some(1), "error: creating directory '/tmp/nix-1': Disk quota exceeded\n"), Some(NO_SPACE));
+        assert_eq!(outside(Some(1), "error: unable to fork: Cannot allocate memory\n"), Some(NO_MEMORY));
+        assert_eq!(outside(Some(1), "error: out of memory\n"), Some(NO_MEMORY));
+        // A signal, whatever was written.
+        assert_eq!(outside(None, ""), Some(STOPPED));
+        assert_eq!(outside(None, "error: torq.packages: 'x' (user alice) is not a package in nixpkgs\n"), Some(STOPPED));
+        // The configuration's own: a package that is none, a failed assertion, a wrong type; and nothing at all.
+        for theirs in [
+            "error: torq.packages: 'htpo' (user viper) is not a package in nixpkgs\n",
+            "error:\n       Failed assertions:\n       - The ‘fileSystems’ option does not specify your root file system.\n",
+            "error: A definition for option `users.users.alice.shell' is not of type `null or package or shell package'. Definition values:\n       - In `/nix/store/y-source/nixos/users.json': \"zsh\"\n",
+            "",
+            "warning: Git tree is dirty\n",
+        ] {
+            assert_eq!(outside(Some(1), theirs), None, "{theirs}");
+        }
+        // The words inside a message, where a configuration's own text is quoted, are not Nix's: a value or a
+        // name that says them makes no failure another's.
+        for quoted in [
+            "error: torq.packages: 'No space left on device' (user alice) is not a package in nixpkgs\n",
+            "error: A definition for option `services.x.note' is not of type `path'. Definition values:\n       - In `/nix/store/y-source/nixos/services.json': \"cannot connect to socket at /x: Connection refused\"\n",
+            "error: The option `out of memory' does not exist.\n",
+            "error: attribute 'cannot open connection to remote store ' missing\n",
+        ] {
+            assert_eq!(outside(Some(1), quoted), None, "{quoted}");
+        }
     }
 }

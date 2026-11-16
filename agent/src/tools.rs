@@ -362,8 +362,9 @@ pub const MAX_PROGRAM_BYTES: usize = 1 << 20;
 /// How long a tool's program may run.
 pub const PROGRAM_TIMEOUT: Duration = Duration::from_secs(30);
 /// How long a proposal may take: the broker has the change checked before it records it (ADR-056), an evaluation
-/// or two, which the broker gives up on within six minutes (its wait for the checker, and for its turn at it).
-pub const PROPOSE_TIMEOUT: Duration = Duration::from_secs(10 * 60);
+/// or two (the change, and if it is found not valid the configuration as it is), which the broker gives up on
+/// within eleven and a quarter minutes: its turn at the checker, 30 seconds, and 320 seconds for each run.
+pub const PROPOSE_TIMEOUT: Duration = Duration::from_secs(12 * 60);
 
 /// What torqcli's output says of a proposal it was given to make: made (its number), cut short (it may have been
 /// made: the broker alone knows), or not made (torqcli said why, or failed before the broker).
@@ -456,7 +457,7 @@ mod tests {
     /// The tools' limits as numbers: changing one is a decision (the audit of 0.3.0).
     #[test]
     fn the_limits_are_these_numbers() {
-        assert_eq!((PROGRAM_TIMEOUT.as_secs(), PROPOSE_TIMEOUT.as_secs()), (30, 10 * 60));
+        assert_eq!((PROGRAM_TIMEOUT.as_secs(), PROPOSE_TIMEOUT.as_secs()), (30, 12 * 60));
     }
 
     #[test]

@@ -91,8 +91,9 @@ pub struct Broker {
     remote: Option<String>,
     /// What checks an agent's proposal before it is recorded (ADR-056, check.rs): `{tree}`. Empty: nothing does.
     check_cmd: String,
-    /// How long the check of one proposal may take.
+    /// How long one run of the checker may take, and how many seconds a proposal waits for its turn at it.
     check_wait: std::time::Duration,
+    check_turn: u64,
 }
 
 /// The fields the broker reads back from an entry, each in the shape the broker writes: anything else
@@ -345,13 +346,13 @@ fn watched(c: &mut Command, cache: Option<&Path>) -> std::io::Result<(std::proce
 }
 
 /// Another broker operation holds the lock: try again later. Its own type, so the CLI can say
-/// "busy" (exit 75) without matching error text.
+/// "busy" (exit 75) without matching error text. Its words are the whole of what is said.
 #[derive(Debug)]
 pub struct Busy(pub String);
 
 impl std::fmt::Display for Busy {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "another broker operation is running ({})", self.0)
+        f.write_str(&self.0)
     }
 }
 
@@ -558,7 +559,13 @@ impl Lock {
                 return Ok(l);
             }
             if std::time::Instant::now() >= deadline {
-                return Err(Busy(if name == "broker.lock" { Self::busy(dir) } else { format!("{} is held", dir.join(name).display()) }).into());
+                return Err(Busy(match name {
+                    "broker.lock" => format!("another broker operation is running ({})", Self::busy(dir)),
+                    // Said to an agent, whose proposal waited its turn at the checker (ADR-056): no path of ours.
+                    "check.lock" => "another proposal is being checked: try again shortly".to_string(),
+                    _ => format!("another broker operation is running ({} is held)", dir.join(name).display()),
+                })
+                .into());
             }
             std::thread::sleep(std::time::Duration::from_millis(50));
         }
@@ -754,6 +761,7 @@ impl Broker {
             remote: None,
             check_cmd: String::new(),
             check_wait: check::WAIT,
+            check_turn: check::TURN,
         }
     }
 
@@ -1356,10 +1364,12 @@ impl Broker {
         self
     }
 
-    /// What checks an agent's proposal (ADR-056; config.rs `CHECK`), and how long the broker waits for it.
-    pub fn with_check(mut self, cmd: impl Into<String>, wait: std::time::Duration) -> Self {
+    /// What checks an agent's proposal (ADR-056; config.rs `CHECK`), how long the broker waits for one run of
+    /// it, and how many seconds a proposal waits for its turn (check.rs `WAIT`, `TURN`).
+    pub fn with_check(mut self, cmd: impl Into<String>, wait: std::time::Duration, turn: u64) -> Self {
         self.check_cmd = cmd.into();
         self.check_wait = wait;
+        self.check_turn = turn;
         self
     }
 
@@ -2131,10 +2141,13 @@ impl Broker {
     }
 
     /// The check of `tree` (an agent's change on the configuration at commit `head`), one at a time. Not
-    /// valid only if the same checker finds the configuration as it is valid: where checking cannot work
-    /// (no checker, the account kept from the Nix daemon, a source it cannot read) a change is recorded
-    /// as not checked, never refused for it. That the configuration at a commit is valid is kept
-    /// (`check-base`), so it is evaluated once for each commit, and only when a change first fails on it.
+    /// valid only if the same checker, asked in this same check, finds the configuration as it is valid:
+    /// where checking cannot work (no checker, the account kept from the Nix daemon, a source it cannot
+    /// read, a daemon that is down, a full disk) a change is recorded as not checked, never refused for
+    /// it. Nothing of an earlier check is kept: that the configuration was valid a while ago says nothing
+    /// of what the checker can do now, so every change found not valid costs a second run (they are
+    /// bounded as refusals are). Each run has its own time, so a change slow to fail leaves the
+    /// configuration as it is the whole of its own.
     fn check(&self, tree: &str, head: &str) -> Result<check::Said> {
         if self.check_cmd.trim().is_empty() {
             return Ok(check::Said::Nothing("this machine has no checker"));
@@ -2142,22 +2155,14 @@ impl Broker {
         if !check::tree_id(tree) {
             bail!("the change's tree has no id the checker takes: {tree:?}");
         }
-        let _one = Lock::acquire_named(&self.state_dir, "check.lock", check::TURN)?;
-        let until = std::time::Instant::now() + self.check_wait;
-        let run = |tree: &str| check::run(&fill(&self.check_cmd, &[("tree", tree)]), until);
+        let _one = Lock::acquire_named(&self.state_dir, "check.lock", self.check_turn)?;
+        let run = |tree: &str| check::run(&fill(&self.check_cmd, &[("tree", tree)]), std::time::Instant::now() + self.check_wait);
         let said = run(tree);
         if !matches!(said, check::Said::NotValid(_)) {
             return Ok(said);
         }
-        let kept = self.state_dir.join("check-base");
-        let base_valid = fs::read_to_string(&kept).is_ok_and(|c| c == head) || {
-            let valid = self.repo.tree_of(head).is_ok_and(|t| check::tree_id(&t) && matches!(run(&t), check::Said::Valid(_)));
-            if valid {
-                let _ = self.write_record(&kept, head.as_bytes());
-            }
-            valid
-        };
-        Ok(if base_valid { said } else { check::Said::Nothing("this machine's configuration as it is does not pass the check either") })
+        let base_valid = self.repo.tree_of(head).is_ok_and(|t| check::tree_id(&t) && matches!(run(&t), check::Said::Valid(_)));
+        Ok(if base_valid { said } else { check::Said::Nothing(check::NOT_NOW) })
     }
 
     /// How many of agent account `account`'s refusals the ledger holds from the last hour (None: those of
@@ -3585,7 +3590,13 @@ impl Broker {
             for f in files.iter().filter(|f| f.rsplit('/').next() == Some(torq_wire::secrets::PERSON_RULES)) {
                 let at = |rev: &str| -> Result<Option<Vec<u8>>> { Ok(self.repo.file_at(rev, f, torq_wire::secrets::MAX_FILE)?.map(|x| x.content)) };
                 if let Some(n) = torq_wire::secrets::standing_added(at(&before)?.as_deref(), at("HEAD")?.as_deref()).first() {
-                    bail!("refused: undoing change {applied_seq} would make secret {n} without-asking again: set it anew (request system secret approve {n} without-asking), which asks your password");
+                    // Whose rules they are: the person the file's folder names (users/<person>/secrets.json).
+                    let whose = f.strip_prefix("users/").and_then(|r| r.split_once('/')).map_or("<you>", |(person, _)| person);
+                    bail!(
+                        "refused: undoing change {applied_seq} would once more let {whose}'s agent use the secret {n} without asking, and an \
+                         undo asks for no password. If that is wanted, {whose} sets it anew, which asks their password: \
+                         request system secret approve {n} without-asking user {whose}"
+                    );
                 }
             }
             Ok(())

@@ -455,7 +455,7 @@ fn run(mut cli: Cli, via: Option<String>, caller: Option<String>) -> Result<()> 
         .with_backup_restore(&s.restore)
         .with_people(&s.people)
         .with_agent_limits(&s.agent)
-        .with_check(&s.check, torq_broker::check::WAIT)
+        .with_check(&s.check, torq_broker::check::WAIT, torq_broker::check::TURN)
         .as_agent(cli.agent.as_deref())
         .with_remote(s.remote.as_deref())
         .with_nix_cache(s.home.join(".cache/nix"))
@@ -928,18 +928,11 @@ fn plain_file(path: &Path, max: u64, what: &str) -> Result<String> {
     Ok(s)
 }
 
-/// Ledger text and proposed diffs are written by whoever proposed, the agent included, and must not
-/// be able to make one thing look like another on a terminal (escape sequences, carriage returns,
-/// bidi overrides — "Trojan Source" — invisible characters). Show those as visible escapes.
-/// (The CLI's `history::clean` does the same; keep the two in step.)
-fn hidden(c: char) -> bool {
-    c.is_control()
-        || matches!(c,
-            '\u{200b}'..='\u{200f}' | '\u{2028}' | '\u{2029}' | '\u{202a}'..='\u{202e}'
-            | '\u{2060}'..='\u{2069}' | '\u{061c}' | '\u{00ad}' | '\u{feff}'
-            | '\u{fe00}'..='\u{fe0f}' | '\u{e0000}'..='\u{e007f}'
-            | '\u{3164}' | '\u{ffa0}' | '\u{2800}' | '\u{115f}' | '\u{1160}')
-}
+// Ledger text and proposed diffs are written by whoever proposed, the agent included, and must not
+// be able to make one thing look like another on a terminal (escape sequences, carriage returns,
+// bidi overrides — "Trojan Source" — invisible characters). Show those as visible escapes: which
+// characters is torq-wire's one table, the CLI's `history::clean` too.
+use torq_wire::clean::hidden;
 
 /// One line: every hidden character escaped, newlines included.
 fn printable(s: &str) -> String {

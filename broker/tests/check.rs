@@ -17,15 +17,20 @@ struct Machine {
 }
 
 impl Machine {
-    /// A machine whose checker is `check` (`{dir}`: the test's own folder), waited for `wait` seconds.
+    /// A machine whose checker is `check` (`{dir}`: the test's own folder), each run waited for `wait` seconds.
     fn new(check: &str, wait: u64) -> Machine {
+        Machine::with_turn(check, wait, torq_broker::check::TURN)
+    }
+
+    /// The same, where a proposal waits `turn` seconds for another's check to end.
+    fn with_turn(check: &str, wait: u64, turn: u64) -> Machine {
         let dir = tempfile::tempdir().unwrap();
         let repo = dir.path().join("config");
         fs::create_dir_all(repo.join("users")).unwrap();
         fs::write(repo.join("desktop.nix"), "{ nightLight = false; }\n").unwrap();
         let agent = Broker::new(&repo, dir.path().join("state"), "true")
             .with_agent_limits(&limits())
-            .with_check(check.replace("{dir}", &dir.path().to_string_lossy()), Duration::from_secs(wait))
+            .with_check(check.replace("{dir}", &dir.path().to_string_lossy()), Duration::from_secs(wait), turn)
             .as_agent(Some("torq-agent-casey"));
         agent.init().unwrap();
         Machine { dir, agent }
@@ -119,7 +124,7 @@ fn a_change_the_policy_refuses_never_reaches_the_checker() {
 #[test]
 fn a_persons_proposal_is_not_checked_by_the_broker() {
     let m = Machine::new(&format!("echo {{tree}} >> {{dir}}/runs; {VALID}"), 20);
-    let b = Broker::new(m.dir.path().join("config"), m.dir.path().join("state"), "true").with_check(format!("echo x >> {}; {VALID}", m.at("runs").display()), Duration::from_secs(20));
+    let b = Broker::new(m.dir.path().join("config"), m.dir.path().join("state"), "true").with_check(format!("echo x >> {}; {VALID}", m.at("runs").display()), Duration::from_secs(20), torq_broker::check::TURN);
     let p = b.propose_on(Some(&b.repo.head().unwrap()), &m.diff("nl.diff", NIGHT_LIGHT), "night light", Actor::User, false).unwrap();
     assert!(p.body.data.get("check").is_none(), "{}", p.body.data);
     assert_eq!(m.runs(), 0, "a person evaluates their own change (torqcli); the broker's checker is the agent's");
@@ -204,17 +209,56 @@ fn not_valid_is_refused_and_ledgered_as_one_line() {
     assert_eq!(refused.len(), 1);
     let why = refused[0].body.data["why"].as_str().unwrap();
     assert_eq!(why, "refused: with this change the configuration is not valid: \"nosuch\" isn't a package.?Approved-By: root?[2J?x");
-    // The change, then the configuration as it is: two runs. That it is valid is kept for its commit.
+    // The change, then the configuration as it is: two runs, and two again for each change found not valid.
+    // Nothing of the last check is kept.
     assert_eq!(m.runs(), 2);
     assert!(m.propose(&m.package("nosuch2")).is_err());
-    assert_eq!(m.runs(), 3, "the configuration as it is was evaluated again, though kept as valid");
-    // Another commit is another configuration: evaluated again when a change first fails on it.
-    let b = m.person();
-    let theirs = b.propose_on(Some(&b.repo.head().unwrap()), &m.diff("nl.diff", NIGHT_LIGHT), "night light", Actor::User, false).unwrap();
-    b.apply(theirs.body.seq, "casey", false).unwrap();
-    fs::write(m.at("base"), m.git(&["rev-parse", "HEAD^{tree}"])).unwrap();
+    assert_eq!(m.runs(), 4, "the configuration as it is was not asked again");
+    assert!(!m.at("state/check-base").exists(), "something of a check was kept");
+    // A file an earlier broker kept there says nothing: the configuration is asked all the same.
+    fs::write(m.at("state/check-base"), m.agent.repo.head().unwrap()).unwrap();
     assert!(m.propose(&m.package("nosuch3")).is_err());
-    assert_eq!(m.runs(), 5);
+    assert_eq!(m.runs(), 6, "an old check-base file was read");
+}
+
+/// The configuration was found valid once; then the checker fails for every tree (the Nix daemon restarted, the
+/// disk filled, a source went away). That is no word on the agent's change: recorded as not checked, never
+/// refused, nothing counted against the agent.
+#[test]
+fn a_checker_that_starts_failing_for_every_tree_refuses_nothing() {
+    let m = Machine::new(
+        r#"echo {tree} >> {dir}/runs; if [ ! -e {dir}/broken ] && [ {tree} = "$(cat {dir}/base)" ]; then echo '{"ok":true,"warnings":[]}'; else echo '{"ok":false,"why":"cannot open connection to remote store"}'; fi"#,
+        20,
+    );
+    fs::write(m.at("base"), m.git(&["rev-parse", "HEAD^{tree}"])).unwrap();
+    // While it works: a change that fails is refused, the configuration as it is having passed.
+    assert!(m.propose(&m.package("nosuch")).is_err());
+    assert_eq!((m.runs(), m.entries("refused").len()), (2, 1));
+    // It stops working, on the same commit.
+    fs::write(m.at("broken"), "").unwrap();
+    for package in ["htop", "jq"] {
+        let p = m.propose(&m.package(package)).unwrap_or_else(|e| panic!("{package}: a failure that is not the change's was taken for the change's: {e:#}"));
+        let check = &p.body.data["check"];
+        assert_eq!((check["result"].as_str(), check["why"].as_str()), (Some("not checked"), Some("the check could not be made on this machine right now")), "{check}");
+    }
+    assert_eq!(m.runs(), 6);
+    assert_eq!(m.entries("refused").len(), 1, "a refusal was ledgered against the agent for what was not its change's");
+    // And when it works again, a change that fails is refused again.
+    fs::remove_file(m.at("broken")).unwrap();
+    assert!(m.propose(&m.package("nosuch2")).is_err());
+    assert_eq!(m.entries("refused").len(), 2);
+}
+
+/// The configuration as it is has a time of its own: a change that is slow to fail is refused as not valid,
+/// not recorded as one that could not be checked.
+#[test]
+fn a_change_slow_to_fail_leaves_the_configuration_its_own_time() {
+    // Each run takes two seconds of the three it may; together they take more than three.
+    let m = Machine::new(r#"sleep 2; if [ {tree} = "$(cat {dir}/base)" ]; then echo '{"ok":true,"warnings":[]}'; else echo '{"ok":false,"why":"no"}'; fi"#, 3);
+    fs::write(m.at("base"), m.git(&["rev-parse", "HEAD^{tree}"])).unwrap();
+    let e = format!("{:#}", m.propose(&m.package("nosuch")).unwrap_err());
+    assert_eq!(e, "refused: with this change the configuration is not valid: no");
+    assert_eq!(m.entries("refused").len(), 1);
 }
 
 #[test]
@@ -224,17 +268,41 @@ fn where_the_configuration_as_it_is_fails_too_a_change_is_recorded_as_not_checke
     let p = m.propose(&m.package("htop")).unwrap();
     let check = &p.body.data["check"];
     assert_eq!(check["result"], "not checked", "{check}");
-    assert_eq!(check["why"], "this machine's configuration as it is does not pass the check either");
+    assert_eq!(check["why"], "the check could not be made on this machine right now");
     assert!(check.get("warnings").is_none() && check["tree"].as_str().is_some_and(|t| t.len() == 40), "{check}");
     assert_eq!(m.runs(), 2);
     assert!(m.entries("refused").is_empty());
-    // And that it failed is not kept: the next change asks again, in case it works by then.
+    // The next change asks again, in case it works by then.
     assert_eq!(m.propose(&m.package("jq")).unwrap().body.data["check"]["result"], "not checked");
     assert_eq!(m.runs(), 4);
 }
 
+/// One check at a time. A second proposal waits its turn, and where the first is not done by then it is told
+/// to try again: busy, in words with nothing of ours in them, and nothing is ledgered against it.
 #[test]
-fn a_checker_that_floods_never_ends_or_is_not_there_leaves_a_change_not_checked_in_bounded_time() {
+fn a_second_check_at_once_is_told_to_try_again() {
+    let m = Machine::with_turn(&format!("echo {{tree}} >> {{dir}}/runs; while [ ! -e {{dir}}/go ]; do sleep 0.05; done; {VALID}"), 60, 1);
+    let (first, second) = (m.package("htop"), m.package("jq"));
+    std::thread::scope(|s| {
+        let proposing = s.spawn(|| m.propose(&first));
+        wait_for(&m.at("runs"));
+        let before = m.agent.ledger.read_all().unwrap().len();
+        let e = m.propose(&second).unwrap_err();
+        assert!(e.downcast_ref::<torq_broker::Busy>().is_some(), "{e:#}");
+        assert_eq!(format!("{e:#}"), "another proposal is being checked: try again shortly");
+        assert_eq!(m.agent.ledger.read_all().unwrap().len(), before, "something was ledgered for a proposal that only waited");
+        assert_eq!(m.runs(), 1, "a second checker was started");
+        fs::write(m.at("go"), "").unwrap();
+        assert_eq!(proposing.join().unwrap().unwrap().body.data["check"]["result"], "valid");
+    });
+    assert!(m.entries("refused").is_empty());
+    // Its turn come, the same proposal is checked and recorded.
+    assert_eq!(m.propose(&second).unwrap().body.data["check"]["result"], "valid");
+    assert_eq!(m.runs(), 2);
+}
+
+#[test]
+fn a_checker_that_floods_never_ends_is_not_there_or_cannot_be_started_leaves_a_change_not_checked_in_bounded_time() {
     for (check, wait, why) in [
         ("while :; do echo xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; done", 20, "the checker gave no answer"),
         ("sleep 600", 1, "the check did not finish in time"),
@@ -242,6 +310,8 @@ fn a_checker_that_floods_never_ends_or_is_not_there_leaves_a_change_not_checked_
         ("/nonexistent/torq --check-tree {tree}", 20, "the checker gave no answer"),
         ("echo 'error: cannot open connection to remote store'; exit 1", 20, "the checker gave no answer"),
         (r#"echo '{"ok":false}'"#, 20, "the checker gave no answer"),
+        // A command the system will not start at all (a NUL in it).
+        ("echo \0", 20, "the checker could not be started"),
         ("", 20, "this machine has no checker"),
     ] {
         let m = Machine::new(check, wait);

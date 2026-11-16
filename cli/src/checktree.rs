@@ -7,7 +7,8 @@
 //!
 //! Standard output is exactly one line of JSON: `{"ok":true,"warnings":[…]}` (the configuration evaluates;
 //! its warnings), or `{"ok":false,"why":"…"}` (it does not, and what is wrong). Anything that kept it from
-//! evaluating at all (no such tree, no room, no Nix) is no verdict: a word on standard error, exit 2,
+//! evaluating at all (no such tree, no Nix), and a failure of Nix that is plainly not the tree's (its daemon or
+//! store not reached, no space, no memory, a signal: nixerr.rs `outside`), is no verdict: a word on standard error, exit 2,
 //! and the broker records the proposal as not checked.
 
 use crate::session::{Evaluated, Machine};
@@ -35,7 +36,10 @@ fn verdict(evaluated: Result<Evaluated>) -> Result<Value> {
         Ok(e) if !e.reads_tree => Ok(json!({ "ok": false, "why": "this machine's configuration does not read its settings files (its flake.nix must call torq.lib.mkSystem with `configDir = ./.;`)" })),
         Ok(e) => Ok(json!({ "ok": true, "warnings": e.warnings.iter().take(WARNINGS).map(|w| history::one_line(w, LENGTH)).collect::<Vec<_>>() })),
         Err(e) => match e.downcast_ref::<NotValid>() {
-            Some(NotValid(why)) => Ok(json!({ "ok": false, "why": history::one_line(&pkg::what_is_wrong(why), LENGTH) })),
+            Some(NotValid { why, outside: None }) => Ok(json!({ "ok": false, "why": history::one_line(&pkg::what_is_wrong(why), LENGTH) })),
+            // Nix failed for something other than this tree (its daemon, the disk, memory, a signal): that
+            // says nothing of the change, and is no verdict.
+            Some(NotValid { why, outside: Some(what) }) => bail!("{what}: {why}"),
             None => Err(e),
         },
     }
@@ -83,10 +87,18 @@ mod tests {
         assert_eq!(v["warnings"].as_array().unwrap().len(), WARNINGS);
         assert!(!v.to_string().contains("\\n"), "{v}");
         // Not valid: what is wrong, without a command for a person to type.
-        let v = verdict(Err(NotValid("torq.packages: 'nosuch' (user alice) is not a package in nixpkgs".into()).into())).unwrap();
+        let not_valid = |why: &str, outside| verdict(Err(NotValid { why: why.into(), outside }.into()));
+        let v = not_valid("torq.packages: 'nosuch' (user alice) is not a package in nixpkgs", None).unwrap();
         assert_eq!(v.to_string(), r#"{"ok":false,"why":"\"nosuch\" isn't a package."}"#);
         assert_eq!(verdict(Ok(evaluated(&[], false))).unwrap()["ok"], false, "a tree nothing reads");
-        // Anything else is no verdict at all.
+        // Anything else is no verdict at all: Nix that could not be run, and Nix that failed for something
+        // other than the tree (its daemon, the disk): never "not valid".
         assert!(verdict(Err(anyhow::anyhow!("running nix eval: No such file or directory"))).is_err());
+        let e = not_valid("cannot open connection to remote store 'daemon': error: reading from file: Connection reset by peer", Some(crate::nixerr::NO_DAEMON)).unwrap_err();
+        assert_eq!(e.to_string(), "Nix could not reach its daemon or its store: cannot open connection to remote store 'daemon': error: reading from file: Connection reset by peer");
+        assert!(not_valid("writing to file: No space left on device", Some(crate::nixerr::NO_SPACE)).is_err());
+        // A person's own commit says the same words either way: what it failed for changes only the checker's answer.
+        let said = |outside| NotValid { why: "writing to file: No space left on device".into(), outside }.to_string();
+        assert_eq!(said(Some(crate::nixerr::NO_SPACE)), said(None));
     }
 }

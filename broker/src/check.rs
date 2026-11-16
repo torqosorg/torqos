@@ -21,10 +21,12 @@ pub const OUTPUT_MAX: u64 = 64 * 1024;
 pub const WARNINGS_MAX: usize = 8;
 /// How long a warning, or the reason a change is not valid, may be: cut there.
 pub const TEXT_MAX: usize = 300;
-/// How long the broker waits for the check of one proposal, the change and (only if the change fails) the
-/// configuration as it is, together. The checker's unit stops itself sooner (`RuntimeMaxSec`).
+/// How long the broker waits for one run of the checker. A proposal's check is one run (the change) or,
+/// only if the change is found not valid, two (then the configuration as it is, with a time of its own, so
+/// that a change slow to fail is not taken for one that could not be checked): at most twice this, after
+/// its turn. The checker's unit stops itself sooner, each run (`RuntimeMaxSec`).
 pub const WAIT: Duration = Duration::from_secs(320);
-/// How long a proposal waits for another's check to end before it is turned away as busy.
+/// How many seconds a proposal waits for another's check to end before it is turned away as busy.
 pub const TURN: u64 = 30;
 
 /// What the checker said of one tree.
@@ -42,16 +44,21 @@ pub enum Said {
 pub const NOT_STARTED: &str = "the checker could not be started";
 pub const NOT_IN_TIME: &str = "the check did not finish in time";
 pub const NO_ANSWER: &str = "the checker gave no answer";
+/// The change was found not valid, and so was the configuration as it is: the check says nothing of the
+/// change on this machine as it is now (the checker kept from the Nix daemon, a source it cannot read, a
+/// full disk).
+pub const NOT_NOW: &str = "the check could not be made on this machine right now";
 
 /// A git tree's id, in full: 40 lowercase hex digits. The only thing put on the checker's command line.
 pub fn tree_id(s: &str) -> bool {
     s.len() == 40 && s.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
 }
 
-/// The checker's words as the ledger keeps them: one line (a control character is a `?`, as in a
-/// refusal's reason), no longer than `TEXT_MAX`.
+/// The checker's words as the ledger keeps them: one line, no longer than `TEXT_MAX`, and nothing in it
+/// that a terminal obeys or that hides text: a control character, a bidirectional control, a zero-width or
+/// other invisible character (torq-wire's one table) is a `?`.
 fn one_line(s: &str) -> String {
-    s.chars().map(|c| if c.is_control() { '?' } else { c }).take(TEXT_MAX).collect()
+    s.chars().map(|c| if torq_wire::clean::hidden(c) { '?' } else { c }).take(TEXT_MAX).collect()
 }
 
 /// The checker's line, and nothing else in it.
@@ -165,6 +172,21 @@ mod tests {
         assert!(w.iter().all(|w| w.chars().count() == TEXT_MAX && !w.contains('\n')), "{w:?}");
     }
 
+    #[test]
+    fn nothing_kept_hides_or_reorders_text() {
+        // A bidirectional override and its end, an isolate, the marks, zero-width characters, a line
+        // separator, the byte-order mark, a tag character, a variation selector, a blank-looking letter.
+        let hidden = "\u{202e}\u{202c}\u{2066}\u{2069}\u{200e}\u{200f}\u{061c}\u{200b}\u{200c}\u{200d}\u{2060}\u{2028}\u{2029}\u{feff}\u{e0041}\u{fe0f}\u{3164}\u{ad}";
+        let why = format!("a{}b", hidden.chars().map(|c| format!("{c}x")).collect::<String>());
+        let line = serde_json::json!({ "ok": false, "why": why }).to_string();
+        let Said::NotValid(kept) = parse(line.as_bytes()) else { panic!("not read") };
+        assert_eq!(kept, format!("a{}b", "?x".repeat(hidden.chars().count())));
+        let line = serde_json::json!({ "ok": true, "warnings": [format!("approved\u{202e}ton")] }).to_string();
+        assert_eq!(parse(line.as_bytes()), Said::Valid(vec!["approved?ton".into()]));
+        // What a person reads stays: accents, dashes, signs.
+        assert_eq!(one_line("é — ⚠ “x”"), "é — ⚠ “x”");
+    }
+
     fn soon(secs: u64) -> Instant {
         Instant::now() + Duration::from_secs(secs)
     }
@@ -204,5 +226,11 @@ mod tests {
         assert!(!mark.exists(), "what the checker started outlived it");
         // A checker that is not there: the shell says so on its errors, which are no answer.
         assert_eq!(run("/nonexistent/checker", soon(20)), Said::Nothing(NO_ANSWER));
+    }
+
+    #[test]
+    fn a_checker_that_cannot_be_started_is_no_answer() {
+        // A command the system refuses to start at all (a NUL in an argument): nothing ran.
+        assert_eq!(run("echo '{\"ok\":true,\"warnings\":[]}'\0", soon(20)), Said::Nothing(NOT_STARTED));
     }
 }

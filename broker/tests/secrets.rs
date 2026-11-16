@@ -636,6 +636,12 @@ fn a_grant_lets_its_secrets_uses_through_until_it_ends() {
     }
     assert!(session::grant_secret(&a.m.b, "carol", each(), 5, false).is_err(), "a person with no agent");
     assert!(session::grant_secret(&a.m.b, "alice", Covers { name: "none".into(), system: false }, 5, false).is_err(), "a secret with no rule");
+    // `allow all for <minutes>` once let the agent use every secret: someone who learned it is told it is gone,
+    // and what to type, whether they meant their own secrets or the system's.
+    for system in [false, true] {
+        let e = format!("{:#}", session::grant_secret(&a.m.b, "alice", Covers { name: "all".into(), system }, 30, false).unwrap_err());
+        assert_eq!(e, "refused: allowing every secret at once is gone. Name the one secret: request system secret allow <name> for <minutes> (show system secrets lists them)");
+    }
     assert!(a.unanswered(&a.tool("each")).contains("no one answered"), "no grant: asked");
     let g = session::grant_secret(&a.m.b, "alice", each(), 480, false).unwrap();
     assert_eq!(g.body.reason, "alice lets the agent use their secret each without asking, for 480 minutes");

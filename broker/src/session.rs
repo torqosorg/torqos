@@ -437,7 +437,11 @@ pub fn grant_secret(b: &Broker, person: &str, covers: Covers, minutes: u32, repl
     // A grant widens no rule: said here so that a person is not left thinking it did.
     let owner = if covers.system { crate::secrets::Owner::System } else { crate::secrets::Owner::Person(person.into()) };
     let rules = b.rules_of(&owner)?;
-    let rule = rules.get(&covers.name).with_context(|| format!("refused: no rule for a secret {} of {}", covers.name, if covers.system { "the system's" } else { "theirs" }))?;
+    let rule = rules.get(&covers.name).with_context(|| match covers.name.as_str() {
+        // What `allow all for <minutes>` once meant, said to someone who learned it: there is no secret of that name.
+        "all" => "refused: allowing every secret at once is gone. Name the one secret: request system secret allow <name> for <minutes> (show system secrets lists them)".to_string(),
+        name => format!("refused: no rule for a secret {name} of {}", if covers.system { "the system's" } else { "theirs" }),
+    })?;
     let named = if covers.system { b.agent_limits.agents.iter().any(|(a, p)| p == person && rule.actors.contains(a)) } else { rule.actors.iter().any(|a| a == AGENT) };
     if !named {
         bail!("refused: the rule of secret {} does not let {person}'s agent use it: a grant widens no rule", covers.name);

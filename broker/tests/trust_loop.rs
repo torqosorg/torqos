@@ -3786,7 +3786,7 @@ fn a_change_that_makes_a_secret_without_asking_is_known_for_it() {
         let taken = b.apply(down.body.seq, "alice", false).unwrap();
         let before = b.repo.head().unwrap();
         let e = format!("{:#}", b.revert(taken.body.seq, "alice").unwrap_err());
-        assert!(e.contains("without-asking again") && e.contains("asks your password"), "{e}");
+        assert!(e.contains("would once more let alice's agent use the secret gh without asking") && e.ends_with("which asks their password: request system secret approve gh without-asking user alice"), "{e}");
         assert_eq!(b.repo.head().unwrap(), before, "nothing was undone");
         // A new file that says it, and the system's rules, which never may.
         let d = write_diff(cfg.path(), "5.diff", &format!("--- /dev/null\n+++ b/users/bob/secrets.json\n@@ -0,0 +1 @@\n+{}\n", rule(unasked, "api.github.com")));
@@ -3828,7 +3828,7 @@ fn an_undo_that_would_bring_without_asking_back_is_refused_by_what_it_leaves() {
         assert!(!rules(&b).contains(unasked));
         let before = b.repo.head().unwrap();
         let e = format!("{:#}", b.revert(moved.body.seq, "alice").unwrap_err());
-        assert!(e.contains("without-asking again") && e.contains("asks your password"), "{unasked}: {e}");
+        assert!(e.contains("would once more let alice's agent use the secret") && e.contains("which asks their password: request system secret approve ") && e.ends_with(" without-asking user alice"), "{unasked}: {e}");
         assert_eq!(b.repo.head().unwrap(), before, "nothing was undone");
         assert!(!rules(&b).contains(unasked));
     }

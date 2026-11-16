@@ -21,26 +21,14 @@ pub struct Entry {
 /// Ledger text is written by whoever proposed (the agent included) and printed to a terminal:
 /// control characters (escape sequences, carriage returns, newlines), bidi overrides and invisible
 /// characters could make one entry look like another, or hide it. Show them as visible escapes.
-/// (The broker's `printable` does the same; keep the two in step.)
+/// (The broker's `printable` does the same, by the same table.)
 pub fn clean(s: &str) -> String {
     s.chars().map(|c| if hidden(c) { c.escape_unicode().to_string() } else { c.to_string() }).collect()
 }
 
-/// Characters that change what a terminal shows without being plainly visible themselves.
-pub fn hidden(c: char) -> bool {
-    c.is_control()
-        || matches!(c,
-            '\u{200b}'..='\u{200f}'     // zero-width space/joiners, LRM/RLM
-            | '\u{2028}' | '\u{2029}'   // line/paragraph separators
-            | '\u{202a}'..='\u{202e}'   // bidi embeddings and overrides
-            | '\u{2060}'..='\u{2069}'   // word joiner, invisible operators, bidi isolates
-            | '\u{061c}' | '\u{00ad}' | '\u{feff}'
-            | '\u{fe00}'..='\u{fe0f}'   // variation selectors
-            | '\u{3164}' | '\u{ffa0}' | '\u{2800}' | '\u{115f}' | '\u{1160}' // blank-looking letters
-            | '\u{e0000}'..='\u{e007f}' // tag characters
-            | '\u{e0100}'..='\u{e01ef}' // variation selectors, the supplement
-        )
-}
+/// Characters that change what a terminal shows without being plainly visible themselves: the one table,
+/// torq-wire's.
+pub use torq_wire::clean::hidden;
 
 /// A one-line summary: cleaned, runs of whitespace collapsed, at most `max` characters — so padding
 /// cannot push text onto what looks like a line of its own.

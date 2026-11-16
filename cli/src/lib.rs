@@ -403,14 +403,21 @@ fn a_kept_result_is_named_by_what_read_it() {
     assert_eq!(ssh_form(), ssh_form());
 }
 
-/// The commit's check failed: Nix's own reason, as one line. Said to a person as what is wrong and what to
-/// do (`explain_check_error`); the broker's checker says only what is wrong (checktree.rs).
+/// The commit's check failed. Said to a person as what is wrong and what to do (`explain_check_error`),
+/// whatever it failed for; the broker's checker says only what is wrong, and only where the failure is
+/// the configuration's (checktree.rs).
 #[derive(Debug)]
-pub(crate) struct NotValid(pub(crate) String);
+pub(crate) struct NotValid {
+    /// Nix's own reason, as one line.
+    pub(crate) why: String,
+    /// Set where Nix plainly failed for something other than the configuration (`nixerr::outside`): what
+    /// it was. The checker gives no verdict then.
+    pub(crate) outside: Option<&'static str>,
+}
 
 impl std::fmt::Display for NotValid {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&pkg::explain_check_error(&self.0))
+        f.write_str(&pkg::explain_check_error(&self.why))
     }
 }
 
@@ -435,7 +442,8 @@ fn eval_config(copy: &Path, what: &str, log: &Path, live: bool, check: bool) -> 
         // The whole of nix's explanation is in the log; the screen gets one clear sentence.
         let why = history::one_line(&last_error(&out.stderr), 300);
         if check {
-            return Err(NotValid(why).into());
+            let outside = nixerr::outside(out.status.code(), &String::from_utf8_lossy(&out.stderr));
+            return Err(NotValid { why, outside }.into());
         }
         bail!("cannot read the SSH settings: {why}");
     }

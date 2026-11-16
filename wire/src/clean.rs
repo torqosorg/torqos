@@ -25,20 +25,30 @@ pub fn clean(s: &str) -> String {
             },
             '\u{9b}' => skip_csi(&mut it),
             '\u{90}' | '\u{98}' | '\u{9d}' | '\u{9e}' | '\u{9f}' => skip_string(&mut it),
-            c if c.is_control() => {}
-            // Bidirectional overrides, embeddings and isolates; the marks (LRM, RLM, ALM); zero-width and
-            // invisible characters; the line and paragraph separators; the byte-order mark.
-            '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}' | '\u{200e}' | '\u{200f}' | '\u{061c}' => {}
-            '\u{200b}'..='\u{200d}' | '\u{2060}'..='\u{2064}' | '\u{2028}' | '\u{2029}' | '\u{feff}' => {}
-            // What hides text without a control: the tag characters, which
-            // can spell instructions no one sees; both blocks of variation selectors; the soft hyphen; the letters
-            // that draw as blank. torqcli's `history::hidden` is the same set, shown escaped there.
-            '\u{e0000}'..='\u{e007f}' | '\u{fe00}'..='\u{fe0f}' | '\u{e0100}'..='\u{e01ef}' | '\u{ad}' => {}
-            '\u{3164}' | '\u{ffa0}' | '\u{2800}' | '\u{115f}' | '\u{1160}' => {}
+            // Every other control character, and what changes what is shown without being seen itself.
+            c if hidden(c) => {}
             c => out.push(c),
         }
     }
     out
+}
+
+/// Characters that change what a terminal shows without being plainly visible themselves: the one table,
+/// for what is removed here (`clean`), what torqcli and the broker show escaped (torqcli's
+/// `history::clean`, the broker's `printable`) and what the broker replaces in a checker's words.
+pub fn hidden(c: char) -> bool {
+    c.is_control()
+        || matches!(c,
+            '\u{200b}'..='\u{200f}'     // zero-width space/joiners, LRM/RLM
+            | '\u{2028}' | '\u{2029}'   // line/paragraph separators
+            | '\u{202a}'..='\u{202e}'   // bidi embeddings and overrides
+            | '\u{2060}'..='\u{2069}'   // word joiner, invisible operators, bidi isolates
+            | '\u{061c}' | '\u{00ad}' | '\u{feff}'
+            | '\u{fe00}'..='\u{fe0f}'   // variation selectors
+            | '\u{3164}' | '\u{ffa0}' | '\u{2800}' | '\u{115f}' | '\u{1160}' // blank-looking letters
+            | '\u{e0000}'..='\u{e007f}' // tag characters
+            | '\u{e0100}'..='\u{e01ef}' // variation selectors, the supplement
+        )
 }
 
 /// A control sequence's parameters and intermediates, through its final character (0x40–0x7e).
