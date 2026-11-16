@@ -3819,7 +3819,8 @@ content at the next), and a proposal must be judged on what it does, not on what
      the agent's service (`BindReadOnlyPaths`) and under `torq agent run`, which `claude` typed plainly is.
      A person's own Claude Code sees an `/etc/claude-code` with a note in it and no settings. The same
      values are in the environment of every program run as an agent (`ANTHROPIC_BASE_URL`, `HTTPS_PROXY`,
-     `NO_PROXY`). Tried with the real Claude Code: the managed file's values were used although the
+     `NO_PROXY`): the launcher sets them, and the bridge, which makes the engine's environment from
+     nothing, passes on those names and no other from its unit. Tried with the real Claude Code: the managed file's values were used although the
      environment named another address. **This is advice; 6 and 7 are the enforcement:** a program that
      ignores it reaches nothing.
   9. **No agent can change any of it.** The settings are `torq.*`, which is never an agent's to propose

@@ -2066,6 +2066,10 @@ Its §5 lists claims without a test.
      `networking` in `torq.agent.mayPropose.settings`, an agent could propose a packet filter that empties
      every table (`networking.nftables.flushRuleset`; the assertion refuses that one) or one that changes
      the rules another way. A person would have to approve it. Not reachable with the default list.
+   - **A program already running under `torq agent run` is not ended if an administrator takes the fence
+     down** (`systemctl stop torq-agent-network`): the agents' services stop with it and nothing new starts
+     as an agent, but a session at a terminal goes on, with the network. A reload that fails leaves the
+     rules that were there.
    - **Lines can be lost when the record cannot be written.** The proxy refuses everything for a person
      whose record it cannot write, but the requests under way at that moment have passed: they are counted
      in a line when writing works again, not recovered. A proxy that is killed loses the lines of the
