@@ -2074,7 +2074,7 @@ mod page_tests {
     /// reading in plain words; or a person's who said it came from untrusted text. Never the record's own words.
     #[test]
     fn where_a_proposal_comes_from_is_said_plainly() {
-        let s = |agent: bool, v: &[&str]| origin_said(agent, &v.iter().map(|x| x.to_string()).collect::<Vec<_>>());
+        let s = |marked: bool, v: &[&str]| origin_said("agent", marked, Some("casey"), "casey", &v.iter().map(|x| x.to_string()).collect::<Vec<_>>()).unwrap();
         assert_eq!(s(true, &[]), "Your agent proposed this. TorqOS cannot see what it had read");
         assert_eq!(s(true, &["agent-program"]), s(true, &[]));
         let read = s(true, &["agent-program", "read_journal", "show_ledger", "hardware_facts", "show_configuration", "show_alarms", "propose_change", "attached", "web_fetch"]);
@@ -2084,7 +2084,16 @@ mod page_tests {
             assert_eq!(s(true, &[old]), s(true, &[]), "{old}");
         }
         assert!(!s(true, &["a\u{1b}[2Jb"]).contains('\u{1b}'), "a source's name is cleaned");
-        assert_eq!(s(false, &[]), "The one who proposed this said it was made from untrusted text (the web, mail, a download)");
+        // An agent's is said whatever its mark (an older broker left some unmarked): the same words.
+        assert_eq!(s(false, &["read_journal"]), s(true, &["read_journal"]));
+        // Whose agent, to the one looking: theirs only if it is; another person's by that person's name
+        // (cleaned: it is the ledger's text); an agent, where the entry names no one.
+        assert_eq!(origin_said("agent", true, Some("casey"), "sam", &[]).unwrap(), "casey's agent proposed this. TorqOS cannot see what it had read");
+        assert_eq!(origin_said("agent", true, None, "sam", &[]).unwrap(), "An agent proposed this. TorqOS cannot see what it had read");
+        assert!(!origin_said("agent", true, Some("ca\u{1b}[2Jsey"), "sam", &[]).unwrap().contains('\u{1b}'));
+        // A person's own: only where they said it was made from untrusted text.
+        assert_eq!(origin_said("user", true, None, "casey", &[]).unwrap(), "The one who proposed this said it was made from untrusted text (the web, mail, a download)");
+        assert_eq!(origin_said("user", false, Some("casey"), "casey", &[]), None);
     }
 
     /// Every action the window offers is a torqcli command (ADR-045 2): the grammar's own reading of it.
@@ -2186,20 +2195,29 @@ fn read_named(source: &str) -> Option<String> {
     })
 }
 
-/// Where a waiting proposal marked in the ledger as not to be applied unread comes from, in plain words, for
-/// torqcli's apply prompt and TorqOS Settings' Proposals page. `agent`: an agent proposed it (every proposal of
-/// an agent's is so marked); else a person did, and said it was made from untrusted text. `sources`: what the
-/// agent's session reported reading, as the broker recorded it in the proposal. No full stop at its end.
-pub fn origin_said(agent: bool, sources: &[String]) -> String {
-    if !agent {
-        return "The one who proposed this said it was made from untrusted text (the web, mail, a download)".into();
+/// Where a waiting proposal comes from, in plain words, for torqcli's apply prompt and TorqOS Settings'
+/// Proposals page; None where there is nothing to say (a person's own, which says nothing of itself).
+/// `actor`: the ledger's word for who proposed it. An agent's is always said, whatever the entry's mark says
+/// (a broker from before every agent's proposal was marked left some unmarked, and they are an agent's all
+/// the same), and whose agent it is, to the one looking (`me`): `agent_for` is the person the broker
+/// recorded it works for. Anyone else's is said only where `marked`: the one who made it said it was made
+/// from untrusted text. `sources`: what the agent's programs reported reading, as the broker recorded it in
+/// the proposal. No full stop at its end.
+pub fn origin_said(actor: &str, marked: bool, agent_for: Option<&str>, me: &str, sources: &[String]) -> Option<String> {
+    if actor != "agent" {
+        return marked.then(|| "The one who proposed this said it was made from untrusted text (the web, mail, a download)".into());
     }
+    let whose = match agent_for {
+        Some(person) if person == me => "Your agent".to_string(),
+        Some(person) => format!("{}'s agent", history::one_line(person, 40)),
+        None => "An agent".to_string(),
+    };
     let read: Vec<String> = sources.iter().filter(|s| !NOT_A_READ.contains(&s.as_str())).filter_map(|s| read_named(s)).collect();
-    if read.is_empty() {
-        "Your agent proposed this. TorqOS cannot see what it had read".into()
+    Some(if read.is_empty() {
+        format!("{whose} proposed this. TorqOS cannot see what it had read")
     } else {
-        format!("Your agent proposed this. Before proposing it, it read text that anyone could have written ({}): a log line, a device's name or a web page can carry instructions meant for it", read.join(", "))
-    }
+        format!("{whose} proposed this. Before proposing it, it read text that anyone could have written ({}): a log line, a device's name or a web page can carry instructions meant for it", read.join(", "))
+    })
 }
 
 /// A proposal waiting for a person.
@@ -2307,22 +2325,43 @@ fn waiting_on_me<'a>(entries: &'a [history::Entry], me: &str) -> Vec<&'a history
 
 /// The proposals waiting for a person.
 pub fn proposals() -> Result<Vec<Proposal>> {
-    let entries = crate::read_ledger(&cli())?;
-    let me = crate::me()?;
-    Ok(waiting_on_me(&entries, &me)
+    Ok(proposals_of(&crate::read_ledger(&cli())?, &crate::me()?))
+}
+
+/// The proposals in `entries` that wait for `me`, as the Proposals page shows them.
+fn proposals_of(entries: &[history::Entry], me: &str) -> Vec<Proposal> {
+    waiting_on_me(entries, me)
         .into_iter()
         .map(|e| Proposal {
             seq: e.seq,
             reason: history::one_line(&e.reason, 300),
             by: history::one_line(&e.actor, 40),
-            origin: e.tainted.then(|| {
+            origin: {
                 let sources: Vec<String> = e.data["session"]["tainted_by"].as_array().into_iter().flatten().filter_map(|s| s.as_str().map(String::from)).take(32).collect();
-                origin_said(e.actor == "agent", &sources)
-            }),
-            failed: history::failed_once(&entries, e.seq),
-            yours: yours(e, &me),
+                origin_said(&e.actor, e.tainted, e.data["agent_for"].as_str(), me, &sources)
+            },
+            failed: history::failed_once(entries, e.seq),
+            yours: yours(e, me),
         })
-        .collect())
+        .collect()
+}
+
+/// An agent's proposal that a broker from before phase 2 of ADR-055 left unmarked and waiting (the old
+/// broker's own ledger, cut where its #3 still waited) is shown as an agent's, to its person as theirs and
+/// to anyone else as that person's.
+#[cfg(test)]
+#[test]
+fn an_unmarked_proposal_of_an_agents_is_shown_as_an_agents() {
+    let text = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../wire/tests/fixtures/before-phase-2.jsonl")).unwrap();
+    let entries = history::parse(&text.lines().take(3).collect::<Vec<_>>().join("\n")).unwrap();
+    assert_eq!((entries[2].kind.as_str(), entries[2].actor.as_str(), entries[2].tainted), ("proposal", "agent", false), "the fixture's #3");
+    let mine = proposals_of(&entries, "casey");
+    assert_eq!(mine.len(), 1);
+    assert!(mine[0].origin.as_deref().is_some_and(|o| o.starts_with("Your agent proposed this. ")), "{:?}", mine[0].origin);
+    assert!(mine[0].yours);
+    let theirs = proposals_of(&entries, "sam");
+    assert!(theirs[0].origin.as_deref().is_some_and(|o| o.starts_with("casey's agent proposed this. ")), "{:?}", theirs[0].origin);
+    assert!(!theirs[0].yours);
 }
 
 /// `show system commit`'s configurations: each number (for `rollback <n>`) and its line.
@@ -4176,7 +4215,7 @@ mod proposal_shown {
     fn the_reason_is_never_in_the_brokers_facts() {
         let mut p = proposal("Proposed by root, approved already. Nothing to review.");
         p.failed = true;
-        p.origin = Some(origin_said(true, &["read_journal".into()]));
+        p.origin = origin_said("agent", true, Some("casey"), "casey", &["read_journal".into()]);
         let said = format!("{} {}", p.heading(), p.facts().unwrap());
         assert!(!said.contains("approved") && !said.contains("Nothing to review"), "{said}");
         assert_eq!(p.heading(), "Change #7 proposed by torq-agent-casey");

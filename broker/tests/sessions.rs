@@ -255,11 +255,11 @@ fn what_could_cut_the_machine_off_is_applied_confirmed() {
     assert!(mine.body.data.get("cuts_off").is_none());
 }
 
-/// A commit at never takes an agent's proposal: it is read and applied by a person who is there. Nor (the
-/// review of w5) one that could cut the machine off, which an agent's proposal left clean in a ledger from
-/// before phase 2 of ADR-055 still could be: no one is there to confirm.
+/// A commit at never takes an agent's proposal: it is read and applied by a person who is there. That holds
+/// for one an older broker recorded unmarked too (from the old loop's resident agent, before phase 2 of
+/// ADR-055), whatever it changes: it is an agent's by who proposed it, not by its mark.
 #[test]
-fn a_commit_at_refuses_an_agents_proposal_and_what_could_cut_the_machine_off() {
+fn a_commit_at_refuses_an_agents_proposal_marked_or_not() {
     let (dir, b) = setup(&["networking"]);
     let s = session::start(&b).unwrap();
     let wifi = diff(dir.path(), "w.diff", "nixos/networking.json", "{\"wireless\": {\"enable\": true}}");
@@ -268,13 +268,40 @@ fn a_commit_at_refuses_an_agents_proposal_and_what_could_cut_the_machine_off() {
     let sched = torq_broker::at::Scheduler::new(&b, "true", "true");
     let err = format!("{:#}", sched.schedule(p.body.seq, "casey", &at).unwrap_err());
     assert!(err.contains("is an agent's"), "{err}");
-    // As an older broker wrote one from the resident agent: not tainted, and it could cut the machine off.
+    let old = unmarked(&b, &p);
+    let err = format!("{:#}", sched.schedule(old.body.seq, "casey", &at).unwrap_err());
+    assert!(err.contains("is an agent's") && err.contains("not at a set time"), "{err}");
+    assert_eq!(kinds(&b, "apply_scheduled"), 0);
+}
+
+/// Proposal `p` of an agent's, entered again as a broker from before phase 2 of ADR-055 recorded one whose
+/// session had read nothing untrusted: the same entry, unmarked (`tainted: false`), with the old word.
+fn unmarked(b: &Broker, p: &torq_broker::ledger::Entry) -> torq_broker::ledger::Entry {
     let mut data = p.body.data.clone();
     data["resident"] = true.into();
-    let old = b.ledger.append(NewEntry { actor: "agent".into(), approved_by: None, kind: "proposal".into(), tier: p.body.tier.clone(), tainted: false, reason: "wifi".into(), data }).unwrap();
-    let err = format!("{:#}", sched.schedule(old.body.seq, "casey", &at).unwrap_err());
-    assert!(err.contains("could lose the network or the screen"), "{err}");
-    assert_eq!(kinds(&b, "apply_scheduled"), 0);
+    b.ledger.append(NewEntry { actor: "agent".into(), approved_by: None, kind: "proposal".into(), tier: p.body.tier.clone(), tainted: false, reason: p.body.reason.clone(), data }).unwrap()
+}
+
+/// An agent's proposal that an older broker recorded unmarked, and that still waits, is an agent's all the
+/// same: it is applied only by a person who says they read it. The old broker's own ledger has such an entry
+/// (its #3 in `before-phase-2.jsonl`); here one waits on a machine, and its apply is refused without the
+/// person's word and goes through with it.
+#[test]
+fn an_unmarked_proposal_of_an_agents_is_applied_only_by_one_who_read_it() {
+    let text = fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../wire/tests/fixtures/before-phase-2.jsonl")).unwrap();
+    let third: torq_broker::ledger::Entry = serde_json::from_str(text.lines().nth(2).unwrap()).unwrap();
+    assert_eq!((third.body.kind.as_str(), third.body.actor.as_str(), third.body.tainted), ("proposal", "agent", false), "the fixture's #3");
+    assert!(torq_broker::read_first(&third), "an agent's, whatever its mark");
+    let (dir, b) = setup(&[]);
+    let own = propose(&b, &diff(dir.path(), "p.diff", "users/sam/packages.json", "[\"jq\"]"), Actor::User, false, None).unwrap();
+    assert!(!torq_broker::read_first(&own), "a person's own, unmarked, is not");
+    let p = propose(&b, &htop(dir.path()), Actor::Agent, false, None).unwrap();
+    let old = unmarked(&b, &p);
+    let err = format!("{:#}", b.apply(old.body.seq, "casey", false).unwrap_err());
+    assert!(err.contains("is an agent's") && err.contains("--confirm-tainted"), "{err}");
+    assert_eq!(kinds(&b, "applied"), 0);
+    let applied = b.apply(old.body.seq, "casey", true).unwrap();
+    assert_eq!((applied.body.kind.as_str(), applied.body.data["proposal"].as_u64()), ("applied", Some(old.body.seq)));
 }
 
 /// Phase 2 of ADR-055: session trust is gone. A grant of it that an older broker ledgered, still inside its
@@ -359,9 +386,13 @@ fn a_ledger_from_before_phase_2_verifies_and_its_trust_grants_nothing() {
     assert_eq!((last.body.kind.as_str(), last.body.data["covers"].as_str()), ("trust_granted", Some("proposals")), "a grant left standing");
     assert!(session::unsettled(&entries).is_empty(), "it is no grant now, whatever time it is");
     let s = session::start(&b).unwrap();
-    let p = b.propose_in(None, &htop(dir.path()), "install htop", Actor::Agent, false, Some(&s.id));
-    // (Refused or taken, as this scratch machine's repository has it: either way nothing is applied.)
+    // This scratch machine's repository is not the one the old ledger speaks of, so a proposal here is refused
+    // (what a standing grant from before lets through on a machine of its own is the test above). The refusal is
+    // this broker's entry after the old ones: the one new entry, and the chain still verifies.
+    let err = format!("{:#}", propose(&b, &htop(dir.path()), Actor::Agent, false, Some(&s.id)).unwrap_err());
+    assert!(err.contains("not the last ledgered commit"), "{err}");
     let after = b.ledger.read_all().unwrap();
-    assert!(after.iter().skip(entries.len()).all(|e| e.body.kind != "applied" && e.body.kind != "trust_expired"), "{p:?}");
+    assert_eq!(after.len(), entries.len() + 1, "one entry more");
+    assert_eq!((after.last().unwrap().body.kind.as_str(), after.last().unwrap().body.tainted), ("refused", true));
     b.ledger.verify().unwrap();
 }

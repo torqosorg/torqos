@@ -200,12 +200,8 @@ impl<'a> Scheduler<'a> {
             bail!("refused: proposal {proposal_seq} was declined (#{}): it is never applied", d.body.seq);
         }
         // Read step by step, by the person, at the time: not something to leave to a timer.
-        if p.body.tainted {
+        if crate::read_first(&p) {
             bail!("refused: proposal {proposal_seq} is an agent's, or was made from untrusted text: it is read and applied by a person who is there, not at a set time");
-        }
-        // One that could cut the machine off is applied as a commit confirmed: no one is there at its time to confirm.
-        if crate::session::cuts_off(&p).is_some() {
-            bail!("refused: proposal {proposal_seq} could lose the network or the screen: it is applied confirmed, by a person who is there");
         }
         // Refused now, not at its time (where applying checks it again).
         crate::policy::check_secret_rules(p.body.data["files"].as_array().into_iter().flatten().filter_map(|f| f.as_str()), approved_by)?;

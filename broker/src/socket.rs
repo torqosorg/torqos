@@ -680,8 +680,10 @@ mod tests {
         assert!(!OBSERVE.contains(&"trust"));
         for cmd in ["trust-grant", "trust-revoke", "trust"] {
             assert!(matches!(gate(&a, cmd, None, None), Gate::Refused(_)), "the agent: {cmd}");
-            // A person's request for it reaches the broker with nothing added, where it is no command at all.
-            assert_eq!(with_identity(&[cmd.to_string()], cmd, &who(1001), None, None, None).unwrap(), [cmd]);
+            // A person's is refused at the gate too, an administrator's included: it never reaches the broker.
+            for uid in [1000, 1001] {
+                assert_eq!(gate(&who(uid), cmd, None, None), Gate::Refused(format!("`{cmd}` is not run over the socket (it is the machine's own, as root)")), "{cmd} {uid}");
+            }
         }
     }
 

@@ -257,6 +257,8 @@ fn describe(entries: &[Entry], e: &Entry) -> (&'static str, String) {
         "snapshot_taken" | "snapshot_deleted" => ("✓", clean(&e.reason)),
         "snapshot_delete_failed" => ("✗", clean(&e.reason)),
         "trust_revoked" | "trust_expired" => ("·", clean(&e.reason)),
+        // A grant an earlier TorqOS gave and this one honours nowhere: said as that, not as a promise that holds.
+        "trust_granted" if from_before(e) => ("·", format!("{} (an earlier TorqOS; it no longer holds: every change your agent proposes waits for you)", clean(&e.reason))),
         "trust_granted" => ("⚠", clean(&e.reason)),
         "ledger_mended" => ("⚠", clean(&e.reason)),
         "disagreement_acknowledged" => ("✓", clean(&e.reason)),
@@ -270,6 +272,13 @@ fn describe(entries: &[Entry], e: &Entry) -> (&'static str, String) {
         other if e.reason.is_empty() => ("·", other.to_string()),
         _ => ("·", clean(&e.reason)),
     }
+}
+
+/// Whether a grant on the record (`trust_granted`) is one no broker gives or honours any more: leave for the
+/// agent's proposals to apply without asking, as brokers before phase 2 of ADR-055 ledgered it (`covers:
+/// proposals`, or, older still, no `covers` at all).
+fn from_before(e: &Entry) -> bool {
+    matches!(e.data["covers"].as_str(), None | Some("proposals"))
 }
 
 /// Who asked for a change. The broker writes failure and interruption entries itself, so for those
@@ -399,6 +408,25 @@ mod tests {
         parse(&lines.join("\n")).unwrap()
     }
 
+
+    /// A grant of trust in the agent's proposals, as the broker before phase 2 of ADR-055 ledgered it (its own
+    /// fixture), is history: the row says it no longer holds. A grant of today's kind reads as it is written.
+    #[test]
+    fn a_grant_from_before_is_said_to_hold_no_longer() {
+        let text = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../wire/tests/fixtures/before-phase-2.jsonl")).unwrap();
+        let l = parse(&text).unwrap();
+        let old: Vec<&Entry> = l.iter().filter(|e| e.kind == "trust_granted").collect();
+        assert!(!old.is_empty(), "the fixture has grants");
+        for g in old {
+            let (symbol, text) = describe(&l, g);
+            assert_eq!(symbol, "·", "not something to look at now");
+            assert!(text.starts_with("casey lets the agent's proposals in their own folder apply without asking") && text.ends_with("(an earlier TorqOS; it no longer holds: every change your agent proposes waits for you)"), "{text}");
+        }
+        let older = parse(r#"{"seq":2,"ts":"2026-11-10T12:00:00Z","kind":"trust_granted","actor":"user","tier":"user","reason":"casey trusts the agent for 60 minutes","data":{"person":"casey"}}"#).unwrap();
+        assert!(describe(&older, &older[0]).1.contains("it no longer holds"), "before grants said what they cover");
+        let now = parse(r#"{"seq":2,"ts":"2026-11-10T12:00:00Z","kind":"trust_granted","actor":"user","tier":"user","reason":"casey lets the agent use their secret gh without asking, for 10 minutes","data":{"person":"casey","covers":"secret gh"}}"#).unwrap();
+        assert_eq!(describe(&now, &now[0]), ("⚠", "casey lets the agent use their secret gh without asking, for 10 minutes".to_string()));
+    }
 
     /// The broker's own `declined` (wire/tests/fixtures/declined.jsonl, written by the broker): torqcli reads
     /// it, the proposal no longer waits, and the history says it was declined.

@@ -571,12 +571,6 @@ pub fn revoke_secrets(b: &Broker, person: &str, which: &Ending) -> Result<Vec<En
     active(&b.ledger.read_all()?).iter().filter(|g| g.person == person && theirs(g)).map(|g| revoke_locked(b, g)).collect()
 }
 
-/// What of proposal `p` could cut the machine off, if anything (`cuts_off`, recorded when proposed).
-pub fn cuts_off(p: &Entry) -> Option<Vec<String>> {
-    let c: Vec<String> = p.body.data["cuts_off"].as_array()?.iter().filter_map(|s| s.as_str().map(String::from)).collect();
-    (!c.is_empty()).then_some(c)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

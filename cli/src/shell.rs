@@ -635,7 +635,6 @@ impl Machine for Real<'_> {
         let p = done(run::broker_json(broker(self.cli, &["show", &seq_s])?, &log)?, "apply")?;
         // The entry as the ledger has it: its fields at the top (the broker flattens its body).
         let body = &p;
-        let tainted = body["tainted"].as_bool().unwrap_or(false);
         let files: Vec<String> = body["data"]["files"].as_array().into_iter().flatten().filter_map(|f| f.as_str()).map(|f| history::one_line(f, 80)).collect();
         let by = body["data"]["caller"].as_str().or(body["actor"].as_str()).unwrap_or("?");
         // What the change does, as the broker had git write it when it was proposed — never the
@@ -653,13 +652,13 @@ impl Machine for Real<'_> {
             history::one_line(body["ts"].as_str().unwrap_or_default(), 25),
             files.join(", "),
         );
-        let (why, confirm) = apply_warning(body);
+        let (why, confirm) = apply_warning(body, me);
         if let Some(stop) = self.ask(&format!("{what}{why}Apply? ")).go_on("applied")? {
             return Ok(stop);
         }
         let minutes = confirm.map(|m| m.to_string());
         let mut args = vec!["apply", &seq_s, "--approved-by", me];
-        if tainted {
+        if read_first(body) {
             args.push("--confirm-tainted"); // asked just now, in words
         }
         if let Some(m) = &minutes {
@@ -1199,14 +1198,31 @@ fn agent_session(var: Option<String>) -> Option<String> {
     var.filter(|s| s.len() == 32 && s.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)))
 }
 
+/// Whether the broker applies proposal `body` only from one who says they read it (its `--confirm-tainted`):
+/// one the ledger marks, and every proposal of an agent's, marked or not (the broker's own rule, `read_first`).
+/// torqcli shows the change and asks in words before it says so.
+fn read_first(body: &serde_json::Value) -> bool {
+    body["tainted"].as_bool().unwrap_or(false) || body["actor"] == "agent"
+}
+
+#[test]
+fn an_agents_proposal_is_applied_as_read_marked_or_not() {
+    use serde_json::json;
+    assert!(read_first(&json!({"actor": "agent", "tainted": true})));
+    assert!(read_first(&json!({"actor": "agent", "tainted": false})), "as an older broker left one");
+    assert!(read_first(&json!({"actor": "user", "tainted": true})));
+    assert!(!read_first(&json!({"actor": "user", "tainted": false})));
+}
+
 /// What a person is told before applying a proposal, and the minutes of the commit confirmed it is
 /// applied as, if it could cut the machine off (ADR-042, 6).
-fn apply_warning(body: &serde_json::Value) -> (String, Option<u32>) {
+fn apply_warning(body: &serde_json::Value, me: &str) -> (String, Option<u32>) {
     let mut why = String::new();
-    if body["tainted"].as_bool().unwrap_or(false) {
-        // What its session reported reading, as the broker recorded it in the proposal's own entry.
-        let sources: Vec<String> = body["data"]["session"]["tainted_by"].as_array().into_iter().flatten().filter_map(|s| s.as_str().map(String::from)).collect();
-        why.push_str(&crate::app::origin_said(body["actor"] == "agent", &sources));
+    // What its programs reported reading, as the broker recorded it in the proposal's own entry.
+    let sources: Vec<String> = body["data"]["session"]["tainted_by"].as_array().into_iter().flatten().filter_map(|s| s.as_str().map(String::from)).collect();
+    let marked = body["tainted"].as_bool().unwrap_or(false);
+    if let Some(origin) = crate::app::origin_said(body["actor"].as_str().unwrap_or_default(), marked, body["data"]["agent_for"].as_str(), me, &sources) {
+        why.push_str(&origin);
         why.push_str(". Judge the change itself, shown above, not the reason given for it. ");
     }
     let cuts: Vec<String> = body["data"]["cuts_off"].as_array().into_iter().flatten().filter_map(|s| s.as_str()).map(|s| history::one_line(s, 80)).collect();
@@ -1231,29 +1247,37 @@ const CUTS_OFF_MINUTES: u32 = 10;
 #[test]
 fn a_person_is_told_why_before_applying() {
     use serde_json::json;
-    let (w, c) = apply_warning(&json!({"tier": "user", "tainted": false, "actor": "agent", "data": {}}));
+    let (w, c) = apply_warning(&json!({"tier": "user", "tainted": false, "actor": "user", "data": {}}), "casey");
     assert_eq!((w.as_str(), c), ("", None));
     // An agent's: said so, with what it reported reading in plain words; never the record's own words.
-    let (w, c) = apply_warning(&json!({"tier": "user", "tainted": true, "actor": "agent", "data": {"session": {"id": "s", "tainted_by": ["agent-program", "read_journal", "show_ledger"]}}}));
+    let (w, c) = apply_warning(&json!({"tier": "user", "tainted": true, "actor": "agent", "data": {"agent_for": "casey", "session": {"id": "s", "tainted_by": ["agent-program", "read_journal", "show_ledger"]}}}), "casey");
     assert_eq!(w, "Your agent proposed this. Before proposing it, it read text that anyone could have written (the system's log, the record of changes): a log line, a device's name or a web page can carry instructions meant for it. Judge the change itself, shown above, not the reason given for it. ");
     assert!(c.is_none());
-    let (w, _) = apply_warning(&json!({"tier": "user", "tainted": true, "actor": "agent", "data": {}}));
+    let (w, _) = apply_warning(&json!({"tier": "user", "tainted": true, "actor": "agent", "data": {"agent_for": "casey"}}), "casey");
     assert_eq!(w, "Your agent proposed this. TorqOS cannot see what it had read. Judge the change itself, shown above, not the reason given for it. ");
+    // To anyone else it is that person's agent, never "your"; with no person recorded, an agent.
+    let (w, _) = apply_warning(&json!({"tier": "user", "tainted": true, "actor": "agent", "data": {"agent_for": "casey"}}), "sam");
+    assert_eq!(w, "casey's agent proposed this. TorqOS cannot see what it had read. Judge the change itself, shown above, not the reason given for it. ");
+    let (w, _) = apply_warning(&json!({"tier": "user", "tainted": true, "actor": "agent", "data": {}}), "casey");
+    assert!(w.starts_with("An agent proposed this. "), "{w}");
+    // One an older broker left unmarked is an agent's all the same: said, as any agent's is.
+    let (w, _) = apply_warning(&json!({"tier": "user", "tainted": false, "actor": "agent", "data": {"agent_for": "casey"}}), "casey");
+    assert!(w.starts_with("Your agent proposed this. TorqOS cannot see what it had read. Judge"), "{w}");
     // As an older broker recorded one (its words for the old loop, a coding tool, a model): the same sentence.
     for old in [json!(["not-the-resident-agent", "coding-tool"]), json!(["local-tcp-model"]), json!(["not-the-resident-agent"])] {
-        let (w, _) = apply_warning(&json!({"tier": "user", "tainted": true, "actor": "agent", "data": {"session": {"id": "s", "tainted_by": old}}}));
+        let (w, _) = apply_warning(&json!({"tier": "user", "tainted": true, "actor": "agent", "data": {"agent_for": "casey", "session": {"id": "s", "tainted_by": old}}}), "casey");
         assert!(w.starts_with("Your agent proposed this. TorqOS cannot see what it had read. Judge"), "{w}");
         assert!(!w.contains("resident") && !w.contains("coding-tool") && !w.contains("model") && !w.contains("taint"), "{w}");
     }
     // A person's own, who said it came from untrusted text.
-    let (w, _) = apply_warning(&json!({"tier": "user", "tainted": true, "actor": "user", "data": {}}));
+    let (w, _) = apply_warning(&json!({"tier": "user", "tainted": true, "actor": "user", "data": {}}), "casey");
     assert!(w.starts_with("The one who proposed this said it was made from untrusted text (the web, mail, a download). Judge"), "{w}");
-    let (w, c) = apply_warning(&json!({"tier": "system", "tainted": false, "actor": "agent", "data": {"cuts_off": ["networking.wireless.enable"]}}));
+    let (w, c) = apply_warning(&json!({"tier": "system", "tainted": false, "actor": "user", "data": {"cuts_off": ["networking.wireless.enable"]}}), "casey");
     assert!(w.contains("networking.wireless.enable") && w.contains("commit confirmed"), "{w}");
     assert_eq!(c, Some(CUTS_OFF_MINUTES));
-    let (w, _) = apply_warning(&json!({"tier": "user", "tainted": false, "actor": "user", "data": {"standing": ["users/dev/secrets.json: gh"]}}));
+    let (w, _) = apply_warning(&json!({"tier": "user", "tainted": false, "actor": "user", "data": {"standing": ["users/dev/secrets.json: gh"]}}), "casey");
     assert_eq!(w, "THE AGENT WILL USE secret gh (users/dev/secrets.json) WITHOUT ASKING, EVEN FROM A SESSION THAT READ UNTRUSTED TEXT. ");
-    let (w, _) = apply_warning(&json!({"tier": "system", "tainted": false, "actor": "user", "data": {}}));
+    let (w, _) = apply_warning(&json!({"tier": "system", "tainted": false, "actor": "user", "data": {}}), "casey");
     assert!(w.contains("all users"));
     assert_eq!(agent_session(Some("a".repeat(32))), Some("a".repeat(32)));
     for bad in ["A".repeat(32), "a".repeat(31), format!("{}; x", "a".repeat(29)), String::new()] {
@@ -1539,10 +1563,35 @@ fn agent_session_command(args: &[String]) -> Result<i32> {
     Ok(0)
 }
 
+/// What is said of a command that went with TorqOS's own agent loop (ADR-055, phase 2), in one line with
+/// what to use now: a person who types what they learned is told, not shown a usage text for something else.
+fn removed_command(args: &[String]) -> Option<&'static str> {
+    match (args.first().map(String::as_str), args.get(1).map(String::as_str)) {
+        (Some("doctor"), _) => Some("`torq doctor` was removed: ask your agent instead (torq ask \"<question>\")"),
+        (Some("agent"), Some("propose")) => Some("`torq agent propose` was removed: your agent proposes a change itself when you ask it for one (torq ask \"<what you want>\"), and you approve it (request system apply <n>)"),
+        _ => None,
+    }
+}
+
+#[test]
+fn a_removed_command_says_what_to_use() {
+    let said = |line: &str| removed_command(&line.split(' ').map(String::from).collect::<Vec<_>>());
+    for line in ["doctor", "doctor why is wifi flaky", "agent propose install htop"] {
+        let s = said(line).unwrap_or_else(|| panic!("{line}: not said"));
+        assert!(s.contains("was removed") && s.contains("torq ask") && !s.contains('\n') && !s.contains("usage"), "{line}: {s}");
+    }
+    for line in ["agent run", "agent claude", "ask doctor", "show system ledger", "agent"] {
+        assert_eq!(said(line), None, "{line}");
+    }
+}
+
 fn run_shell(args: &[String]) -> Result<i32> {
     // First-boot setup (the image's console, as root): its own program, not a shell.
     if args == ["setup"] {
         return crate::setup::run().map(|()| 0);
+    }
+    if let Some(gone) = removed_command(args) {
+        bail!("{gone}");
     }
     // The ISO installer (its console, as root, ADR-031): its own program too.
     if args.first().map(String::as_str) == Some("break-glass") {

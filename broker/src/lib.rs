@@ -183,6 +183,14 @@ pub struct PendingConfirm {
     reason: String,
 }
 
+/// Whether proposal `p` is applied only by a person who has read it and says so, and never at a set time:
+/// one the ledger marks (`tainted`), and every proposal of an agent's whatever its mark says. A broker from
+/// before phase 2 of ADR-055 recorded an agent's proposal unmarked where its session had read nothing
+/// untrusted; one of those still waiting is an agent's all the same.
+pub fn read_first(p: &Entry) -> bool {
+    p.body.tainted || p.body.actor == "agent"
+}
+
 fn pending_confirm(entries: &[Entry]) -> Option<PendingConfirm> {
     let a = entries.iter().rev().find(|e| e.body.kind == "applied" && e.body.data.get("confirm").is_some())?;
     let seq = a.body.seq;
@@ -2984,7 +2992,7 @@ impl Broker {
         if let Some(d) = self.find_child("declined", "proposal", proposal_seq)? {
             bail!("refused: proposal {proposal_seq} was declined by {} (#{}): it is never applied; propose it again", d.body.approved_by.as_deref().unwrap_or("a person"), d.body.seq);
         }
-        if p.body.tainted && !confirm_tainted {
+        if read_first(&p) && !confirm_tainted {
             bail!(
                 "proposal {proposal_seq} is an agent's, or was made from untrusted text: it is applied only by \
                  someone who has read it and says so (--confirm-tainted; torqcli's `request system apply \
