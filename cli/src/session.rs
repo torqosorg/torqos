@@ -1421,13 +1421,9 @@ impl<'a> Session<'a> {
                 match &a {
                     Approval::Grant { user: Some(u), .. } if *u != self.me => bail!("{u}'s secrets are theirs alone: you let your agent use your own, or a system secret it is named for"),
                     Approval::Revoke { user: Some(u), .. } if *u != self.me => bail!("{u}'s grants are theirs to end: you end what you gave, of your own secret or of a system secret"),
-                    // `all` reads as every secret: with a secret of that name it could be meant either way, so it is not guessed.
-                    Approval::Grant { name: None, .. } if crate::secrets::read(&self.repo, &self.repo.head()?, Some(&self.me))?.contains_key("all") => {
-                        bail!("you have a secret named all, and `allow all` means every secret of yours: not done, as it could be meant either way. Rename that secret to grant them all at once.")
-                    }
                     // No `user`: the system's secret, as every command of a secret reads. Where there is none of that
                     // name and the person has one of their own, the line they meant is said.
-                    Approval::Grant { name: Some(n), user: None, .. } | Approval::Revoke { name: Some(n), user: None } if !crate::secrets::read(&self.repo, &self.repo.head()?, None)?.contains_key(n) && crate::secrets::read(&self.repo, &self.repo.head()?, Some(&self.me))?.contains_key(n) => {
+                    Approval::Grant { name: n, user: None, .. } | Approval::Revoke { name: Some(n), user: None } if !crate::secrets::read(&self.repo, &self.repo.head()?, None)?.contains_key(n) && crate::secrets::read(&self.repo, &self.repo.head()?, Some(&self.me))?.contains_key(n) => {
                         bail!("the system has no secret {n}; you have one of your own by that name: request system secret {} user {}", a.line(), self.me)
                     }
                     _ => {}
@@ -3437,36 +3433,28 @@ mod tests {
     /// The test repo, then two commits of software: `OLD` (rollback 1), then `NOW` (rollback 0).
     const OLD: u64 = 1_790_000_000;
     const NOW: u64 = 1_793_000_000;
-    /// A grant of secret uses, its end and an answer go to the broker as they were typed, and it decides. Not from
-    /// here: a grant of another person's secret; and `allow all` by a person who has a secret named all, which
-    /// could be meant either way and is not guessed.
+    /// A grant of a secret's uses, its end and an answer go to the broker as they were typed, and it decides. Not
+    /// from here: a grant of another person's secret.
     #[test]
-    fn a_grant_goes_to_the_broker_unless_it_could_mean_two_things() {
+    fn a_grant_goes_to_the_broker_unless_it_is_someone_elses() {
         let d = repo();
         let m = Fake::default();
         let mut s = session(d.path(), None, &m);
-        assert_eq!(s.exec("request system secret allow gh for 30 tainted-too user dev").unwrap(), "asked the broker: secret-grant --name gh --user dev --minutes 30 --tainted-too\n");
-        assert_eq!(s.exec("request system secret allow all for 30").unwrap(), "asked the broker: secret-grant --all --minutes 30\n");
+        assert_eq!(s.exec("request system secret allow gh for 30 user dev").unwrap(), "asked the broker: secret-grant --name gh --user dev --minutes 30\n");
         assert_eq!(s.exec("request system secret allow revoke gh").unwrap(), "asked the broker: secret-revoke --name gh\n");
         assert_eq!(s.exec("request system secret allow revoke gh user dev").unwrap(), "asked the broker: secret-revoke --name gh --user dev\n");
-        assert_eq!(s.exec("request system secret allow all revoke").unwrap(), "asked the broker: secret-revoke --all\n");
         let e = format!("{:#}", s.exec("request system secret allow revoke gh user sam").unwrap_err());
         assert!(e.contains("theirs to end"), "{e}");
         assert_eq!(s.exec("request system secret approve 3").unwrap(), "asked the broker: secret-approve 3 --where terminal\n");
         assert_eq!(s.exec("request system secret deny 3").unwrap(), "asked the broker: secret-deny 3 --where terminal\n");
         assert_eq!(s.exec("request system secret deny 3 session").unwrap(), "asked the broker: secret-deny 3 --where terminal --rest-of-session\n");
-        let e = format!("{:#}", s.exec("request system secret allow gh session user sam").unwrap_err());
+        let e = format!("{:#}", s.exec("request system secret allow gh for 30 user sam").unwrap_err());
         assert!(e.contains("theirs alone"), "{e}");
-        sh(d.path(), "mkdir -p users/dev && printf '{\"all\":{\"kind\":\"token\"}}\\n' > users/dev/secrets.json && git add -A && git commit -q -m rules");
-        let e = format!("{:#}", s.exec("request system secret allow all for 30").unwrap_err());
-        assert!(e.contains("could be meant either way"), "{e}");
-        assert_eq!(s.exec("request system secret allow revoke all").unwrap(), "asked the broker: secret-revoke\n", "ending them all is never in doubt");
+        assert_eq!(s.exec("request system secret allow revoke all").unwrap(), "asked the broker: secret-revoke\n", "ending them all");
         // No `user` is the system's secret: with none of that name and one of their own, the line they meant is said.
-        let e = format!("{:#}", s.exec("request system secret allow all for 5 tainted-too").unwrap_err());
-        assert!(!e.contains("user dev"), "{e}");
-        sh(d.path(), "printf '{\"mine\":{\"kind\":\"token\"}}\\n' > users/dev/secrets.json && git commit -qam mine");
-        let e = format!("{:#}", s.exec("request system secret allow mine for 5 tainted-too").unwrap_err());
-        assert!(e.ends_with("you have one of your own by that name: request system secret allow mine for 5 tainted-too user dev"), "{e}");
+        sh(d.path(), "mkdir -p users/dev && printf '{\"mine\":{\"kind\":\"token\"}}\\n' > users/dev/secrets.json && git add -A && git commit -q -m mine");
+        let e = format!("{:#}", s.exec("request system secret allow mine for 5").unwrap_err());
+        assert!(e.ends_with("you have one of your own by that name: request system secret allow mine for 5 user dev"), "{e}");
         // Ending one is read the same way: no `user` is the system's, and theirs is said.
         let e = format!("{:#}", s.exec("request system secret allow revoke mine").unwrap_err());
         assert!(e.ends_with("you have one of your own by that name: request system secret allow revoke mine user dev"), "{e}");
@@ -3522,7 +3510,7 @@ mod tests {
         let shown = s.exec("show system secrets").unwrap();
         assert_eq!(
             shown,
-            "The system's secrets:\n  ci                   token, has a value; https to api.github.com; torq-agent-dev too, approved first-use\n                       use: http://127.0.0.1:7800/system/ci/api.github.com/\ndev's secrets:\n  deploy               SSH key, no value yet; ssh to github.com; not the agent\n"
+            "The system's secrets:\n  ci                   token, has a value; https to api.github.com; torq-agent-dev too, approved each-use\n                       use: http://127.0.0.1:7800/system/ci/api.github.com/\ndev's secrets:\n  deploy               SSH key, no value yet; ssh to github.com; not the agent\n"
         );
         // The same reading, each secret apart (TorqOS Settings' rows): whose, its value or none, its rule.
         use torq_wire::secrets::{Approve, Kind};
@@ -3531,8 +3519,8 @@ mod tests {
         assert_eq!(
             listed.iter().map(row).collect::<Vec<_>>(),
             [
-                (None, "ci".to_string(), true, Some((Kind::Token, Approve::FirstUse)), "token, has a value; https to api.github.com; torq-agent-dev too, approved first-use".to_string()),
-                (Some("dev".to_string()), "deploy".to_string(), false, Some((Kind::SshKey, Approve::Never)), "SSH key, no value yet; ssh to github.com; not the agent".to_string()),
+                (None, "ci".to_string(), true, Some((Kind::Token, Approve::EachUse)), "token, has a value; https to api.github.com; torq-agent-dev too, approved each-use".to_string()),
+                (Some("dev".to_string()), "deploy".to_string(), false, Some((Kind::SshKey, Approve::EachUse)), "SSH key, no value yet; ssh to github.com; not the agent".to_string()),
             ]
         );
         // A rules file that cannot be read is said where its secrets would come; a value of its owner's is still listed.

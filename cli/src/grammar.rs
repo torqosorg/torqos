@@ -319,37 +319,20 @@ static SECRET_GRANT: &[Node] = &[
 /// `… user <user>` after a grant of uses: your own secret (no `user`: a system secret your agent is named for).
 static GRANT_OWNER: &[Node] = &[fixed("user", "Your own secret, not the system's", In::Op).then(&[value(Value::User, "Whose: yours").whole(approval)])];
 
-/// After `allow <name> for <minutes>`.
-static GRANT_FOR: &[Node] = &[
-    fixed("tainted-too", "Even from a session that read untrusted text (your agent's always counts as one: TorqOS cannot see what it reads): this one secret only, never all", In::Op).whole(approval).then(GRANT_OWNER),
-    fixed("user", "Your own secret, not the system's", In::Op).then(&[value(Value::User, "Whose: yours").whole(approval)]),
-];
-
 /// After `allow <name>`: a use its rule lets (as `disallow` takes back), or leave for your own agent to use it
-/// without asking you, for a while (ADR-051 and ADR-052 4, amended 2026-11-13: a grant, the broker's, not a change of the rule).
+/// without asking you, for a while (ADR-051 and ADR-052 4, amended 2026-11-13 and 2026-11-16: a grant, the broker's, not a change of the rule).
 static SECRET_ALLOW: &[Node] = &[
     fixed("agent", "An agent: it uses the secret through TorqOS, never reading it (yours, for your own secret; a person's, named, for a system secret)", In::Op).then(SECRET_AGENT),
-    fixed("for", "For <minutes>, your agent uses it without asking you. Add tainted-too: without it this never holds from a session that read untrusted text, and your agent's always counts as one today (it asks your password; ledgered; request system secret allow revoke ends it)", In::Op).then(&[value(Value::Minutes, "How many minutes: 1 to 480").whole(approval).then(GRANT_FOR)]),
+    fixed("for", "For <minutes>, your agent uses this one secret without asking you, whatever it reads meanwhile (it asks your password; ledgered; request system secret allow revoke ends it)", In::Op).then(&[value(Value::Minutes, "How many minutes: 1 to 480").whole(approval).then(GRANT_OWNER)]),
     fixed("https", "Sent in an HTTPS header to this host, and to no other (a token)", In::Op).then(&[value(Value::Host, "The host: a DNS name (api.github.com)").whole(secret).then(SECRET_OWNER)]),
-    fixed("session", "In your agent's sessions running now, it uses it without asking you, but never from a session that read untrusted text. Your agent's always counts as one today (TorqOS cannot see what it reads), so this lets nothing through yet (it asks your password; ledgered)", In::Op).whole(approval).then(GRANT_OWNER),
     fixed("ssh", "Signs for SSH to this host, and for no other (an SSH key)", In::Op).then(&[value(Value::Host, "The host: a DNS name (github.com)").whole(secret).then(SECRET_OWNER)]),
-];
-
-/// After `allow all`: all your own secrets, for a time. A secret that is itself named `all` keeps the commands it
-/// had (what its rule lets); a grant by that name is not offered, as it would read as every secret.
-static ALLOW_ALL: &[Node] = &[
-    fixed("agent", "The secret named all: an agent may use it", In::Op).then(SECRET_AGENT),
-    fixed("for", "For <minutes>, your agent uses every secret of your own without asking you, but never from a session that read untrusted text. Your agent's always counts as one today (TorqOS cannot see what it reads), so this lets nothing through yet (it asks your password; ledgered)", In::Op).then(&[value(Value::Minutes, "How many minutes: 1 to 480").whole(approval)]),
-    fixed("https", "The secret named all: sent in an HTTPS header to this host", In::Op).then(&[value(Value::Host, "The host: a DNS name (api.github.com)").whole(secret).then(SECRET_OWNER)]),
-    fixed("revoke", "End your grant of all your own secrets, and no other: what you let it use of one secret stays (no password)", In::Op).whole(revoke_all_own),
-    fixed("ssh", "The secret named all: signs for SSH to this host", In::Op).then(&[value(Value::Host, "The host: a DNS name (github.com)").whole(secret).then(SECRET_OWNER)]),
 ];
 
 /// After `allow revoke`: which grants of yours to end. A secret that is itself named `revoke` keeps the commands it
 /// had; so a grant of a secret named `agent`, `https` or `ssh` is ended with the rest (`allow revoke`), not by name.
 static ALLOW_REVOKE: &[Node] = &[
     fixed("agent", "The secret named revoke: an agent may use it", In::Op).then(SECRET_AGENT),
-    fixed("all", "Every grant of secret uses you gave: each secret's, and the one of all your own", In::Op).whole(approval),
+    fixed("all", "Every grant you gave, of each secret", In::Op).whole(approval),
     fixed("https", "The secret named revoke: sent in an HTTPS header to this host", In::Op).then(&[value(Value::Host, "The host: a DNS name (api.github.com)").whole(secret).then(SECRET_OWNER)]),
     fixed("ssh", "The secret named revoke: signs for SSH to this host", In::Op).then(&[value(Value::Host, "The host: a DNS name (github.com)").whole(secret).then(SECRET_OWNER)]),
     value(Value::Secret, "The grant of this secret: the system's, or with user <you> after it, your own").whole(approval).then(GRANT_OWNER),
@@ -357,15 +340,12 @@ static ALLOW_REVOKE: &[Node] = &[
 
 static REQUEST_SECRET: &[Node] = &[
     fixed("allow", "Let it be used: for a host, or by the agent (one change, undoable); or, for a while, by your agent without asking you", In::Op).then(&[
-        fixed("all", "All your own secrets, for <minutes>, without asking you", In::Op).then(ALLOW_ALL),
         fixed("revoke", "End what you let your agent use without asking: one secret's grant, or with nothing after it, every one (no password)", In::Op).whole(approval).then(ALLOW_REVOKE),
         value(Value::Secret, "The secret's name").then(SECRET_ALLOW),
     ]),
-    fixed("approve", "When a person is asked before the agent uses it (a session that read untrusted text is always asked, and your agent's always counts as one today); or, with a waiting use's number, your yes to it", In::Op).then(&[value(Value::Secret, "The secret's name; or the number of a use that waits for you (show system secrets waiting)").whole(approval).then(&[
-        fixed("each-use", "Every time", In::Op).whole(secret).then(SECRET_OWNER),
-        fixed("first-use", "The first time in each of the agent's sessions (and every time from a session that read untrusted text)", In::Op).whole(secret).then(SECRET_OWNER),
-        fixed("never", "Never: only a session that read untrusted text asks", In::Op).whole(secret).then(SECRET_OWNER),
-        fixed("never-even-tainted", "Never, even from a session that read untrusted text: your own secret only, and it asks your password", In::Op).whole(secret).then(SECRET_OWNER),
+    fixed("approve", "Whether you are asked before your agent uses it: each time, or not at all. TorqOS cannot see what your agent has read (a web page or a log line can carry instructions meant for it), so each time is how every secret starts. Or, with a waiting use's number, your yes to it", In::Op).then(&[value(Value::Secret, "The secret's name; or the number of a use that waits for you (show system secrets waiting)").whole(approval).then(&[
+        fixed("each-use", "You are asked each time", In::Op).whole(secret).then(SECRET_OWNER),
+        fixed("without-asking", "You are never asked, whatever your agent has read: your own secret only, and it asks your password", In::Op).whole(secret).then(SECRET_OWNER),
     ])]),
     fixed("delete", "Delete its value and its rule (no undoing the value)", In::Op).then(&[value(Value::Secret, "The secret's name").whole(secret).then(SECRET_OWNER)]),
     fixed("deny", "Your no to a use of your agent's that waits for you", In::Op).then(&[value(Value::Use, "The waiting use's number, from show system secrets waiting").whole(approval).then(&[
@@ -501,7 +481,7 @@ fn secret(r: &Read) -> Result<Op> {
     } else if r.has("disallow") {
         Act::Disallow(grant())
     } else if r.has("approve") {
-        Act::Approve(["each-use", "first-use", "never", "never-even-tainted"].into_iter().find(|w| r.has(w)).and_then(Approve::from_word).unwrap_or_default())
+        Act::Approve(["each-use", "without-asking"].into_iter().find(|w| r.has(w)).and_then(Approve::from_word).unwrap_or_default())
     } else if r.has("set") && r.has("file") {
         Act::SetFile(r.value(Value::File).unwrap_or_default().to_string())
     } else if r.has("set") {
@@ -513,17 +493,13 @@ fn secret(r: &Read) -> Result<Op> {
     };
     // The owner is the person after `user`; a person named after `agent` alone is whose agent (a system secret).
     let user = r.has("user").then(|| r.value(Value::User).map(String::from)).flatten();
-    // A secret named as a word of `allow` is (`all`, `revoke`) is read as that word, and is the secret here.
-    let name = r.value(Value::Secret).unwrap_or(if r.has("all") { "all" } else if r.has("revoke") { "revoke" } else { "" });
+    // A secret named as the word of `allow` (`revoke`) is read as that word, and is the secret here.
+    let name = r.value(Value::Secret).unwrap_or(if r.has("revoke") { "revoke" } else { "" });
     Ok(Op::Request(Request::Secret { name: name.into(), user, act }))
 }
 
-/// `request system secret allow all revoke`: the grant of all one's own secrets ended, and no other.
-fn revoke_all_own(_: &Read) -> Result<Op> {
-    Ok(Op::Request(Request::SecretApproval(crate::secrets::Approval::RevokeAllOwn)))
-}
 
-/// `request system secret allow <name> session`, `… for <minutes> [tainted-too]`, `allow all for <minutes>`,
+/// `request system secret allow <name> for <minutes>`,
 /// `allow revoke [<name>|all]`, `approve <n>` and `deny <n>`, from the words read.
 fn approval(r: &Read) -> Result<Op> {
     use crate::secrets::Approval;
@@ -532,17 +508,17 @@ fn approval(r: &Read) -> Result<Op> {
         Approval::Answer { n: r.value(Value::Use).and_then(number).unwrap_or_default(), approved: false, rest: r.has("session") }
     } else if r.has("approve") {
         let Some(n) = r.value(Value::Secret).and_then(number) else {
-            bail!("`approve <n>` answers a use that waits, by its number (show system secrets waiting); when a secret asks is `approve <name> each-use|first-use|never|never-even-tainted`");
+            bail!("`approve <n>` answers a use that waits, by its number (show system secrets waiting); whether a secret asks is `approve <name> each-use|without-asking`");
         };
         Approval::Answer { n, approved: true, rest: false }
     } else if r.has("revoke") {
         Approval::Revoke { name: r.value(Value::Secret).map(String::from), user: r.value(Value::User).map(String::from) }
     } else {
-        let minutes = r.number(Value::Minutes).map(|m| m as u32);
-        if minutes.is_some_and(|m| m > 480) {
+        let minutes = r.number(Value::Minutes).map(|m| m as u32).unwrap_or_default();
+        if !(1..=480).contains(&minutes) {
             bail!("such a grant lasts 1 to 480 minutes");
         }
-        Approval::Grant { name: r.value(Value::Secret).map(String::from), user: r.value(Value::User).map(String::from), minutes, tainted_too: r.has("tainted-too") }
+        Approval::Grant { name: r.value(Value::Secret).unwrap_or_default().into(), user: r.value(Value::User).map(String::from), minutes }
     };
     Ok(Op::Request(Request::SecretApproval(a)))
 }

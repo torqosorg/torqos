@@ -468,7 +468,7 @@ mod tests {
 
     /// The commands that answer a waiting use, and that let an agent use a secret for a while: each word is offered
     /// where it may be typed, Enter where the line is whole, and Tab finishes a word that is the only one. Their
-    /// help says a session "that read untrusted text", in a person's words.
+    /// help says why a person is asked once, and what each choice does.
     #[test]
     fn answers_and_allowances_are_offered() {
         let s = schema();
@@ -485,31 +485,30 @@ mod tests {
         assert_eq!(offered("request system secret deny 7"), ["<[Enter]>", "session"]);
         assert_eq!(offered("request system secret deny 7 session"), ["<[Enter]>"]);
         // A number after approve is a whole command (the yes), and may still be a secret so named; a name is not.
-        assert_eq!(offered("request system secret approve 7"), ["<[Enter]>", "each-use", "first-use", "never", "never-even-tainted"]);
-        assert_eq!(offered("request system secret approve gh"), ["each-use", "first-use", "never", "never-even-tainted"]);
-        // An allowance: one secret's for a session or for minutes, all one's own for minutes, and its end.
-        assert_eq!(offered("request system secret allow"), ["all", "revoke", "<secret>"]);
-        assert_eq!(offered("request system secret allow gh"), ["agent", "for", "https", "session", "ssh"]);
-        assert_eq!(offered("request system secret allow gh session"), ["<[Enter]>", "user"]);
+        assert_eq!(offered("request system secret approve 7"), ["<[Enter]>", "each-use", "without-asking"]);
+        assert_eq!(offered("request system secret approve gh"), ["each-use", "without-asking"]);
+        // An allowance: one secret's, for minutes, and its end. Nothing else is offered: no "all", no "session", no
+        // word for holding under untrusted text.
+        assert_eq!(offered("request system secret allow"), ["revoke", "<secret>"]);
+        assert_eq!(offered("request system secret allow gh"), ["agent", "for", "https", "ssh"]);
         assert_eq!(offered("request system secret allow gh for"), ["<minutes>"]);
         assert_eq!(help("request system secret allow gh for", "<minutes>"), "How many minutes: 1 to 480");
-        assert_eq!(offered("request system secret allow gh for 60"), ["<[Enter]>", "tainted-too", "user"]);
-        assert_eq!(offered("request system secret allow gh for 60 tainted-too"), ["<[Enter]>", "user"]);
-        assert_eq!(offered("request system secret allow all"), ["agent", "for", "https", "revoke", "ssh"]);
-        assert_eq!(offered("request system secret allow all revoke"), ["<[Enter]>"]);
-        assert_eq!(offered("request system secret allow all for 60"), ["<[Enter]>"], "all of them is never tainted-too, and never someone's");
+        assert_eq!(offered("request system secret allow gh for 60"), ["<[Enter]>", "user"]);
+        assert_eq!(offered("request system secret allow all"), ["agent", "for", "https", "ssh"], "a secret named all, as any other");
         assert_eq!(offered("request system secret allow revoke"), ["<[Enter]>", "agent", "all", "https", "ssh", "<secret>"]);
         assert_eq!(offered("request system secret allow revoke gh"), ["<[Enter]>", "user"]);
         assert_eq!(offered("request system secret allow revoke all"), ["<[Enter]>"]);
         // Tab.
         assert_eq!(tab(&op("show system secrets", "w")), [("waiting".to_string(), "waiting ".to_string())]);
         assert_eq!(tab(&op("request system secret allow", "r")), [("revoke".to_string(), "revoke ".to_string())]);
-        assert_eq!(tab(&op("request system secret allow gh for 60", "t")), [("tainted-too".to_string(), "tainted-too ".to_string())]);
+        assert_eq!(tab(&op("request system secret approve gh", "w")), [("without-asking".to_string(), "without-asking ".to_string())]);
         assert_eq!(tab(&op("request system secret", "de")).len(), 2, "delete and deny");
-        // No word of help here is one a person was never told.
-        for (line, word) in [("request system secret", "approve"), ("request system secret approve gh", "never"), ("request system secret approve gh", "never-even-tainted"), ("request system secret allow gh for 60", "tainted-too"), ("request system secret allow all", "for")] {
+        // No word of help here asks a person to reason about what the agent's program is: why they are asked is
+        // said once, where the choice is made, and the choices say what they do.
+        assert!(help("request system secret", "approve").contains("TorqOS cannot see what your agent has read (a web page or a log line can carry instructions meant for it)"));
+        for (line, word) in [("request system secret", "approve"), ("request system secret", "allow"), ("request system secret approve gh", "each-use"), ("request system secret approve gh", "without-asking"), ("request system secret allow gh", "for")] {
             let h = help(line, word);
-            assert!(h.contains("read untrusted text") && !h.contains("tainted session"), "{word}: {h}");
+            assert!(!h.contains("taint") && !h.contains("untrusted text") && !h.contains("session"), "{word}: {h}");
         }
     }
 

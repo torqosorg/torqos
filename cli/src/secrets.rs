@@ -66,18 +66,16 @@ impl Act {
 /// (ADR-051 and ADR-052, amended 2026-11-13). The broker's to keep and to judge, on its ledger: not a change of the rules.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Approval {
-    /// `allow <name> session`, `allow <name> for <minutes> [tainted-too]` (`user <you>`: your own secret, else the
-    /// system's), `allow all for <minutes>` (no name: all your own). No minutes: your agent's sessions running now.
-    Grant { name: Option<String>, user: Option<String>, minutes: Option<u32>, tainted_too: bool },
+    /// `allow <name> for <minutes>` (`user <you>`: your own secret, else the system's): your agent uses that one
+    /// secret without asking you, for that long, whatever it reads meanwhile.
+    Grant { name: String, user: Option<String>, minutes: u32 },
     /// A `Grant` that ends the same person's grant of the same secret, if one holds, in the one step of the broker that
     /// makes the new one (`--replace`): the panel's dialog uses it, so that a password cancelled or wrong leaves the old
     /// grant as it was. Not a command word: no line reads as it.
-    Replace { name: Option<String>, user: Option<String>, minutes: Option<u32>, tainted_too: bool },
+    Replace { name: String, user: Option<String>, minutes: u32 },
     /// `allow revoke [<name> [user <you>]|all]`: end the grant of that secret (`user`: your own, else the system's),
     /// or with no name, every grant you gave.
     Revoke { name: Option<String>, user: Option<String> },
-    /// `allow all revoke`: end your grant of all your own secrets, and no other.
-    RevokeAllOwn,
     /// `approve <n>`, `deny <n> [session]`: your answer to a waiting use (`rest`: a no for the rest of its session).
     Answer { n: u64, approved: bool, rest: bool },
 }
@@ -103,14 +101,12 @@ impl Approval {
     /// The command, after `request system secret `.
     pub fn line(&self) -> String {
         match self {
-            Approval::Grant { name, user, minutes, tainted_too } | Approval::Replace { name, user, minutes, tainted_too } => {
-                let how_long = minutes.map_or(" session".to_string(), |m| format!(" for {m}"));
+            Approval::Grant { name, user, minutes } | Approval::Replace { name, user, minutes } => {
                 let owner = user.as_ref().map(|u| format!(" user {}", crate::syntax::quote(u))).unwrap_or_default();
-                format!("allow {}{how_long}{}{owner}", name.as_deref().unwrap_or("all"), if *tainted_too { " tainted-too" } else { "" })
+                format!("allow {name} for {minutes}{owner}")
             }
             Approval::Revoke { name: None, .. } => "allow revoke".into(),
             Approval::Revoke { name: Some(n), user } => format!("allow revoke {n}{}", user.as_ref().map(|u| format!(" user {}", crate::syntax::quote(u))).unwrap_or_default()),
-            Approval::RevokeAllOwn => "allow all revoke".into(),
             Approval::Answer { n, approved: true, .. } => format!("approve {n}"),
             Approval::Answer { n, approved: false, rest } => format!("deny {n}{}", if *rest { " session" } else { "" }),
         }
@@ -120,28 +116,17 @@ impl Approval {
     /// gives an answer to a waiting use, which its entry records.
     pub fn args(&self, place: Place) -> Vec<String> {
         match self {
-            Approval::Grant { name, user, minutes, tainted_too } | Approval::Replace { name, user, minutes, tainted_too } => {
-                let mut a = vec!["secret-grant".to_string()];
-                match name {
-                    Some(n) => a.extend(["--name".into(), n.clone()]),
-                    None => a.push("--all".into()),
-                }
+            Approval::Grant { name, user, minutes } | Approval::Replace { name, user, minutes } => {
+                let mut a = vec!["secret-grant".to_string(), "--name".into(), name.clone()];
                 if let Some(u) = user {
                     a.extend(["--user".into(), u.clone()]);
                 }
-                match minutes {
-                    Some(m) => a.extend(["--minutes".into(), m.to_string()]),
-                    None => a.push("--session".into()),
-                }
-                if *tainted_too {
-                    a.push("--tainted-too".into());
-                }
+                a.extend(["--minutes".into(), minutes.to_string()]);
                 if matches!(self, Approval::Replace { .. }) {
                     a.push("--replace".into());
                 }
                 a
             }
-            Approval::RevokeAllOwn => vec!["secret-revoke".to_string(), "--all".to_string()],
             Approval::Revoke { name, user } => {
                 let mut a = vec!["secret-revoke".to_string()];
                 if let Some(n) = name {
@@ -169,21 +154,17 @@ impl Approval {
         match self {
             Approval::Grant { .. } | Approval::Replace { .. } => format!("{}Until {}. `request system secret allow revoke` ends it.\n", entry(v), crate::history::clean(v["data"]["until"].as_str().unwrap_or("?"))),
             Approval::Answer { .. } => entry(v),
-            Approval::Revoke { .. } | Approval::RevokeAllOwn => {
-                let ended: String = match v["revoked"].as_array().map(Vec::as_slice) {
-                    None | Some([]) => "You had no such grant to end.\n".into(),
-                    Some(ended) => ended.iter().map(entry).collect(),
-                };
-                // Said, so that no one thinks the secret asks again when it does not.
-                let still = match v["all_until"].as_str() {
-                    Some(until) => format!("Your grant of all your own secrets still covers that secret, until {}: `request system secret allow all revoke` ends it.\n", crate::history::clean(until)),
-                    None => String::new(),
-                };
-                ended + &still
-            }
+            Approval::Revoke { .. } => match v["revoked"].as_array().map(Vec::as_slice) {
+                None | Some([]) => "You had no such grant to end.\n".into(),
+                Some(ended) => ended.iter().map(entry).collect(),
+            },
         }
     }
 }
+
+/// Why a person is asked about their agent's use of a secret: said once, wherever a waiting use or a secret's
+/// two choices are shown (the terminal's list, the panel's dialog, the Secrets page).
+pub const WHY_ASKED: &str = "TorqOS cannot see what your agent has read (a web page or a log line can carry instructions meant for it), so it asks you each time unless you said otherwise for this secret.";
 
 /// `show system secrets waiting`: the uses of your agent's that wait for your answer (the broker's `secret-waiting`).
 /// What the broker knows first, each on its own line; then, marked as the agent's, what the agent says: never
@@ -204,8 +185,8 @@ pub fn waiting_shown(v: &serde_json::Value, clock: &crate::history::Clock) -> St
         };
         let what = if f["ssh"] == true { "to sign in over SSH to" } else { "in an HTTPS request to" };
         out.push_str(&format!("{n}  {whose}, {what} {}\n", clean(&f["host"])));
-        out.push_str(&format!("   asked by your agent ({}); {}\n", clean(&f["caller"]), if f["tainted"] == false { "its session read nothing untrusted" } else { "TorqOS cannot see what it has read, so it counts as having READ UNTRUSTED TEXT" }));
-        out.push_str(&format!("   why you are asked: {}\n", clean(&f["why"])));
+        out.push_str(&format!("   asked by your agent ({})\n", clean(&f["caller"])));
+        out.push_str(&format!("   why you are asked: {WHY_ASKED}\n"));
         if a["agent_says"].as_str().is_some_and(|s| !s.is_empty()) {
             // Last on its line, to the line's end, and one line by its cleaning: nothing in it can end it, where
             // a quote of its own could have seemed to close one put round it.
@@ -222,8 +203,7 @@ pub fn waiting_shown(v: &serde_json::Value, clock: &crate::history::Clock) -> St
 }
 
 /// `show system secrets allowed`: each grant of secret uses that holds, what it covers and its end (`secret-grants`).
-/// Times are the machine's local time (`clock`). A grant for the agent's sessions ends for each of them when that
-/// session is eight hours old, which may be sooner than the time shown: said as "at most".
+/// Times are the machine's local time (`clock`).
 pub fn allowed_shown(v: &serde_json::Value, clock: &crate::history::Clock) -> String {
     let clean = |s: &serde_json::Value| crate::history::clean(s.as_str().unwrap_or("?"));
     let grants = v["grants"].as_array().map(Vec::as_slice).unwrap_or_default();
@@ -232,15 +212,9 @@ pub fn allowed_shown(v: &serde_json::Value, clock: &crate::history::Clock) -> St
     }
     let mut out = String::new();
     for g in grants {
-        let covers = match &g["covers"]["secret"] {
-            serde_json::Value::Null => "all their own secrets".to_string(),
-            s if s["system"] == true => format!("the system's secret {}", clean(&s["name"])),
-            s => format!("their secret {}", clean(&s["name"])),
-        };
-        let scope = if g["session"] == true { " at most, in the agent's sessions running when it was given" } else { "" };
-        let taint = if g["tainted_too"] == true { " — EVEN FROM A SESSION THAT READ UNTRUSTED TEXT" } else { "" };
+        let covers = if g["covers"]["system"] == true { format!("the system's secret {}", clean(&g["covers"]["name"])) } else { format!("their secret {}", clean(&g["covers"]["name"])) };
         let until = crate::history::local_stamp(g["until"].as_str().unwrap_or("?"), clock);
-        out.push_str(&format!("#{}  {}'s agent: {covers}, until {until}{scope}{taint}\n", g["seq"].as_u64().unwrap_or(0), clean(&g["person"])));
+        out.push_str(&format!("#{}  {}'s agent: {covers}, without asking until {until}\n", g["seq"].as_u64().unwrap_or(0), clean(&g["person"])));
     }
     out
 }
@@ -404,10 +378,8 @@ fn edit_unchecked(rules: &mut Rules, name: &str, act: &Act, known: &[String]) ->
             let r = rules.get_mut(name).ok_or_else(first)?;
             r.approve = *a;
             Ok(match a {
-                Approve::EachUse => "a person approves each use by the agent".into(),
-                Approve::FirstUse => "a person approves the agent's first use in each session".into(),
-                Approve::Never => "the agent uses it without asking, but for a session that read untrusted text, which still asks (your agent's always counts as one: TorqOS cannot see what it reads)".into(),
-                Approve::NeverEvenTainted => "the agent uses it without ever asking, EVEN FROM A SESSION THAT READ UNTRUSTED TEXT (it asks your password)".into(),
+                Approve::EachUse => "you are asked each time the agent uses it".into(),
+                Approve::WithoutAsking => "THE AGENT USES IT WITHOUT ASKING YOU, whatever it has read (it asks your password)".into(),
             })
         }
         Act::Delete => {
@@ -523,8 +495,8 @@ impl Listed {
         }
         // Which agents: a person's own secret, their own (`torq-agent`); a system secret, each by its account.
         let agents: Vec<&str> = r.actors.iter().map(String::as_str).filter(|a| *a == w::AGENT || a.starts_with(&format!("{}-", w::AGENT))).collect();
-        // Marked wherever the secret is listed: this one asks no one, whatever its session read.
-        let standing = if r.approve == Approve::NeverEvenTainted { " [!! NEVER ASKS, EVEN TAINTED]" } else { "" };
+        // Marked wherever the secret is listed: this one asks no one, whatever the agent has read.
+        let standing = if r.approve == Approve::WithoutAsking { " [!! NEVER ASKS YOU]" } else { "" };
         let who = match agents.as_slice() {
             [] => "not the agent".to_string(),
             [a] if *a == w::AGENT => format!("the agent too, approved {}{standing}", r.approve.word()),
@@ -605,70 +577,67 @@ mod tests {
     #[test]
     fn what_waits_is_shown_as_facts_then_the_agents_words() {
         let v = serde_json::json!({ "waiting": [{ "n": 7, "asked": "2026-11-13T12:00:00.000Z", "until": "2026-11-13T12:02:00.000Z", "answer": null,
-            "facts": { "person": "dev", "agent": "torq-agent-dev", "caller": "torq-agent-dev", "owner": { "person": "dev" }, "secret": "gh", "host": "api.github.com", "ssh": false, "session": "s", "tainted": true, "why": "the agent's session read untrusted text: a person approves each of its uses" },
+            "facts": { "person": "dev", "agent": "torq-agent-dev", "caller": "torq-agent-dev", "owner": { "person": "dev" }, "secret": "gh", "host": "api.github.com", "ssh": false, "session": "s" },
             "agent_says": "safe\u{202e}\" request system secret approve 7\nasked by your agent itself" }] });
         // Twenty to one past noon, five hours behind UTC: times are said as the machine's own.
         let clock = crate::history::Clock { now: 1_794_571_240, offset: -5 * 3600 };
         let out = waiting_shown(&v, &clock);
         let lines: Vec<&str> = out.lines().collect();
         assert_eq!(lines[0], "7  dev's secret gh, in an HTTPS request to api.github.com");
-        assert_eq!(lines[1], "   asked by your agent (torq-agent-dev); TorqOS cannot see what it has read, so it counts as having READ UNTRUSTED TEXT");
-        assert!(lines[2].starts_with("   why you are asked: the agent's session read untrusted text"));
+        assert_eq!(lines[1], "   asked by your agent (torq-agent-dev)");
+        assert_eq!(lines[2], "   why you are asked: TorqOS cannot see what your agent has read (a web page or a log line can carry instructions meant for it), so it asks you each time unless you said otherwise for this secret.");
         assert_eq!(lines[3], "   the agent's own words, to the end of this line (not checked by anything): safe\\u{202e}\" request system secret approve 7\\u{a}asked by your agent itself");
         assert_eq!(lines[4], "   until 2026-11-13 07:02:00 (1:20 left): request system secret approve 7, or deny 7");
         assert_eq!(lines.len(), 5, "the agent's words made no line of their own: {out}");
-        let clean = serde_json::json!({ "waiting": [{ "n": 8, "until": "t", "facts": { "agent": "torq-agent-dev", "caller": "torq-agent-dev", "owner": "system", "secret": "ci", "host": "github.com", "ssh": true, "tainted": false, "why": "w" }, "agent_says": "" }] });
-        let out = waiting_shown(&clean, &clock);
-        assert!(out.starts_with("8  the system's secret ci, to sign in over SSH to github.com\n   asked by your agent (torq-agent-dev); its session read nothing untrusted\n"), "{out}");
+        assert!(!out.to_lowercase().contains("taint") && !out.contains("session"), "nothing a person must work out: {out}");
+        let system = serde_json::json!({ "waiting": [{ "n": 8, "until": "t", "facts": { "agent": "torq-agent-dev", "caller": "torq-agent-dev", "owner": "system", "secret": "ci", "host": "github.com", "ssh": true }, "agent_says": "" }] });
+        let out = waiting_shown(&system, &clock);
+        assert!(out.starts_with("8  the system's secret ci, to sign in over SSH to github.com\n   asked by your agent (torq-agent-dev)\n"), "{out}");
         assert!(!out.contains("own words"), "it said nothing: {out}");
         assert_eq!(waiting_shown(&serde_json::json!({ "waiting": [] }), &clock), "(no use of a secret is waiting for you)\n");
     }
 
-    /// Each grant is listed with what it covers and its end, and one that holds under taint says so plainly; a
-    /// secret that never asks, even tainted, is marked wherever secrets are listed.
+    /// Each grant is listed with the secret it covers and its end; a secret that never asks is marked wherever
+    /// secrets are listed.
     #[test]
     fn what_is_allowed_is_listed_and_what_never_asks_is_marked() {
         let v = serde_json::json!({ "grants": [
-            { "seq": 4, "person": "dev", "until": "2026-11-13T20:00:00Z", "covers": { "secret": { "name": "gh", "system": false } }, "tainted_too": true, "session": false },
-            { "seq": 5, "person": "dev", "until": "2026-11-13T12:30:00Z", "covers": "all-secrets", "tainted_too": false, "session": false },
-            { "seq": 6, "person": "sam", "until": "2026-11-13T20:00:00Z", "covers": { "secret": { "name": "ci", "system": true } }, "tainted_too": false, "session": true }] });
+            { "seq": 4, "person": "dev", "until": "2026-11-13T20:00:00Z", "covers": { "name": "gh", "system": false } },
+            { "seq": 6, "person": "sam", "until": "2026-11-13T12:30:00Z", "covers": { "name": "ci", "system": true } }] });
         let clock = crate::history::Clock { now: 1_794_571_240, offset: -5 * 3600 };
-        assert_eq!(allowed_shown(&v, &clock), "#4  dev's agent: their secret gh, until 2026-11-13 15:00:00 — EVEN FROM A SESSION THAT READ UNTRUSTED TEXT\n#5  dev's agent: all their own secrets, until 2026-11-13 07:30:00\n#6  sam's agent: the system's secret ci, until 2026-11-13 15:00:00 at most, in the agent's sessions running when it was given\n");
+        assert_eq!(allowed_shown(&v, &clock), "#4  dev's agent: their secret gh, without asking until 2026-11-13 15:00:00\n#6  sam's agent: the system's secret ci, without asking until 2026-11-13 07:30:00\n");
         assert_eq!(allowed_shown(&serde_json::json!({ "grants": [] }), &clock), "(no agent is let use a secret without asking)\n");
         let mut rule = Rule::new(Kind::Token);
         rule.actors = vec![w::AGENT.to_string()];
-        rule.approve = Approve::NeverEvenTainted;
+        rule.approve = Approve::WithoutAsking;
         let listed = |rule: &Rule| Listed { owner: Some("dev".into()), name: "gh".into(), has_value: true, rule: Some(rule.clone()) }.said();
-        assert!(listed(&rule).ends_with("the agent too, approved never-even-tainted [!! NEVER ASKS, EVEN TAINTED]"), "{}", listed(&rule));
-        rule.approve = Approve::Never;
+        assert!(listed(&rule).ends_with("the agent too, approved without-asking [!! NEVER ASKS YOU]"), "{}", listed(&rule));
+        rule.approve = Approve::EachUse;
         assert!(!listed(&rule).contains("!!"), "{}", listed(&rule));
-        // What the broker is asked, word for word: all is never tainted-too or someone's from here either.
-        assert_eq!(Approval::Grant { name: None, user: None, minutes: Some(30), tainted_too: false }.args(Place::Terminal), ["secret-grant", "--all", "--minutes", "30"]);
-        assert_eq!(Approval::Grant { name: Some("gh".into()), user: Some("dev".into()), minutes: Some(5), tainted_too: true }.args(Place::Terminal), ["secret-grant", "--name", "gh", "--user", "dev", "--minutes", "5", "--tainted-too"]);
-        assert_eq!(Approval::Grant { name: Some("ci".into()), user: None, minutes: None, tainted_too: false }.args(Place::Terminal), ["secret-grant", "--name", "ci", "--session"]);
-        assert_eq!(Approval::Replace { name: Some("gh".into()), user: Some("dev".into()), minutes: Some(5), tainted_too: true }.args(Place::Dialog), ["secret-grant", "--name", "gh", "--user", "dev", "--minutes", "5", "--tainted-too", "--replace"]);
+        // What the broker is asked, word for word: one named secret, for minutes.
+        assert_eq!(Approval::Grant { name: "gh".into(), user: Some("dev".into()), minutes: 5 }.args(Place::Terminal), ["secret-grant", "--name", "gh", "--user", "dev", "--minutes", "5"]);
+        assert_eq!(Approval::Grant { name: "ci".into(), user: None, minutes: 480 }.args(Place::Terminal), ["secret-grant", "--name", "ci", "--minutes", "480"]);
+        assert_eq!(Approval::Replace { name: "gh".into(), user: Some("dev".into()), minutes: 5 }.args(Place::Dialog), ["secret-grant", "--name", "gh", "--user", "dev", "--minutes", "5", "--replace"]);
+        assert_eq!(Approval::Grant { name: "gh".into(), user: Some("dev".into()), minutes: 5 }.line(), "allow gh for 5 user dev");
         assert_eq!(Approval::Revoke { name: None, user: None }.args(Place::Terminal), ["secret-revoke"]);
         assert_eq!(Approval::Answer { n: 7, approved: false, rest: false }.args(Place::Terminal), ["secret-deny", "7", "--where", "terminal"]);
         assert_eq!(Approval::Answer { n: 7, approved: false, rest: true }.args(Place::Terminal), ["secret-deny", "7", "--where", "terminal", "--rest-of-session"]);
         // An answer says where it was given; nothing else of a request does.
         assert_eq!(Approval::Answer { n: 7, approved: true, rest: false }.args(Place::Dialog), ["secret-approve", "7", "--where", "dialog"]);
         assert_eq!(Approval::Revoke { name: Some("gh".into()), user: None }.args(Place::Dialog), ["secret-revoke", "--name", "gh"]);
-        // Whose secret a grant is of is said when it is ended, as when it is given; all one's own, alone.
+        // Whose secret a grant is of is said when it is ended, as when it is given.
         assert_eq!(Approval::Revoke { name: Some("gh".into()), user: Some("dev".into()) }.args(Place::Terminal), ["secret-revoke", "--name", "gh", "--user", "dev"]);
         assert_eq!(Approval::Revoke { name: None, user: Some("dev".into()) }.args(Place::Terminal), ["secret-revoke"]);
-        assert_eq!(Approval::RevokeAllOwn.args(Place::Terminal), ["secret-revoke", "--all"]);
-        assert_eq!((Approval::Revoke { name: Some("gh".into()), user: Some("dev".into()) }.line(), Approval::RevokeAllOwn.line()), ("allow revoke gh user dev".to_string(), "allow all revoke".to_string()));
-        // Ending one secret's grants says when a grant of all still covers it.
-        let ended = serde_json::json!({ "revoked": [{ "seq": 9, "reason": "dev revoked their leave" }], "all_until": "2026-11-13T20:00:00Z" });
-        assert!(Approval::Revoke { name: Some("gh".into()), user: None }.said(&ended).ends_with("still covers that secret, until 2026-11-13T20:00:00Z: `request system secret allow all revoke` ends it.\n"));
+        assert_eq!(Approval::Revoke { name: Some("gh".into()), user: Some("dev".into()) }.line(), "allow revoke gh user dev");
         assert_eq!(Approval::Revoke { name: Some("gh".into()), user: None }.said(&serde_json::json!({ "revoked": [{ "seq": 9, "reason": "r" }] })), "r (ledger #9)\n");
+        assert_eq!(Approval::Revoke { name: Some("gh".into()), user: None }.said(&serde_json::json!({ "revoked": [] })), "You had no such grant to end.\n");
     }
 
     #[test]
     fn a_secret_is_said_what_it_is_for_then_who() {
         let mut r = Rules::new();
         assert!(edit(&mut r, "gh", &Act::Allow(Grant::Agent(None))).is_err(), "what it is for first");
-        assert!(edit(&mut r, "gh", &Act::Approve(Approve::Never)).is_err());
+        assert!(edit(&mut r, "gh", &Act::Approve(Approve::WithoutAsking)).is_err());
         assert_eq!(edit(&mut r, "gh", &Act::Allow(Grant::Https("api.github.com".into()))).unwrap(), "may be sent to api.github.com");
         edit(&mut r, "gh", &Act::Allow(Grant::Agent(None))).unwrap();
         edit(&mut r, "gh", &Act::Approve(Approve::EachUse)).unwrap();
@@ -754,7 +723,7 @@ mod tests {
     fn the_words_read_back() {
         assert_eq!(Act::Allow(Grant::Https("a.com".into())).rest(), " https a.com");
         assert_eq!(Act::Disallow(Grant::Agent(None)).rest(), " agent");
-        assert_eq!(Act::Approve(Approve::FirstUse).rest(), " first-use");
+        assert_eq!(Act::Approve(Approve::WithoutAsking).rest(), " without-asking");
         assert_eq!(rules_path(None), "secrets/system.json");
         assert_eq!(rules_path(Some("casey")), "users/casey/secrets.json");
     }

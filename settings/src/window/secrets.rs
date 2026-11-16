@@ -6,7 +6,7 @@
 //!
 //! It also shows what agents are let use without asking for now (the broker's grants, `app::allowed`): all of the
 //! person's own at the top, and under the chosen secret every grant that covers it, each
-//! with the torqcli line that ends it, and marks a secret whose rule never asks, whatever its session read.
+//! with the torqcli line that ends it, and marks a secret whose rule never asks.
 
 use super::{blocking, failed, waiting, Loaded, Message, Settings};
 use cosmic::iced::Length;
@@ -168,15 +168,11 @@ impl Settings {
         Task::none()
     }
 
-    /// One allowance: whose agent, what it covers and until when; in the destructive style, that it holds even
-    /// after untrusted text; and (`with_button`) for the person's own, the line that ends it and its button.
+    /// One allowance: whose agent, what it covers and until when; and (`with_button`) for the person's own, the
+    /// line that ends it and its button.
     fn allowance(&self, g: &Allowed, with_button: bool) -> Element<'_, Message> {
         let me = self.secrets.me.as_deref();
-        let mut said = widget::column::with_capacity(3).width(Length::Fill).push(widget::text::body(g.said(me)));
-        if g.even_tainted {
-            let theme = cosmic::theme::active();
-            said = said.push(widget::text::caption(app::EVEN_TAINTED).class(cosmic::theme::Text::Color(theme.cosmic().destructive_color().into())));
-        }
+        let said = widget::column::with_capacity(2).width(Length::Fill).push(widget::text::body(g.said(me)));
         let (how, ends) = if with_button { g.ending(me) } else { ("Ended at the top of this page.".to_string(), None) };
         let mut row = vec![said.push(widget::text::caption(how)).into()];
         if let Some((label, line)) = ends {
@@ -206,8 +202,7 @@ impl Settings {
         let red = cosmic::theme::Text::Color(theme.cosmic().destructive_color().into());
         let me = s.me.as_deref();
         // Everything the person allowed, here, where it is seen on opening the page whatever secret is chosen:
-        // the grant of all their own secrets first, then each named one, each with what it holds under (in the
-        // destructive style where that is even untrusted text) and the line that ends it (`Allowed::ending`).
+        // each with the line that ends it (`Allowed::ending`).
         let mine = app::own_allowed(allowed, me);
         if !mine.is_empty() {
             let mut section = settings::section().title("What you allowed without asking, for now");
@@ -229,9 +224,9 @@ impl Settings {
                 for x in secrets {
                     let which = (x.user.clone(), x.name.clone());
                     list = list.add(settings::item::builder(app::secret_row(x.user.as_deref(), &x.name, s.me.as_deref())).description(x.said.clone()).control(choose(s.chosen.as_ref() == Some(&which), Some(which))));
-                    // Marked wherever the secret is listed: this one is used with no one asked, whatever was read.
-                    if x.approve == Approve::NeverEvenTainted {
-                        list = list.add(widget::text::caption(format!("{}: the agent uses it without ever asking. {}", x.name, app::EVEN_TAINTED)).class(red));
+                    // Marked wherever the secret is listed: this one is used with no one asked.
+                    if x.approve == Approve::WithoutAsking {
+                        list = list.add(widget::text::caption(format!("{}: the agent uses it without ever asking.", x.name)).class(red));
                     }
                 }
             }
@@ -324,28 +319,45 @@ impl Settings {
                     }
                     agent = agent.add(widget::text::caption(format!("Another person's agent, on the Command Line page: {}", command(&["allow", name, "agent", "<person>"], None))));
                 }
-                let mut approve = settings::section().title("Before the agent uses it, a person is asked");
-                for (rule, label) in [(Approve::Never, "Never"), (Approve::FirstUse, "The first time in each of the agent's sessions"), (Approve::EachUse, "Every time")] {
-                    approve = if x.approve == rule {
-                        approve.add(settings::item::builder(label).description("As it is now").control(widget::text::caption("Now")))
+                // The two choices there are. Asked each time: any secret.
+                let mut approve = settings::section().title("Before the agent uses it");
+                approve = if x.approve == Approve::EachUse {
+                    approve.add(settings::item::builder("Ask me each time").description("As it is now").control(widget::text::caption("Now")))
+                } else {
+                    approve.add(run("Ask me each time".into(), &["approve", name, Approve::EachUse.word()], named))
+                };
+                // Never asked: a person's own secret only, theirs to say, with their password. In the destructive
+                // style, set or offered. What giving up the asking means is said once, under whatever offers it.
+                let mut warned = false;
+                if app::without_asking_offered(user, me) {
+                    if x.approve == Approve::WithoutAsking {
+                        approve = approve.add(settings::item::builder("Never ask me").description("As it is now").control(widget::text::caption("Now").class(red)));
+                        approve = approve.add(widget::text::caption(format!("Your agent uses {whose} without asking you: text it has read can make it use the secret. It still goes only to the hosts above."))
+                            .class(red));
                     } else {
-                        approve.add(run(label.into(), &["approve", name, rule.word()], named))
-                    };
-                }
-                // Never, even after untrusted text: a person's own secret only, theirs to say, with their password.
-                // In the destructive style, set or offered.
-                if app::never_tainted_offered(user, me) {
-                    if x.approve == Approve::NeverEvenTainted {
-                        approve = approve.add(settings::item::builder("Never, even from a session that read untrusted text").description("As it is now").control(widget::text::caption("Now").class(red)));
-                        approve = approve.add(widget::text::caption(format!("Your agent uses {whose} without ever asking you, whatever it has read: text it reads can make it use the secret. It still goes only to the hosts above. Any other line here ends that.")).class(red));
-                    } else {
-                        approve = approve.add(run("Never, even from a session that read untrusted text. Your password is asked".into(), &["approve", name, Approve::NeverEvenTainted.word()], named));
-                        approve = approve.add(widget::text::caption("With that, text your agent reads can make it use the secret without you being asked.").class(red));
+                        approve = approve.add(run("Never ask me. Your password is asked".into(), &["approve", name, Approve::WithoutAsking.word()], named));
+                        warned = true;
                     }
                 }
-                page = page.push(agent).push(approve).push(widget::text::caption(
-                    "A use that asks waits two minutes for the person whose agent it is: they answer in TorqOS's item in the panel, or in a terminal (show system secrets waiting). With no answer it is refused. A session that read untrusted text (a web page, an email, a downloaded file) is asked every time, whatever is chosen above, and so is a coding tool run as the agent, which TorqOS cannot see into.",
-                ));
+                // The one allowance for a while: this secret, for so many minutes. Where the broker would give it.
+                if app::allowance_offered(x, me, allowed) {
+                    for minutes in app::ALLOWANCE_MINUTES {
+                        let line = app::allowance_line(name, user, minutes);
+                        approve = approve.add(
+                            settings::item::builder(format!("{}. Your password is asked", app::Allowance { minutes }.label()))
+                                .description(line.clone())
+                                .control(widget::button::destructive("Run").on_press_maybe(named.then(|| Message::Act(At::Read, line)))),
+                        );
+                    }
+                    warned = true;
+                }
+                if warned {
+                    approve = approve.add(widget::text::caption(app::UNASKED_WARNING).class(red));
+                }
+                page = page.push(agent).push(approve).push(widget::text::caption(format!(
+                    "{} A use that asks waits two minutes for the person whose agent it is: they answer in TorqOS's item in the panel, or in a terminal (show system secrets waiting). With no answer it is refused.",
+                    app::WHY_ASKED
+                )));
                 // What lets its uses through without asking, for now: each allowance that covers this secret, and
                 // for the person's own the line that ends it.
                 let covering = app::allowed_under(allowed, user, name, me);

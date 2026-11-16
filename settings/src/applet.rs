@@ -315,8 +315,8 @@ impl Applet {
         }
     }
 
-    /// The dialog for the agent's use of a secret that waits (ADR-051, ADR-052 4): the broker's facts first, then,
-    /// apart and marked as the agent's, the agent's own words; then the buttons. Laid out from `d`, which
+    /// The dialog for the agent's use of a secret that waits (ADR-051, ADR-052 4): the broker's facts first and why
+    /// the person is asked, then, apart and marked as the agent's, the agent's own words; then the buttons. Laid out from `d`, which
     /// `torq::app` made: nothing is decided here. `note`: why an answer to this very use was not taken.
     /// No button here is the highlighted one: nothing in a prompt like this is the default.
     fn use_view(&self, d: app::UseDialog, note: Option<&app::Note>) -> Element<'_, Message> {
@@ -330,11 +330,10 @@ impl Applet {
         col = col.push(widget::text::heading("Your agent asks to use a secret"));
         // Always a line, whether or not another use waits: one coming or going moves nothing below it.
         col = col.push(widget::text::caption(d.more));
-        for (label, value, marked) in d.facts {
-            let value = widget::text::body(value).width(Length::Fill);
-            let value = if marked { value.class(red) } else { value };
-            col = col.push(widget::row::with_capacity(2).spacing(spacing.space_xs).push(widget::text::caption(label).width(Length::Fixed(76.0))).push(value));
+        for (label, value) in d.facts {
+            col = col.push(widget::row::with_capacity(2).spacing(spacing.space_xs).push(widget::text::caption(label).width(Length::Fixed(76.0))).push(widget::text::body(value).width(Length::Fill)));
         }
+        col = col.push(widget::text::caption(d.why).width(Length::Fill));
         col = col.push(widget::text::caption(d.left).width(Length::Fill));
         if !d.agent_says.is_empty() {
             col = col.push(widget::divider::horizontal::default());
@@ -356,20 +355,13 @@ impl Applet {
         }
         if self.allowing == Some(n) {
             col = col.push(widget::text::body("Let your agent use this secret without asking you. Your password is asked first.").width(Length::Fill));
-            if let Some(note) = d.offers_note {
-                col = col.push(widget::text::caption(note).width(Length::Fill));
-            }
             if let Some(replaces) = d.replaces {
                 col = col.push(widget::text::caption(replaces).width(Length::Fill));
             }
-            let warn = d.offers.iter().any(|o| o.red);
             for o in d.offers {
-                let reply = live.then_some(Message::UseReply(n, app::Reply::For(o.allowance)));
-                col = col.push(if o.red { widget::button::destructive(o.label).on_press_maybe(reply) } else { widget::button::standard(o.label).on_press_maybe(reply) });
+                col = col.push(widget::button::destructive(o.label).on_press_maybe(live.then_some(Message::UseReply(n, app::Reply::For(o.allowance)))));
             }
-            if warn {
-                col = col.push(widget::text::caption(app::EVEN_TAINTED_WARNING).class(red).width(Length::Fill));
-            }
+            col = col.push(widget::text::caption(app::UNASKED_WARNING).class(red).width(Length::Fill));
             col = col.push(widget::button::text("Back").on_press_maybe(live.then_some(Message::AllowFor(n, false))));
         } else {
             col = col.push(
