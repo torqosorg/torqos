@@ -30,6 +30,9 @@ pkgs.testers.runNixOSTest {
     # The agents may read the system journal (off by default).
     torq.agent.journal = true;
     torq.broker.rebuildCommand = "true";
+    # The check of a proposal (ADR-056) puts a copy of the config repo in the store: with the little room a
+    # test VM's store has, Nix would collect garbage first, each time, for half a minute.
+    nix.settings.min-free = 0;
     environment.systemPackages = [ pkgs.socat pkgs.jq pkgs.tmux ];
   };
 

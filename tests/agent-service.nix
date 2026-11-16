@@ -80,6 +80,9 @@ pkgs.testers.runNixOSTest {
     users.users.carol = { isNormalUser = true; hashedPasswordFile = lib.mkForce null; hashedPassword = hash; packages = [ (pkgs.writeShellScriptBin "claude" "echo \"carol's own, as $(id -un)\"") ]; };
     torq.agent.people = [ "alice" "bob" ];
     torq.broker.rebuildCommand = "true";
+    # The check of a proposal (ADR-056) puts a copy of the config repo in the store: with the little room a
+    # test VM's store has, Nix would collect garbage first, each time, for half a minute.
+    nix.settings.min-free = 0;
     # The engine: Claude Code chosen, allowed, installed for the agents, and standing in.
     torq.unfree.packages = [ "claude-code" ];
     torq.agent.tools = [ "claude-code" ];

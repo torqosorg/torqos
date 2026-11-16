@@ -91,6 +91,9 @@ pkgs.testers.runNixOSTest {
     # The agents may read the system journal (off by default): torq-mcp then offers its journal tool.
     torq.agent.journal = true;
     torq.broker.rebuildCommand = "true";
+    # The check of a proposal (ADR-056) puts a copy of the config repo in the store: with the little room a
+    # test VM's store has, Nix would collect garbage first, each time, for half a minute.
+    nix.settings.min-free = 0;
     # Claude Code chosen, allowed, and standing in.
     torq.unfree.packages = [ "claude-code" ];
     torq.agent.tools = [ "claude-code" ];
