@@ -1,0 +1,4 @@
+Certificates for the tests only, made with openssl on 2026-11-16, good for a hundred years, for the name
+`model.test`. `ca.pem` is an authority the tests trust; `model.pem` and `model.key` are a service's certificate
+it signed; `stranger.pem` and `stranger.key` are a certificate for the same name signed by an authority nobody
+trusts. The keys here protect nothing: they are test fixtures, public on purpose.

@@ -6,5 +6,6 @@ agent/target/
 wire/target/
 settings/target/
 secrets/target/
+proxy/target/
 *.qcow2
 .direnv/

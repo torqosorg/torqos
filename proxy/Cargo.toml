@@ -1,0 +1,36 @@
+[package]
+name = "torq-model-proxy"
+version = "0.4.0"
+edition = "2021"
+rust-version = "1.89"
+description = "TorqOS's model proxy: every request an agent makes of its model passes here and is recorded, and the sites an agent may reach are decided here (ADR-057)"
+license = "Apache-2.0"
+publish = false
+
+[lib]
+name = "torq_model_proxy"
+path = "src/lib.rs"
+
+[[bin]]
+name = "torq-model-proxy"
+path = "src/main.rs"
+
+[dependencies]
+# HTTP/1.1 as a maintained implementation reads and writes it (ADR-057): nothing of the protocol is parsed here.
+hyper = { version = "1", default-features = false, features = ["http1", "server", "client"] }
+hyper-util = { version = "0.1", default-features = false, features = ["tokio"] }
+http-body-util = "0.1"
+bytes = "1"
+tokio = { version = "1", default-features = false, features = ["rt", "net", "io-util", "time", "sync", "macros"] }
+# TLS to the model's service, certificates checked against the machine's own list of authorities.
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
+rustls-pki-types = { version = "1.9", features = ["std"] }
+# An answer the service compressed is read for the record (it is passed on as it came).
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["raw_value"] }
+# The record's words (ADR-044), shared with torqcli.
+torq-wire = { path = "../wire" }
+
+[dev-dependencies]
+tempfile = "3"
