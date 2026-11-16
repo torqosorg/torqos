@@ -49,13 +49,28 @@ let
       if ms == [ ] then "20 characters fit an agent account" else throw "agent-assertions: a name of 20 characters is refused: ${builtins.toJSON ms}")
     # Removed with TorqOS's own agent loop (ADR-055, phase 2): a configuration that still sets one of its
     # settings is refused in words that say what to delete, never as an option NixOS does not know. Each
-    # subtree is one removed option, so any setting under it is caught; the journal's new place is said.
-    (refuses "doctor mode still set" { torq.agent.doctor.enable = true; } "The option definition `torq.agent.doctor' in")
-    (refuses "doctor mode still set, said" { torq.agent.doctor = { enable = true; endpoint = "https://api.example.org/v1"; model = "m"; }; } "`delete torq agent doctor`")
-    (refuses "the journal under doctor mode, said" { torq.agent.doctor.journal = true; } "that setting is now `torq agent journal`")
-    (refuses "a key file still set" { torq.agent.doctor.apiKeyFile = "/var/lib/torq/secrets/model.key"; } "TorqOS no longer has an agent loop of its own")
+    # subtree is one removed option, so any setting under it is caught. What to type comes first (torqcli
+    # shows a refusal's first 300 characters); only what is set is named; the journal's new place is said
+    # only where the journal was on, with the truth about when it can be set.
+    (refuses "doctor mode still set" { torq.agent.doctor.enable = true; } "`torq agent doctor` is still set, in ")
+    (refuses "doctor mode still set, said" { torq.agent.doctor = { enable = true; endpoint = "https://api.example.org/v1"; model = "m"; }; } "and TorqOS no longer has it. In torqcli: `configure`, `delete torq agent doctor`, `commit`")
+    (refuses "the journal under doctor mode, said" { torq.agent.doctor.journal = true; } "That setting is now `torq agent journal`")
+    (refuses "the journal: when it can be set" { torq.agent.doctor.journal = true; } "own, after the update. Until then the agents do not read the journal.")
+    (refuses "a key file still set" { torq.agent.doctor.apiKeyFile = "/var/lib/torq/secrets/model.key"; } "TorqOS's own agent loop is gone")
     (refuses "the local model still set" { torq.agent.model = { url = "https://example.org/m.gguf"; hash = "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="; }; } "`delete torq agent model`")
-    (refuses "the local model's flags still set" { torq.agent.model.extraFlags = [ "--ctx-size" "16384" ]; } "The option definition `torq.agent.model' in")
+    (refuses "the local model's flags still set" { torq.agent.model.extraFlags = [ "--ctx-size" "16384" ]; } "`torq agent model` is still set, in ")
+    (let
+      said = ms: lib.filter (lib.hasInfix "is still set") ms;
+      off = said (failing { torq.agent.doctor = { enable = true; journal = false; }; });
+      doctorOnly = said (failing { torq.agent.doctor.enable = true; });
+      # The same, set where a machine sets it: the tree's own file, which the words name.
+      inTheTree = said (failing { imports = [ (import ../modules/nixos-settings.nix ./removed-settings) ]; });
+    in
+      if lib.any (lib.hasInfix "journal") (off ++ doctorOnly) then throw "agent-assertions: the journal is spoken of where it was not on: ${builtins.toJSON off}"
+      else if lib.length doctorOnly != 1 || lib.any (lib.hasInfix "torq agent model") doctorOnly then throw "agent-assertions: a setting that is not set is named to delete: ${builtins.toJSON doctorOnly}"
+      else if !(lib.any (lib.hasInfix "is still set, in `nixos/torq.json', and") inTheTree) then throw "agent-assertions: the file a removed setting is in is not named: ${builtins.toJSON inTheTree}"
+      else if lib.any (m: lib.stringLength (lib.head (lib.splitString "\n" m)) > 200) inTheTree then throw "agent-assertions: what to type is not within what torqcli shows of a refusal"
+      else "a removed setting: what is set, where, and what to type")
     # The journal, the agents' own setting now: off by default; on, each agent account is in systemd-journal
     # and in no other group, and torq-mcp is told so. No local model's service, no second account, either way.
     (let off = configOf { }; on = configOf { torq.agent.journal = true; }; in

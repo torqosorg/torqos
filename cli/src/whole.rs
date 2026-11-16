@@ -377,7 +377,11 @@ impl Whole<'_> {
         let values = match (&hand, &old_place) {
             (Some(h), _) => !self.schema.resolve_in(h, Some(&d.config))?.values.is_empty(),
             (None, Some(_)) => false,
-            (None, None) => !self.tree.locate(words).map_err(|e| self.hint(words, e))?.2.is_empty(),
+            // (What the files hold and the system's settings no longer know: the whole of it, below.)
+            (None, None) => match self.tree.locate(words) {
+                Err(_) if settings::holds(&d.settings, words) => false,
+                found => !found.map_err(|e| self.hint(words, e))?.2.is_empty(),
+            },
         };
         if values {
             let r = match &hand {
@@ -697,6 +701,37 @@ mod tests {
         assert!(x.set(&mut d, &w("services printing enable true")).is_ok(), "NixOS's own services are NixOS's");
         assert!(x.is_place(&w("virtualisation docker")) && x.is_place(&w("services httpd virtualHosts example.com")));
         assert!(!x.is_place(&w("virtualisation docker enable")));
+    }
+
+    /// A setting TorqOS removed, still in a machine's files (a configuration from a repository, or from
+    /// before an update): `delete` takes it out by the words it is written with, whole; nothing is set
+    /// that way, an abbreviation or a value of it is not understood, and the fence still holds.
+    #[test]
+    fn what_the_schema_no_longer_knows_is_deleted_and_never_set() {
+        let t = t();
+        let x = Whole { schema: &t.schema, tree: &t.tree };
+        let mut d = Data::default();
+        d.settings = settings::load([(
+            "nixos/torq.json",
+            br#"{"agent":{"doctor":{"enable":true,"journal":true},"model":{"url":"https://example.org/m.gguf"}},"dev":{"enable":true},"broker":{"gone":"x"}}"# as &[u8],
+        )])
+        .unwrap();
+        assert!(x.show(&d, &[]).unwrap().contains("doctor"), "it is shown, as it is in the files");
+        let e = format!("{:#}", x.set(&mut d, &w("torq agent doctor enable false")).unwrap_err());
+        assert!(e.contains("no such setting"), "never set: {e}");
+        for line in ["torq agent doc", "torq agent doctor enable true", "torq agent doctor nothing", "torq agent nothing"] {
+            let before = d.clone();
+            let e = format!("{:#}", x.delete(&mut d, &w(line)).unwrap_err());
+            assert!(e.contains("no such setting"), "{line}: {e}");
+            assert_eq!(d, before, "{line}: nothing changed");
+        }
+        let e = format!("{:#}", x.delete(&mut d, &w("torq broker gone")).unwrap_err());
+        assert!(e.contains("not changeable in the configuration tree"), "the fence holds for words the schema does not know: {e}");
+        assert_eq!(x.delete(&mut d, &w("torq agent doctor journal")).unwrap(), Deleted::Done, "one setting below it");
+        assert_eq!(x.delete(&mut d, &w("torq agent doctor")).unwrap(), Deleted::Done);
+        assert_eq!(x.delete(&mut d, &w("torq agent model")).unwrap(), Deleted::Done);
+        assert_eq!(d.settings["torq"], serde_json::json!({"dev": {"enable": true}, "broker": {"gone": "x"}}), "exactly what was named, and what it left empty");
+        assert!(format!("{:#}", x.delete(&mut d, &w("torq agent doctor")).unwrap_err()).contains("no such setting"), "gone: the words mean nothing now");
     }
 
     #[test]

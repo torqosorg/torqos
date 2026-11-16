@@ -198,6 +198,25 @@ let
   plainClaude = pkgs.writeShellScriptBin "claude" ''
     exec ${lib.getExe' config.torq.cli.package "torq"} agent claude "$@"
   '';
+  # A setting TorqOS removed, refused where a configuration still sets it. NixOS's mkRemovedOptionModule
+  # with words of our own: torqcli shows the first 300 characters of a refusal, so what to type comes first
+  # (`delete` works on it in the torqcli of the TorqOS before and of this one), the file it is in is named,
+  # and `after` is given what is set there, to say only what applies.
+  removed = path: after: { options, ... }:
+    let
+      opt = lib.getAttrFromPath path options;
+      words = lib.concatStringsSep " " path;
+    in {
+      options = lib.setAttrByPath path (lib.mkOption {
+        visible = false;
+        apply = _: throw "`${words}` was removed from TorqOS and cannot be used";
+      });
+      config.assertions = [{
+        assertion = !opt.isDefined;
+        message = "`${words}` is still set, in ${lib.showFiles opt.files}, and TorqOS no longer has it. "
+          + "In torqcli: `configure`, `delete ${words}`, `commit` (with the update, where this is one).\n${after opt.definitions}";
+      }];
+    };
   # `torq agent run` (ADR-041, 5): a person starts a program as their own agent. This runs as root
   # (through sudo), hides every home and the people's runtime directories, gives a private /tmp,
   # binds in only the directory shared with it, and drops to the caller's agent for good.
@@ -224,17 +243,16 @@ in
     # Removed with TorqOS's own agent loop (ADR-055, phase 2): `torq doctor`, `torq agent propose`, the model
     # they asked and the local model's service. Each whole subtree is one removed option, so that any setting
     # left under it in a machine's configuration is refused with these words, and not as an unknown option.
-    (lib.mkRemovedOptionModule [ "torq" "agent" "doctor" ] ''
-      TorqOS no longer has an agent loop of its own (`torq doctor`, `torq agent propose`): the machine's agent
-      is the coding tool you choose (`set torq agent engine claude-code`). Delete what is set under it: in
-      torqcli, `configure`, `delete torq agent doctor`, `commit`. If `torq agent doctor journal` was on (the
-      agents may read the system journal), that setting is now `torq agent journal`: `set torq agent journal
-      true` in the same commit keeps it.'')
-    (lib.mkRemovedOptionModule [ "torq" "agent" "model" ] ''
+    (removed [ "torq" "agent" "doctor" ] (set: ''
+      TorqOS's own agent loop is gone (`torq doctor`, `torq agent propose`): the machine's agent is the coding
+      tool you choose (`set torq agent engine claude-code`).${lib.optionalString (lib.any (d: builtins.isAttrs d && (d.journal or false) == true) set) ''
+       It let the agents read the system journal (`journal true`). That setting is now `torq agent journal`,
+      which torqcli knows once the machine runs this TorqOS: `set torq agent journal true` is a commit of its
+      own, after the update. Until then the agents do not read the journal.''}''))
+    (removed [ "torq" "agent" "model" ] (_: ''
       TorqOS no longer runs a model of its own on the machine (llama.cpp, for `torq doctor`): the machine's
       agent is the coding tool you choose (`set torq agent engine claude-code`), which asks its own service.
-      Delete what is set under it: in torqcli, `configure`, `delete torq agent model`, `commit`. A model file
-      it named by `path` is not removed from the disk: delete it yourself if you do not want it.'')
+      A model file it named by `path` is not removed from the disk: delete it yourself if you do not want it.''))
   ];
 
   options.torq.agent.package = lib.mkOption {

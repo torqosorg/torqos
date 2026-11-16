@@ -80,14 +80,19 @@ let
     else path;
 in
 {
-  imports = lib.concatLists (lib.mapAttrsToList (at: rels:
-    if rels == [ ] then throw "torq: config-files.json: ${if at == "" then "the top" else "`${at}`"}: an empty list (no files: no entry)"
-    else map (configFile at) (lib.toList rels)) attached);
   # A file is one of NixOS's top-level settings, by name: never a module directive (`_type.json`,
   # whose value would make the whole of nixos/ an mkMerge or mkOverride: audit of 2026-11-01, N1),
-  # never a name no option has.
-  config = lib.genAttrs names (name:
-    if lib.hasPrefix "_" name || !(options ? ${name})
-    then throw "torq: nixos/${name}.json: '${name}' is not one of NixOS's settings (a file here is one: networking.json, services.json, …)"
-    else under options.${name} (checked name (read name)));
+  # never a name no option has. Each file is a module of its own, named as the person knows it, so
+  # that NixOS's own words about a value ("the option definition … in `nixos/torq.json'") name the
+  # file it is in, not a file of nixpkgs.
+  imports = lib.concatLists (lib.mapAttrsToList (at: rels:
+    if rels == [ ] then throw "torq: config-files.json: ${if at == "" then "the top" else "`${at}`"}: an empty list (no files: no entry)"
+    else map (configFile at) (lib.toList rels)) attached)
+    ++ map (name: {
+      _file = "nixos/${name}.json";
+      config.${name} =
+        if lib.hasPrefix "_" name || !(options ? ${name})
+        then throw "torq: nixos/${name}.json: '${name}' is not one of NixOS's settings (a file here is one: networking.json, services.json, …)"
+        else under options.${name} (checked name (read name));
+    }) names;
 }

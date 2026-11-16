@@ -212,10 +212,30 @@ pub fn set(tree: &Tree, s: &mut Settings, words: &[String]) -> Result<()> {
     Ok(())
 }
 
+/// Whether `words`, exactly as written, name something that is set in the files: a place or a setting.
+/// It is how `delete` reaches what the system's settings no longer know (a setting TorqOS removed, left
+/// in a configuration that came from a repository or from before an update): what is in the files can
+/// always be taken out of them, and nothing can be set that way.
+pub fn holds(s: &Settings, words: &[String]) -> bool {
+    let Some((top, rest)) = words.split_first() else { return false };
+    let Some(mut at) = s.get(top) else { return false };
+    for k in rest {
+        match at.as_object().and_then(|o| o.get(k)) {
+            Some(v) => at = v,
+            None => return false,
+        }
+    }
+    true
+}
+
 /// `delete <words>`: a setting, a value of a list, or a whole place (`all`, checked by the caller).
-/// What is left empty above it goes too.
+/// What is left empty above it goes too. Words the system's settings do not know are deleted where the
+/// files hold exactly them (`holds`): the whole of what is there, never one value of it.
 pub fn delete(tree: &Tree, s: &mut Settings, words: &[String]) -> Result<()> {
-    let (loc, ty, values) = tree.locate(words)?;
+    let (loc, ty, values) = match tree.locate(words) {
+        Err(_) if holds(s, words) => (words.to_vec(), None, Vec::new()),
+        found => found?,
+    };
     if tree.fenced(&loc) {
         bail!("{}: not changeable in the configuration tree", loc.join(" "));
     }
