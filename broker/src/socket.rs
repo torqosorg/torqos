@@ -67,7 +67,7 @@ pub struct Change {
 /// asking and who approves (the kernel's), and files (they come in the request).
 const NOT_FROM_CALLERS: &[&str] = &[
     "--repo", "--state-dir", "--rebuild-cmd", "--build-cmd", "--activate-cmd", "--boot-cmd", "--schedule-cmd",
-    "--commit-at-cmd", "--commit-at-cancel-cmd", "--current-system", "--system-profile", "--actor", "--agent", "--approved-by", "--diff", "--hash-file", "--key-file", "--value-file",
+    "--commit-at-cmd", "--commit-at-cancel-cmd", "--check-cmd", "--current-system", "--system-profile", "--actor", "--agent", "--approved-by", "--diff", "--hash-file", "--key-file", "--value-file",
 ];
 
 /// Refuse arguments that name the caller, a file, or the broker's settings.
@@ -661,6 +661,15 @@ mod tests {
         assert_eq!(a, ["schedule", "3", "--at=x", "--approved-by", "sam"]);
         assert!(check_args(&["schedule".into(), "--commit-at-cmd=true".into()]).is_err());
         assert!(check_args(&["schedule".into(), "--commit-at-cancel-cmd".into()]).is_err());
+    }
+
+    /// What checks an agent's proposal is the machine's setting, never the proposer's (ADR-056): an agent that
+    /// could name its own checker would have its proposals found valid by it, and run a command as root.
+    #[test]
+    fn no_caller_names_the_checker() {
+        assert!(check_args(&["propose".into(), "--check-cmd=echo '{\"ok\":true,\"warnings\":[]}'".into()]).is_err());
+        assert!(check_args(&["--check-cmd".into(), "true".into(), "propose".into()]).is_err());
+        assert!(check_args(&["propose".into(), "--reason=--check-cmd true".into()]).is_ok(), "a reason that only says so is a reason");
     }
 
     /// ADR-042 (amended): the agent's sessions are the agent's. And there is no trust to give it (session

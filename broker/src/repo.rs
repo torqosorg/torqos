@@ -463,6 +463,20 @@ impl Repo {
         self.with_proposal_index(diff_path, |env| self.git_env(env, &["diff", "--cached", "--no-renames", "--no-color", "--no-ext-diff", "--no-textconv", "--text", "HEAD"]))
     }
 
+    /// The git tree the diff in `diff_path` leaves, written to the repo's objects: HEAD's tree with the
+    /// diff applied, from the same scratch index everything else of a proposal is read from, so it is byte
+    /// for byte the tree `apply_and_commit` would commit. Its id: what the broker's checker is given
+    /// (ADR-056). Nothing refers to it; git's own housekeeping removes it in time.
+    pub fn proposal_tree(&self, diff_path: &Path) -> Result<String> {
+        self.with_proposal_index(diff_path, |env| Ok(self.git_env(env, &["write-tree"])?.trim().to_string()))
+    }
+
+    /// The tree of commit `rev`, by its id.
+    pub fn tree_of(&self, rev: &str) -> Result<String> {
+        revision(rev)?;
+        Ok(self.git(&["rev-parse", "--verify", "--end-of-options", &format!("{rev}^{{tree}}")])?.trim().to_string())
+    }
+
     /// A file of commit `rev` as a proposal's result is read (`proposed_files`): its mode, its size, and its
     /// bytes when it is at most `max_bytes`; None when `rev` has none at `path`.
     pub fn file_at(&self, rev: &str, path: &str, max_bytes: u64) -> Result<Option<ProposedFile>> {

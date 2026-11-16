@@ -32,6 +32,7 @@ struct Cli {
     schedule_cmd: Option<String>,
     commit_at_cmd: Option<String>,
     commit_at_cancel_cmd: Option<String>,
+    check_cmd: Option<String>,
     current_system: Option<PathBuf>,
     system_profile: Option<PathBuf>,
     /// The agent account a request is for (ADR-051 3): the socket adds it, from the kernel's answer.
@@ -132,6 +133,7 @@ fn command_line() -> clap::Command {
         .arg(opt("schedule-cmd", "TORQ_SCHEDULE_CMD", "Schedule `{broker} expire-confirm {seq}` after `{seconds}` [default: a transient systemd timer]."))
         .arg(opt("commit-at-cmd", "TORQ_COMMIT_AT_CMD", "`commit at`: arm the timer that runs `{broker} run-scheduled {id}` at `{at}` [default: a transient systemd timer]."))
         .arg(opt("commit-at-cancel-cmd", "TORQ_COMMIT_AT_CANCEL_CMD", "`commit at`: stop schedule `{id}`'s timer [default: systemctl stop torq-commit-at-{id}.timer]."))
+        .arg(opt("check-cmd", "TORQ_CHECK_CMD", "Check an agent's proposal before it is recorded: `{tree}`, the git tree the change leaves; one line of JSON on its output [default: torq --check-tree in a transient unit, as torq-check]."))
         .arg(path(
             "current-system",
             "TORQ_CURRENT_SYSTEM",
@@ -357,6 +359,7 @@ fn parse_cli() -> Cli {
         schedule_cmd: s(&m, "schedule-cmd"),
         commit_at_cmd: s(&m, "commit-at-cmd"),
         commit_at_cancel_cmd: s(&m, "commit-at-cancel-cmd"),
+        check_cmd: s(&m, "check-cmd"),
         current_system: p(&m, "current-system"),
         system_profile: p(&m, "system-profile"),
         agent: sub.try_get_one::<String>("agent").ok().flatten().cloned(),
@@ -425,6 +428,7 @@ fn settings(cli: &mut Cli) -> Result<Settings> {
         schedule: cli.schedule_cmd.clone(),
         commit_at: cli.commit_at_cmd.clone(),
         commit_at_cancel: cli.commit_at_cancel_cmd.clone(),
+        check: cli.check_cmd.clone(),
         current_system: cli.current_system.clone(),
         system_profile: cli.system_profile.clone(),
     };
@@ -451,6 +455,7 @@ fn run(mut cli: Cli, via: Option<String>, caller: Option<String>) -> Result<()> 
         .with_backup_restore(&s.restore)
         .with_people(&s.people)
         .with_agent_limits(&s.agent)
+        .with_check(&s.check, torq_broker::check::WAIT)
         .as_agent(cli.agent.as_deref())
         .with_remote(s.remote.as_deref())
         .with_nix_cache(s.home.join(".cache/nix"))

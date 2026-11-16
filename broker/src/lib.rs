@@ -13,6 +13,7 @@
 pub mod agent;
 pub mod ask;
 pub mod backup;
+pub mod check;
 pub mod at;
 pub mod config;
 pub mod remote;
@@ -88,6 +89,10 @@ pub struct Broker {
     ask_wait: std::time::Duration,
     /// The config repo's remote, if the owner named one (ADR-036).
     remote: Option<String>,
+    /// What checks an agent's proposal before it is recorded (ADR-056, check.rs): `{tree}`. Empty: nothing does.
+    check_cmd: String,
+    /// How long the check of one proposal may take.
+    check_wait: std::time::Duration,
 }
 
 /// The fields the broker reads back from an entry, each in the shape the broker writes: anything else
@@ -665,6 +670,19 @@ impl Pending {
 
 const PENDING_VERSION: u32 = 1;
 
+/// A proposal that passed everything it is judged by (`Broker::vet`), not yet recorded.
+struct Vetted {
+    diff: String,
+    files: Vec<String>,
+    /// What it does, as git writes it.
+    effect: String,
+    standing: Vec<String>,
+    cuts_off: Vec<String>,
+    tier: Tier,
+    /// An agent's: the id of the git tree it leaves (ADR-056). None: a person's, which they checked.
+    tree: Option<String>,
+}
+
 /// First-boot setup in flight (`Broker::set_up`), written to `state/setup.json` before the config
 /// repo gets its history and removed once change #1 is in the ledger. Setup switches before it
 /// ledgers: a broker that dies after the switch leaves a machine that boots its new system with no
@@ -734,6 +752,8 @@ impl Broker {
             secrets: secrets::Store::default(),
             ask_wait: std::time::Duration::from_secs(ask::WAIT_SECONDS),
             remote: None,
+            check_cmd: String::new(),
+            check_wait: check::WAIT,
         }
     }
 
@@ -1333,6 +1353,13 @@ impl Broker {
     /// Where Nix keeps its own caches for the broker's builds (`<HOME>/.cache/nix`; the broker clears XDG_*).
     pub fn with_nix_cache(mut self, path: impl Into<PathBuf>) -> Self {
         self.nix_cache = Some(path.into());
+        self
+    }
+
+    /// What checks an agent's proposal (ADR-056; config.rs `CHECK`), and how long the broker waits for it.
+    pub fn with_check(mut self, cmd: impl Into<String>, wait: std::time::Duration) -> Self {
+        self.check_cmd = cmd.into();
+        self.check_wait = wait;
         self
     }
 
@@ -2045,24 +2072,103 @@ impl Broker {
     /// it waits for a person, who reads it — and carries what its session reported reading; a person's
     /// is tainted only if `tainted` says so (the caller's word).
     pub fn propose_in(&self, base: Option<&str>, diff_path: &Path, reason: &str, actor: Actor, tainted: bool, session: Option<&str>) -> Result<Entry> {
-        let _l = Lock::acquire(&self.state_dir)?;
+        let mut lock = Some(Lock::acquire(&self.state_dir)?);
         let judged = session::judge(self, actor, tainted, session);
         let tainted = judged.as_ref().map_or(true, |j| j.0);
-        let proposed = judged.and_then(|(t, cited)| self.propose_locked(base, diff_path, reason, actor, t, cited));
+        let proposed = judged.and_then(|(t, cited)| match actor {
+            // An agent's is checked before it is recorded (ADR-056), the lock let go meanwhile.
+            Actor::Agent => self.propose_checked(&mut lock, base, diff_path, reason, session),
+            _ => self.vet(base, diff_path, reason, actor).and_then(|v| self.record_proposal(v, base, reason, actor, t, cited, None)),
+        });
         // Its session's record notes it, for what the agent is told it did (session.rs).
         if let (Ok(e), Some(id)) = (&proposed, session) {
             // (Only for telling: the proposal and what its session read are in the ledger already.)
             let _ = session::cite(self, id, e.body.seq);
         }
         // Every refusal of the agent's is on the record, whatever refused it — the forbidden paths,
-        // bad data, a diff that does not apply, the list (the audit of ADR-041): an agent that tries
-        // is seen trying. (Busy is not a refusal: nothing was looked at.)
-        if actor == Actor::Agent {
-            if let Err(e) = &proposed {
+        // bad data, a diff that does not apply, the list, the check (the audit of ADR-041): an agent that
+        // tries is seen trying. (Busy is not a refusal: nothing was looked at, or — the lock not had
+        // again after a check — nothing can be written.)
+        if actor == Actor::Agent && lock.is_some() {
+            if let Some(e) = proposed.as_ref().err().filter(|e| e.downcast_ref::<Busy>().is_none()) {
                 let _ = self.record_refusal(diff_path, reason, tainted, &format!("{e:#}"));
             }
         }
         proposed
+    }
+
+    /// An agent's proposal (ADR-056): vetted, checked, vetted again, recorded. `lock` is the broker's, held
+    /// on entry; it is let go while the checker runs (an evaluation takes a quarter of a minute, and may
+    /// take minutes: nothing else of the machine waits on it) and taken again before anything is written.
+    /// On return it is None only if it could not be had again (busy).
+    ///
+    /// The order is the guard. A change the policy refuses never reaches the checker: the first vetting
+    /// is everything a proposal is judged by, and only what passed it is given a tree. An agent that has
+    /// had its refusals for the hour starts no check, so checks are bounded as refusals are. And what is
+    /// recorded is what was checked: after the check everything is judged again from scratch, on the
+    /// configuration as it then is, and the tree must be the same one.
+    fn propose_checked(&self, lock: &mut Option<Lock>, base: Option<&str>, diff_path: &Path, reason: &str, session: Option<&str>) -> Result<Entry> {
+        let tree = self.vet(base, diff_path, reason, Actor::Agent)?.tree.context("an agent's change has no tree")?;
+        let (account, _) = self.acting_agent()?;
+        if self.recent_refusals(&self.ledger.read_all()?, Some(account)) >= AGENT_REFUSALS_AN_HOUR {
+            bail!("refused: {AGENT_REFUSALS_AN_HOUR} of this agent's changes were refused in the last hour: no more are checked until some of that hour has passed");
+        }
+        let head = self.repo.head()?;
+        *lock = None;
+        let checked = self.check(&tree, &head);
+        *lock = Some(Lock::acquire(&self.state_dir)?);
+        let checked = match checked? {
+            check::Said::NotValid(why) => bail!("refused: with this change the configuration is not valid: {why}"),
+            check::Said::Valid(warnings) => json!({ "tree": tree, "result": "valid", "warnings": warnings }),
+            check::Said::Nothing(why) => json!({ "tree": tree, "result": "not checked", "why": why }),
+        };
+        let (tainted, cited) = session::judge(self, Actor::Agent, true, session)?;
+        let vetted = self.vet(base, diff_path, reason, Actor::Agent)?;
+        if vetted.tree.as_deref() != Some(tree.as_str()) {
+            bail!("refused: the change is not the one that was checked: propose it again");
+        }
+        self.record_proposal(vetted, base, reason, Actor::Agent, tainted, cited, Some(checked))
+    }
+
+    /// The check of `tree` (an agent's change on the configuration at commit `head`), one at a time. Not
+    /// valid only if the same checker finds the configuration as it is valid: where checking cannot work
+    /// (no checker, the account kept from the Nix daemon, a source it cannot read) a change is recorded
+    /// as not checked, never refused for it. That the configuration at a commit is valid is kept
+    /// (`check-base`), so it is evaluated once for each commit, and only when a change first fails on it.
+    fn check(&self, tree: &str, head: &str) -> Result<check::Said> {
+        if self.check_cmd.trim().is_empty() {
+            return Ok(check::Said::Nothing("this machine has no checker"));
+        }
+        if !check::tree_id(tree) {
+            bail!("the change's tree has no id the checker takes: {tree:?}");
+        }
+        let _one = Lock::acquire_named(&self.state_dir, "check.lock", check::TURN)?;
+        let until = std::time::Instant::now() + self.check_wait;
+        let run = |tree: &str| check::run(&fill(&self.check_cmd, &[("tree", tree)]), until);
+        let said = run(tree);
+        if !matches!(said, check::Said::NotValid(_)) {
+            return Ok(said);
+        }
+        let kept = self.state_dir.join("check-base");
+        let base_valid = fs::read_to_string(&kept).is_ok_and(|c| c == head) || {
+            let valid = self.repo.tree_of(head).is_ok_and(|t| check::tree_id(&t) && matches!(run(&t), check::Said::Valid(_)));
+            if valid {
+                let _ = self.write_record(&kept, head.as_bytes());
+            }
+            valid
+        };
+        Ok(if base_valid { said } else { check::Said::Nothing("this machine's configuration as it is does not pass the check either") })
+    }
+
+    /// How many of agent account `account`'s refusals the ledger holds from the last hour (None: those of
+    /// a proposal as an agent that named no account).
+    fn recent_refusals(&self, entries: &[Entry], account: Option<&str>) -> usize {
+        let hour_ago = chrono::Utc::now() - chrono::Duration::hours(1);
+        entries
+            .iter()
+            .filter(|e| e.body.kind == "refused" && e.body.actor == "agent" && e.body.data["agent"] == json!(account))
+            .filter(|e| chrono::DateTime::parse_from_rfc3339(&e.body.ts).is_ok_and(|t| t > hour_ago))
+            .count()
     }
 
     /// The agent's refusals, ledgered (kind `refused`): why, the diff's hash, its reason shortened —
@@ -2076,13 +2182,7 @@ impl Broker {
         if entries.first().is_none_or(|e| e.body.kind != "init") {
             return Ok(());
         }
-        let hour_ago = chrono::Utc::now() - chrono::Duration::hours(1);
-        let recent = entries
-            .iter()
-            .filter(|e| e.body.kind == "refused" && e.body.actor == "agent" && e.body.data["agent"] == json!(self.agent))
-            .filter(|e| chrono::DateTime::parse_from_rfc3339(&e.body.ts).is_ok_and(|t| t > hour_ago))
-            .count();
-        if recent >= AGENT_REFUSALS_AN_HOUR {
+        if self.recent_refusals(&entries, self.agent.as_deref()) >= AGENT_REFUSALS_AN_HOUR {
             return Ok(());
         }
         let mut diff = Vec::new();
@@ -2295,7 +2395,10 @@ impl Broker {
         out.into_iter().collect()
     }
 
-    fn propose_locked(&self, base: Option<&str>, diff_path: &Path, reason: &str, actor: Actor, tainted: bool, session: Option<serde_json::Value>) -> Result<Entry> {
+    /// Everything a proposal is judged by before it is recorded: the limits on an agent's, the base, the
+    /// diff read once and applied to a scratch index, the data files, the agent's list, the tiers. Nothing
+    /// is written but the scratch copy and index (and, for an agent's, the tree's objects in the repo).
+    fn vet(&self, base: Option<&str>, diff_path: &Path, reason: &str, actor: Actor) -> Result<Vetted> {
         self.refuse_if_interrupted()?;
         // An agent always says what it prepared its change against: without a base, a diff applies on
         // top of whatever the configuration has become (second audit, M2; KNOWN-GAPS 6g).
@@ -2388,18 +2491,16 @@ impl Broker {
         }
         // Classify exactly the bytes that go into the ledger: the caller's file is read once and
         // could change between two reads.
-        let copy = self.state_dir.join("proposing.diff");
-        fs::write(&copy, &diff)?;
-        let checked = self.repo.diff_files(&copy).and_then(|files| {
-            let standing = self.check_user_data(&copy, &files)?;
+        let copy = DropFile(self.state_dir.join("proposing.diff"));
+        fs::write(&copy.0, &diff)?;
+        let (files, judged, effect, standing) = self.repo.diff_files(&copy.0).and_then(|files| {
+            let standing = self.check_user_data(&copy.0, &files)?;
             // The agent's proposals: only what its list allows (ADR-041), judged by what changes.
-            let judged = if actor == Actor::Agent { self.agent_check(self.acting_agent()?.0, &copy, &files)? } else { Ok(vec![]) };
+            let judged = if actor == Actor::Agent { self.agent_check(self.acting_agent()?.0, &copy.0, &files)? } else { Ok(vec![]) };
             // What it does, as git writes it: what a person is shown before applying it.
-            let effect = self.repo.proposal_effect(&copy)?;
+            let effect = self.repo.proposal_effect(&copy.0)?;
             Ok((files, judged, effect, standing))
-        });
-        let _ = fs::remove_file(&copy);
-        let (files, judged, effect, standing) = checked?;
+        })?;
         if files.is_empty() {
             bail!("diff changes no files");
         }
@@ -2411,6 +2512,16 @@ impl Broker {
             Err(why) => bail!("refused: {why}"),
             Ok(c) => c,
         };
+        // Last, when nothing above refused it: the tree an agent's change leaves, which is what the
+        // checker is given (ADR-056) — never the diff, and never anything the policy turned away.
+        let tree = if actor == Actor::Agent { Some(self.repo.proposal_tree(&copy.0)?) } else { None };
+        Ok(Vetted { diff, files, effect, standing, cuts_off, tier, tree })
+    }
+
+    /// A vetted proposal recorded: its texts kept, its entry appended. `check`: what the check of an
+    /// agent's found (ADR-056).
+    fn record_proposal(&self, v: Vetted, base: Option<&str>, reason: &str, actor: Actor, tainted: bool, session: Option<serde_json::Value>, check: Option<serde_json::Value>) -> Result<Entry> {
+        let Vetted { diff, files, effect, standing, cuts_off, tier, tree: _ } = v;
         let mut data = json!({
             "files": files,
             "diff_sha256": self.keep_proposal_text(&diff)?,
@@ -2434,6 +2545,10 @@ impl Broker {
         // What of it newly lets the agent use a secret without asking: its apply asks a password.
         if !standing.is_empty() {
             data["standing"] = standing.into();
+        }
+        // Whether it was checked first, on which tree, and what the check found.
+        if let Some(c) = check {
+            data["check"] = c;
         }
         self.ledger.append(NewEntry { actor: actor.to_string(), approved_by: None, kind: "proposal".into(), tier: tier.to_string(), tainted, reason: reason.into(), data })
     }

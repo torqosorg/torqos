@@ -70,6 +70,10 @@ pub struct Settings {
     /// `{restic}`, `{snapshot}`, `{room}`, `{path}`.
     #[serde(default = "restore_default")]
     pub restore: String,
+    /// What checks an agent's proposal before it is recorded (ADR-056, check.rs): `{tree}`, the id of the
+    /// git tree the change leaves. Empty (an older file): nothing does, and a proposal says it was not checked.
+    #[serde(default)]
+    pub check: String,
 }
 
 fn restore_default() -> String {
@@ -88,6 +92,7 @@ pub struct Requested {
     pub schedule: Option<String>,
     pub commit_at: Option<String>,
     pub commit_at_cancel: Option<String>,
+    pub check: Option<String>,
     pub current_system: Option<PathBuf>,
     pub system_profile: Option<PathBuf>,
 }
@@ -122,6 +127,31 @@ pub const SCHEDULE: &str = "systemd-run --quiet --collect --unit=torq-confirm-{s
      --property=StartLimitIntervalSec=1200 --property=StartLimitBurst=60 \
      {broker} expire-confirm {seq}";
 
+/// The check of an agent's proposal (ADR-056): torqcli's checker (`torq --check-tree`, cli/src/checktree.rs)
+/// on the tree `{tree}`, as the locked account `torq-check`, in a transient unit of its own with nothing but
+/// what an evaluation needs: the store and the Nix daemon's socket. No capability and no way to one, the
+/// system read-only, no home, no devices, no network (only Unix sockets: the daemon's), a /tmp of its own
+/// (its HOME and its scratch), no credentials and no way to the broker's socket; bounded in memory, tasks
+/// and time, at the lowest priority. `substitute = false`: the daemon fetches nothing for it. One at a
+/// time by its name; one left over (by a broker that died) is stopped first, which only the holder of the
+/// broker's check lock gets to do. Its errors go nowhere, its exit status says nothing: only its one line
+/// is read (check.rs). A TorqOS machine's is modules/broker.nix's, with the tools by store path.
+pub const CHECK: &str = concat!(
+    "systemctl stop torq-check.service >/dev/null 2>&1; systemctl reset-failed torq-check.service >/dev/null 2>&1;",
+    " exec systemd-run --collect --no-ask-password --pipe --quiet --wait --service-type=exec --unit=torq-check",
+    " -p User=torq-check -p CapabilityBoundingSet= -p AmbientCapabilities= -p NoNewPrivileges=yes",
+    " -p ProtectSystem=strict -p ProtectHome=yes -p PrivateTmp=yes -p PrivateDevices=yes -p PrivateIPC=yes",
+    " -p PrivateNetwork=yes -p RestrictAddressFamilies=AF_UNIX -p ProtectProc=invisible",
+    " -p ProtectKernelTunables=yes -p ProtectKernelModules=yes -p ProtectKernelLogs=yes -p ProtectControlGroups=yes",
+    " -p ProtectClock=yes -p ProtectHostname=yes -p RestrictNamespaces=yes -p RestrictRealtime=yes -p RestrictSUIDSGID=yes",
+    " -p LockPersonality=yes -p MemoryDenyWriteExecute=yes -p SystemCallArchitectures=native -p SystemCallFilter=@system-service",
+    " -p UMask=0077 -p InaccessiblePaths=-/run/credentials -p InaccessiblePaths=-/run/torq -p InaccessiblePaths=/dev/shm",
+    " -p MemoryMax=3G -p MemorySwapMax=0 -p TasksMax=64 -p RuntimeMaxSec=300 -p Nice=19 -p IOSchedulingClass=idle -p LimitCORE=0",
+    " --setenv=HOME=/tmp/home --setenv=XDG_CACHE_HOME=/tmp/cache --setenv=XDG_STATE_HOME=/tmp/state",
+    " --setenv=LANG=C.UTF-8 --setenv=PATH=/run/current-system/sw/bin '--setenv=NIX_CONFIG=substitute = false'",
+    " /run/current-system/sw/bin/torq --check-tree {tree}"
+);
+
 /// The fields of the fixed file, for the lenient reading below.
 const FIELDS: &[&str] = &[
     "repo", "stateDir", "rebuild", "build", "activate", "boot", "schedule", "currentSystem", "systemProfile", "path", "home",
@@ -150,6 +180,7 @@ impl Settings {
             restore: crate::backup::RESTORE.into(),
             commit_at: crate::at::SCHEDULE.into(),
             commit_at_cancel: crate::at::CANCEL.into(),
+            check: CHECK.into(),
         }
     }
 
@@ -205,6 +236,7 @@ pub fn resolve(root: bool, fixed: Option<Settings>, asked: Requested, defaults: 
             check("--schedule-cmd / TORQ_SCHEDULE_CMD", asked.schedule.clone(), f.schedule.clone());
             check("--commit-at-cmd / TORQ_COMMIT_AT_CMD", asked.commit_at.clone(), f.commit_at.clone());
             check("--commit-at-cancel-cmd / TORQ_COMMIT_AT_CANCEL_CMD", asked.commit_at_cancel.clone(), f.commit_at_cancel.clone());
+            check("--check-cmd / TORQ_CHECK_CMD", asked.check.clone(), f.check.clone());
             check("--current-system / TORQ_CURRENT_SYSTEM", asked.current_system.as_deref().map(s), s(&f.current_system));
             check("--system-profile / TORQ_SYSTEM_PROFILE", asked.system_profile.as_deref().map(s), s(&f.system_profile));
             if !differs.is_empty() {
@@ -235,6 +267,7 @@ pub fn resolve(root: bool, fixed: Option<Settings>, asked: Requested, defaults: 
             restore: defaults.restore,
             commit_at: asked.commit_at.unwrap_or(defaults.commit_at),
             commit_at_cancel: asked.commit_at_cancel.unwrap_or(defaults.commit_at_cancel),
+            check: asked.check.unwrap_or(defaults.check),
         }),
     }
 }
@@ -300,6 +333,24 @@ mod tests {
         assert!(!BUILD.contains("nix-env") && !BUILD.contains("switch-to-configuration") && !BUILD.contains("&&"));
     }
 
+    /// What the checker's unit is kept from (ADR-056): each of these in the default command, the tree its
+    /// only argument and the last, and nothing in it that systemd would expand.
+    #[test]
+    fn the_default_check_is_fenced_and_takes_only_the_tree() {
+        for has in [
+            "--unit=torq-check ", "User=torq-check", "CapabilityBoundingSet= ", "AmbientCapabilities= ", "NoNewPrivileges=yes", "ProtectSystem=strict", "ProtectHome=yes", "PrivateTmp=yes",
+            "PrivateDevices=yes", "PrivateIPC=yes", "PrivateNetwork=yes", "RestrictAddressFamilies=AF_UNIX ", "ProtectProc=invisible", "RestrictNamespaces=yes", "SystemCallFilter=@system-service",
+            "UMask=0077", "InaccessiblePaths=-/run/credentials", "InaccessiblePaths=-/run/torq", "InaccessiblePaths=/dev/shm", "MemoryMax=3G", "MemorySwapMax=0", "TasksMax=64", "RuntimeMaxSec=300",
+            "LimitCORE=0", "--collect", "--wait", "--pipe", "'--setenv=NIX_CONFIG=substitute = false'",
+        ] {
+            assert!(CHECK.contains(has), "{has} is not in CHECK");
+        }
+        assert!(CHECK.ends_with(" --check-tree {tree}") && CHECK.matches("{tree}").count() == 1);
+        assert!(!CHECK.contains('$') && !CHECK.contains("allow-import-from-derivation"), "{CHECK}");
+        // One left over is stopped before the next starts, never after.
+        assert!(CHECK.find("systemctl stop torq-check.service").unwrap() < CHECK.find("systemd-run").unwrap());
+    }
+
     fn fixed() -> Settings {
         Settings {
             repo: "/var/lib/torq/config".into(),
@@ -321,6 +372,7 @@ mod tests {
             restore: crate::backup::RESTORE.into(),
             commit_at: crate::at::SCHEDULE.into(),
             commit_at_cancel: crate::at::CANCEL.into(),
+            check: CHECK.into(),
         }
     }
     fn defaults() -> Settings {
@@ -345,6 +397,7 @@ mod tests {
             Requested { schedule: Some("true".into()), ..Default::default() },
             Requested { commit_at: Some("true".into()), ..Default::default() },
             Requested { commit_at_cancel: Some("true".into()), ..Default::default() },
+            Requested { check: Some("echo '{\"ok\":true,\"warnings\":[]}'".into()), ..Default::default() },
             Requested { current_system: Some("/tmp/x".into()), ..Default::default() },
             Requested { system_profile: Some("/tmp/x".into()), ..Default::default() },
         ] {
