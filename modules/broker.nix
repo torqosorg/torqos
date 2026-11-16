@@ -188,6 +188,43 @@ in
       default = "systemctl stop torq-commit-at-{id}.timer";
       description = "Stop a cancelled `commit at`'s timer (the cancel itself is in the ledger, which its run reads).";
     };
+    # The check of an agent's proposal (ADR-056; broker/src/check.rs, the same as config.rs `CHECK`):
+    # torqcli's checker on the tree the broker's vetting made, as the locked account torq-check, in a
+    # unit of its own that has the store, the Nix daemon's socket and nothing else. Fixed settings too.
+    checkCommand = lib.mkOption {
+      type = lib.types.str;
+      default = lib.concatStringsSep " " [
+        # One left over by a broker that died is stopped first (only the holder of the broker's check lock gets here).
+        "systemctl stop torq-check.service >/dev/null 2>&1; systemctl reset-failed torq-check.service >/dev/null 2>&1;"
+        "exec systemd-run --collect --no-ask-password --pipe --quiet --wait --service-type=exec --unit=torq-check"
+        # No privilege, and no way to one.
+        "-p User=torq-check -p CapabilityBoundingSet= -p AmbientCapabilities= -p NoNewPrivileges=yes"
+        # What it sees: the system read-only, no home, no devices, a /tmp of its own, no shared memory,
+        # no credentials, not the broker's socket. No wider than what an agent's account reads.
+        "-p ProtectSystem=strict -p ProtectHome=yes -p PrivateTmp=yes -p PrivateDevices=yes -p PrivateIPC=yes"
+        "-p UMask=0077 -p InaccessiblePaths=-/run/credentials -p InaccessiblePaths=-/run/torq -p InaccessiblePaths=/dev/shm"
+        # No network: only Unix sockets, which is the Nix daemon's.
+        "-p PrivateNetwork=yes -p RestrictAddressFamilies=AF_UNIX -p ProtectProc=invisible"
+        "-p ProtectKernelTunables=yes -p ProtectKernelModules=yes -p ProtectKernelLogs=yes -p ProtectControlGroups=yes"
+        "-p ProtectClock=yes -p ProtectHostname=yes -p RestrictNamespaces=yes -p RestrictRealtime=yes -p RestrictSUIDSGID=yes"
+        "-p LockPersonality=yes -p MemoryDenyWriteExecute=yes -p SystemCallArchitectures=native -p SystemCallFilter=@system-service"
+        # Bounded: memory, tasks, time; and out of everyone's way.
+        "-p MemoryMax=3G -p MemorySwapMax=0 -p TasksMax=64 -p RuntimeMaxSec=300 -p Nice=19 -p IOSchedulingClass=idle -p LimitCORE=0"
+        "--setenv=HOME=/tmp/home --setenv=XDG_CACHE_HOME=/tmp/cache --setenv=XDG_STATE_HOME=/tmp/state --setenv=LANG=C.UTF-8"
+        "--setenv=PATH=${lib.makeBinPath [ config.nix.package pkgs.gitMinimal pkgs.gnutar ]}"
+        # The daemon fetches nothing for it. (Not allow-import-from-derivation = false: TorqOS's own
+        # modules/host.nix reads tzdata while it evaluates.)
+        "'--setenv=NIX_CONFIG=substitute = false'"
+        "${lib.getExe' config.torq.cli.package "torq"} --check-tree {tree}"
+      ];
+      defaultText = lib.literalMD "`torq --check-tree {tree}` as `torq-check`, in the transient unit `torq-check` (broker/src/config.rs `CHECK`)";
+      description = ''
+        What the broker runs to check an agent's proposal before it records it (ADR-056): `{tree}` is
+        the id of the git tree the change leaves, the only thing passed. Its standard output is one line
+        of JSON, `{"ok":true,"warnings":[…]}` or `{"ok":false,"why":"…"}`; anything else, or nothing in
+        time, and the proposal is recorded as not checked. Its exit status is not read.
+      '';
+    };
     guardEtcNixos = lib.mkOption {
       type = lib.types.bool;
       default = true;
@@ -206,6 +243,19 @@ in
   config = lib.mkIf cfg.enable {
 
     environment.systemPackages = [ cfg.package ];
+
+    # The checker's account (ADR-056): what an agent's proposal is evaluated as. It owns nothing, is in
+    # no group but its own, has no home, no shell and no password, and nothing runs as it but the
+    # broker's check (`checkCommand`). It is the one account besides root and the administrators that
+    # may talk to the Nix daemon (an evaluation needs it): allowed, never trusted. The agents'
+    # accounts stay out (modules/base.nix; tests/agent-check.nix holds both).
+    users.users.torq-check = {
+      isSystemUser = true;
+      group = "torq-check";
+      description = "TorqOS checker of what an agent proposes";
+    };
+    users.groups.torq-check = { };
+    nix.settings.allowed-users = [ "torq-check" ];
 
     systemd.tmpfiles.rules = [
       "d /var/lib/torq 0755 root root -"
@@ -339,6 +389,8 @@ in
         # The backups the configuration declares, each with its restic (ADR-038, modules/backup.nix).
         backups = cfg.backups;
         restore = cfg.backupRestoreCommand;
+        # What checks an agent's proposal (ADR-056).
+        check = cfg.checkCommand;
       };
      }
 
@@ -397,6 +449,12 @@ in
     '';
     system.activationScripts.etc.deps = lib.mkIf cfg.guardEtcNixos [ "torq-guard-etc-nixos" ];
     assertions = lib.mkMerge [ [{
+      assertion = let u = config.users.users.torq-check; in
+        u.isSystemUser && !u.isNormalUser && u.group == "torq-check" && u.extraGroups == [ ]
+        && lib.all (g: !(builtins.elem "torq-check" g.members)) (lib.attrValues config.users.groups)
+        && !(builtins.elem "torq-check" config.nix.settings.trusted-users);
+      message = "users.users.torq-check: the account an agent's proposal is checked as (ADR-056) is a system account in its own group and no other, and never one the Nix daemon trusts: what it is given to evaluate is an agent's.";
+    } {
       assertion = !config.torq.snapshots.enable || (lib.all (m: (config.fileSystems.${m}.fsType or "") == "btrfs") [ "/home" "/var/lib" "/.snapshots" ] && config.fileSystems ? "/var/lib/torq" && config.fileSystems."/var/lib/torq".device != config.fileSystems."/var/lib".device);
       message = "torq.snapshots: /home, /var/lib and /.snapshots must each be a btrfs subvolume, and /var/lib/torq a file system of its own: otherwise every snapshot of /var/lib would hold the ledger and the password hashes, and filling the disk would leave the record no room. Without that layout, set torq.snapshots.enable = false.";
     }] (lib.mkIf cfg.guardEtcNixos [{

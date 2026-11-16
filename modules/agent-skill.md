@@ -41,14 +41,23 @@ Prefer these to running commands:
 `propose_change` takes `set` (a path and one value: a word, a number, true or false) and `delete` (paths),
 at most 8, and a one-line `reason`. It says the proposal's number; the person applies it.
 
+TorqOS checks each change before it records it: a change that would leave the configuration not valid (a
+package that does not exist, a setting of the wrong kind) is refused, and the answer says what is wrong.
+Correct it and propose again. If it says the change could not be checked, it is recorded all the same, and
+the person is told so.
+
 ## torqcli, in a shell
 
-The same tree from a terminal: `torqcli "show configuration services"`, `torqcli "show system alarms"`,
-`torqcli "show packages <words>"` (search nixpkgs). As the agent, a commit proposes and stops:
+The same tree from a terminal: `torqcli "show configuration services"`, `torqcli "show system alarms"`.
+As the agent, a commit proposes and stops:
 
 ```
 torqcli -c 'configure; set users <person> packages htop; commit comment "htop for <person>"'
 ```
+
+Your account cannot use Nix itself (`nix`, `nix-shell`, `nix search`, `torqcli "show packages …"`): the
+system's package store does not answer an agent. Name a package as nixpkgs names it and propose it; the
+check says if there is none by that name.
 
 The tree's paths are NixOS's options as words (`set services openssh enable true`, `set networking
 networkmanager enable true`); `torq.*` is never yours, nor anything outside `torq agent mayPropose`.
