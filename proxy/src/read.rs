@@ -1,7 +1,7 @@
 //! Reading what passes, for the record (ADR-057). Nothing here touches what is passed on: these read copies.
 //!
-//! A request to the model carries the whole conversation each time. What is new in it is its last message:
-//! the person's question, or what each tool returned. The answer is read as it streams: its text, each tool
+//! A request to the model carries the whole conversation each time. What is new in it is what comes after
+//! the model's last message: the person's question, or what each tool returned. The answer is read as it streams: its text, each tool
 //! the model calls and with what, the tokens the service counted. Every bound is `torq_wire::activity`'s, and
 //! where one cuts, the line says so.
 
@@ -36,7 +36,8 @@ impl Asked {
         }
     }
 
-    /// What was new in the request, written into `line`: the model named, and the last message's parts.
+    /// What was new in the request, written into `line`: the model named, and the parts of each message after
+    /// the model's last one.
     pub fn read_into(&self, line: &mut Request) {
         if !self.keep {
             return;
@@ -58,36 +59,50 @@ impl Asked {
             return;
         };
         line.model = body.model.as_deref().and_then(name);
-        let Some(last) = body.messages.last().and_then(|m| serde_json::from_str::<Value>(m.get()).ok()) else { return };
-        if last["role"] != "user" {
-            return;
+        // What is new: every message after the model's last one. (Claude Code 2.1.316 ends a request with a
+        // message of its own after the person's, role `system`: the last message alone would miss the question.)
+        let mut fresh: Vec<Value> = Vec::new();
+        let mut before: Option<Value> = None;
+        for m in body.messages.iter().rev().take(MAX_ITEMS) {
+            let Ok(v) = serde_json::from_str::<Value>(m.get()) else { break };
+            if v["role"] == "assistant" {
+                before = Some(v);
+                break;
+            }
+            fresh.push(v);
         }
-        // The tools the model called in the message before, by the id each result answers.
+        // The tools the model called in its last message, by the id each result answers.
         let mut calls: HashMap<String, String> = HashMap::new();
-        if let Some(before) = body.messages.iter().rev().nth(1).and_then(|m| serde_json::from_str::<Value>(m.get()).ok()) {
-            for block in before["content"].as_array().into_iter().flatten() {
-                if let (Some("tool_use"), Some(id), Some(tool)) = (block["type"].as_str(), block["id"].as_str(), block["name"].as_str()) {
-                    calls.insert(id.to_string(), tool.to_string());
-                }
+        for block in before.iter().flat_map(|b| b["content"].as_array()).flatten() {
+            if let (Some("tool_use"), Some(id), Some(tool)) = (block["type"].as_str(), block["id"].as_str(), block["name"].as_str()) {
+                calls.insert(id.to_string(), tool.to_string());
             }
         }
         let mut items = Kept::default();
-        match &last["content"] {
-            Value::String(s) => items.push(text(s)),
-            Value::Array(blocks) => {
-                for b in blocks {
-                    items.push(match b["type"].as_str() {
-                        Some("text") => text(b["text"].as_str().unwrap_or_default()),
-                        Some("tool_result") => {
-                            let (text, cut_from) = cut(&said(&b["content"]));
-                            let tool = b["tool_use_id"].as_str().and_then(|id| calls.get(id)).and_then(|t| name(t));
-                            Item::ToolResult { tool, text, error: b["is_error"] == true, cut_from }
-                        }
-                        other => Item::Other { what: other.and_then(name).unwrap_or_else(|| "unknown".to_string()) },
-                    });
-                }
+        for message in fresh.iter().rev() {
+            // A message that is not the person's side of the conversation (the engine's own instructions): that
+            // it was there, not its words.
+            if message["role"] != "user" {
+                items.push(Item::Other { what: format!("{}-message", message["role"].as_str().and_then(name).unwrap_or_else(|| "unknown".to_string())) });
+                continue;
             }
-            _ => {}
+            match &message["content"] {
+                Value::String(s) => items.push(text(s)),
+                Value::Array(blocks) => {
+                    for b in blocks {
+                        items.push(match b["type"].as_str() {
+                            Some("text") => text(b["text"].as_str().unwrap_or_default()),
+                            Some("tool_result") => {
+                                let (text, cut_from) = cut(&said(&b["content"]));
+                                let tool = b["tool_use_id"].as_str().and_then(|id| calls.get(id)).and_then(|t| name(t));
+                                Item::ToolResult { tool, text, error: b["is_error"] == true, cut_from }
+                            }
+                            other => Item::Other { what: other.and_then(name).unwrap_or_else(|| "unknown".to_string()) },
+                        });
+                    }
+                }
+                _ => {}
+            }
         }
         line.new = items.items;
         line.left_out.new = items.over;
@@ -405,6 +420,29 @@ mod tests {
         assert_eq!(line.new, [Item::Text { text: "what is in /etc/hostname?".into(), cut_from: None }], "the question, not the conversation before it");
         assert!(line.unread.is_empty());
         assert_eq!(asked(&json!({"model": "m", "messages": [{"role": "user", "content": "plain words"}]})).new, [Item::Text { text: "plain words".into(), cut_from: None }]);
+    }
+
+    /// The shape Claude Code 2.1.316 sends (seen 2026-11-16): the person's message, its question last among
+    /// the engine's own notes, and after it a message of the engine's with role `system`.
+    #[test]
+    fn the_question_is_found_though_the_engine_ends_the_request_with_a_message_of_its_own() {
+        let line = asked(&json!({
+            "model": "m",
+            "messages": [
+                {"role": "user", "content": "earlier"},
+                {"role": "assistant", "content": [{"type": "text", "text": "earlier answer"}]},
+                {"role": "user", "content": [{"type": "text", "text": "<system-reminder>a note</system-reminder>"}, {"type": "text", "text": "Reply with only the word OK."}]},
+                {"role": "system", "content": [{"type": "text", "text": "# Environment, thirty thousand bytes of it"}]},
+            ]
+        }));
+        assert_eq!(line.new, [
+            Item::Text { text: "<system-reminder>a note</system-reminder>".into(), cut_from: None },
+            Item::Text { text: "Reply with only the word OK.".into(), cut_from: None },
+            Item::Other { what: "system-message".into() },
+        ], "everything after the model's last message, in order; the engine's own message by its kind only");
+        // A conversation's first request: nothing of the model's yet, so all of it is new.
+        let first = asked(&json!({"model": "m", "messages": [{"role": "user", "content": "one"}, {"role": "system", "content": "x"}]}));
+        assert_eq!(first.new, [Item::Text { text: "one".into(), cut_from: None }, Item::Other { what: "system-message".into() }]);
     }
 
     #[test]

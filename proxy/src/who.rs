@@ -24,12 +24,9 @@ pub fn uid_of_connection(table: &str, client: u16, server: u16) -> Option<u32> {
     })
 }
 
-/// The uid at the other end of a connection this program accepted on `local` from `peer`: both on this
-/// machine's own address (127.0.0.1), or no one.
+/// The uid at the other end of a connection this program accepted on `local` from `peer`. Only a connection
+/// whose two ends are this machine's own address (127.0.0.1) is found in the table at all: any other is no one's.
 pub fn caller(peer: SocketAddr, local: SocketAddr) -> Option<u32> {
-    if !peer.ip().is_loopback() || !local.ip().is_loopback() {
-        return None;
-    }
     let read = |p: &str| std::fs::read_to_string(p).unwrap_or_default();
     uid_of_connection(&read("/proc/net/tcp"), peer.port(), local.port()).or_else(|| uid_of_connection(&read("/proc/net/tcp6"), peer.port(), local.port()))
 }

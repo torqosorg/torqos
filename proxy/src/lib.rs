@@ -75,6 +75,8 @@ pub struct Agent {
 #[derive(Debug, Clone, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Settings {
+    /// Where it listens, on 127.0.0.1.
+    pub port: u16,
     /// Each agent account and its person.
     pub agents: BTreeMap<String, String>,
     /// The sites the owner lets the agents reach.
@@ -467,6 +469,7 @@ pub fn run() -> std::process::ExitCode {
 fn start(settings: &Path) -> Result<(), String> {
     let text = std::fs::read_to_string(settings).map_err(|e| format!("reading {}: {e}", settings.display()))?;
     let settings: Settings = serde_json::from_str(&text).map_err(|e| format!("{}: {e}", settings.display()))?;
+    let port = settings.port;
     let passwd = std::fs::read_to_string("/etc/passwd").map_err(|e| format!("reading /etc/passwd: {e}"))?;
     let proxy = Arc::new(Proxy {
         agents: agents_by_uid(&passwd, &settings.agents)?,
@@ -478,8 +481,8 @@ fn start(settings: &Path) -> Result<(), String> {
     });
     let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().map_err(|e| e.to_string())?;
     runtime.block_on(async {
-        let listener = TcpListener::bind(("127.0.0.1", activity::PORT)).await.map_err(|e| format!("listening on 127.0.0.1:{}: {e}", activity::PORT))?;
-        eprintln!("torq-model-proxy: listening on 127.0.0.1:{} for {} agent account(s); the web is {} to them, {} site(s) listed", activity::PORT, proxy.agents.len(), if proxy.policy.web { "open" } else { "closed" }, proxy.policy.hosts.len());
+        let listener = TcpListener::bind(("127.0.0.1", port)).await.map_err(|e| format!("listening on 127.0.0.1:{port}: {e}"))?;
+        eprintln!("torq-model-proxy: listening on 127.0.0.1:{port} for {} agent account(s); the web is {} to them, {} site(s) listed", proxy.agents.len(), if proxy.policy.web { "open" } else { "closed" }, proxy.policy.hosts.len());
         proxy.serve(listener).await.map_err(|e| e.to_string())
     })
 }

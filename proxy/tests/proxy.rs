@@ -558,3 +558,35 @@ fn without_an_authority_there_is_no_tls() {
     assert!(tls(&d.path().join("missing.pem")).is_err());
     assert!(tls(&fixture("ca.pem")).is_ok());
 }
+
+/// By hand, never in a build: the proxy as it runs on a machine (the real model's service, the machine's own
+/// authorities, the real way out), but with whoever runs this as alice's agent, the record in the folder
+/// `TORQ_BY_HAND` names, on the port `TORQ_BY_HAND_PORT` names, and the sites `TORQ_BY_HAND_HOSTS` lists
+/// (commas). How the real Claude Code was put through it once (docs/HARNESS-AS-A-SYSTEM.md).
+#[tokio::test]
+#[ignore = "by hand: asks the real model's service, with the sign-in of whoever runs it"]
+async fn by_hand() {
+    let record = PathBuf::from(std::env::var("TORQ_BY_HAND").expect("TORQ_BY_HAND: a folder for the record"));
+    std::fs::create_dir_all(record.join("alice")).unwrap();
+    let port: u16 = std::env::var("TORQ_BY_HAND_PORT").expect("TORQ_BY_HAND_PORT").parse().unwrap();
+    let hosts = std::env::var("TORQ_BY_HAND_HOSTS").unwrap_or_default().split(',').filter(|h| !h.is_empty()).map(String::from).collect();
+    let proxy = Arc::new(Proxy {
+        agents: [(me(), Agent { account: "torq-agent-alice".into(), person: "alice".into() })].into(),
+        policy: Policy { hosts, web: false, model: torq_model_proxy::MODEL.into() },
+        upstream: Upstream { name: torq_model_proxy::MODEL.into(), at: format!("{}:443", torq_model_proxy::MODEL), tls: tls(Path::new(torq_model_proxy::AUTHORITIES)).unwrap() },
+        recorder: record::Recorder::new(record, record::Bounds::default()),
+        dial: torq_model_proxy::outside(),
+        busy: Mutex::default(),
+    });
+    proxy.serve(TcpListener::bind(("127.0.0.1", port)).await.unwrap()).await.unwrap();
+}
+
+#[test]
+fn the_settings_are_read_exactly() {
+    let s: torq_model_proxy::Settings = serde_json::from_str(r#"{"port":7801,"agents":{"torq-agent-alice":"alice"},"hosts":["github.com"],"web":false}"#).unwrap();
+    assert_eq!((s.port, s.agents.len(), s.hosts.as_slice(), s.web), (7801, 1, ["github.com".to_string()].as_slice(), false));
+    // A word the proxy does not know is a refusal, not something passed over: a setting it would not honour.
+    assert!(serde_json::from_str::<torq_model_proxy::Settings>(r#"{"port":7801,"agents":{},"hosts":[],"web":false,"upstream":"https://elsewhere.example"}"#).is_err());
+    // And nothing has a default: a file that does not say whether the web is open is refused.
+    assert!(serde_json::from_str::<torq_model_proxy::Settings>(r#"{"port":7801,"agents":{},"hosts":[]}"#).is_err());
+}

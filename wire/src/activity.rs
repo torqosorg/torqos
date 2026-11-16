@@ -16,9 +16,6 @@ use serde::{Deserialize, Serialize};
 
 /// Where the record is kept: a folder for each person in it.
 pub const DIR: &str = "/var/lib/torq-model-proxy";
-/// The port the model proxy listens on, on this machine only (127.0.0.1): the engine's base address for its
-/// model, and its way to the sites the agents may reach.
-pub const PORT: u16 = 7801;
 /// The shape of a line, as `Entry::v` says it. A reader that meets a larger number shows what it knows.
 pub const VERSION: u32 = 1;
 
@@ -107,8 +104,8 @@ pub struct Request {
     /// The service's own words for an error, where the answer was one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
-    /// What was new in the conversation in this request: the last message's parts (the person's question, or
-    /// each tool's result).
+    /// What was new in the conversation in this request: the parts of each message after the model's last one
+    /// (the person's question, or each tool's result; a message of the engine's own by its kind only).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub new: Vec<Item>,
     /// What the model answered: its text, and each tool it called.
