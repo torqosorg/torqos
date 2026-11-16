@@ -117,8 +117,9 @@ pub trait Machine {
     /// `request system decline <n>`: turn a waiting proposal down (ADR-051, amended), after showing it and
     /// asking; never applied after. Who may is the broker's gate (an administrator's password for another's).
     fn decline_proposal(&self, seq: u64, me: &str) -> Result<String>;
-    /// Propose `diff` against `base` and stop there (the agent's commit, ADR-041): the proposal's number.
-    fn propose(&self, diff: &str, base: &str, reason: &str) -> Result<u64>;
+    /// Propose `diff` against `base` and stop there (the agent's commit, ADR-041): the proposal's number,
+    /// and what the broker's check of it found (ADR-056).
+    fn propose(&self, diff: &str, base: &str, reason: &str) -> Result<Proposed>;
     /// The running machine: its versions, uptime, interfaces and disks (facts.rs).
     fn facts(&self) -> Result<crate::facts::Facts>;
     /// `request system revert <change>`: undo that one change (a new change forward), asked as a
@@ -208,6 +209,23 @@ pub enum Pending {
 pub struct SshFacts {
     pub state: Ssh,
     pub admits: serde_json::Value,
+}
+
+/// An agent's proposal as the broker recorded it (`Machine::propose`).
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Proposed {
+    pub seq: u64,
+    /// What the broker's check of it found (ADR-056); None: the broker said nothing of a check.
+    pub check: Option<ProposalCheck>,
+}
+
+/// The broker's check of a proposal, as its entry has it (`data.check`).
+#[derive(Debug, Clone, PartialEq)]
+pub enum ProposalCheck {
+    /// The configuration evaluates with the change; its warnings.
+    Valid(Vec<String>),
+    /// It could not be checked, and why, in the broker's words.
+    NotChecked(String),
 }
 
 /// What one evaluation of a changed configuration says (`Machine::evaluate`).
@@ -1162,6 +1180,10 @@ impl<'a> Session<'a> {
                 Ok(out)
             }
             Op::ShowPackages { terms } => {
+                // The search asks the Nix daemon, which refuses an agent's account (ADR-056): said plainly.
+                if crate::agent::is_agent(&self.me) {
+                    bail!("an agent's account cannot search the packages on this machine; propose the package by its name, and TorqOS says if there is none by that name");
+                }
                 // What the configuration in effect installs, for everyone or for anyone.
                 let head = self.repo.head()?;
                 let active = self.configuration_of(&head)?;
@@ -1888,6 +1910,10 @@ impl<'a> Session<'a> {
             }
             // The rules between settings, as `commit` applies them.
             crate::whole::software_allowed(&a.data)?;
+            // An agent's account evaluates nothing (ADR-056): its check is the broker's, at its commit.
+            if crate::agent::is_agent(&self.me) {
+                return Ok(self.said("not checked here: TorqOS checks an agent's change when it is proposed (commit), and says what it found"));
+            }
             let (checked, reused) = self.checked(&base, &files, ssh_relevant)?;
             let warned = self.warned(&checked.result.warnings);
             let again = if reused { self.said("As the last `commit check` of these same changes found (not evaluated again):") } else { String::new() };
@@ -1944,6 +1970,35 @@ impl<'a> Session<'a> {
         let tier = self.tier_of(&changes);
         // A person approves at a terminal: a system change, and a change to someone else's folder.
         let others = self.others_folders(&changes);
+        // The agent proposes, and a person applies (ADR-040, ADR-041): its commit stops at the
+        // proposal — there is no one here to ask, and nothing it could approve. Nothing is evaluated
+        // here (ADR-056): the agent's account is refused at the Nix daemon, so the broker has the
+        // change checked itself, and its answer is what is said.
+        // By its name (`torq-agent-<someone>`), as convenience: the broker is the authority — it refuses an
+        // agent's apply whatever torqcli does here.
+        if crate::agent::is_agent(&self.me) {
+            if o.confirm.is_some() {
+                bail!("not proposed: the agent proposes, and a commit confirmed is a person's to make");
+            }
+            if at.is_some() {
+                bail!("not proposed: the agent proposes, and a commit at is a person's to approve");
+            }
+            let compare = a.compare(&self.whole())?;
+            let scratch = tempfile::tempdir()?;
+            let diff = candidate::unified_diff(scratch.path(), &changes)?;
+            let reason = crate::history::one_line(&o.comment.clone().unwrap_or_else(|| summary(&compare)), usize::MAX);
+            self.may_write()?;
+            let proposed = self.machine.propose(&diff, &base, &reason)?;
+            let kept = self.discard_committed();
+            let seq = proposed.seq;
+            let (warned, checked) = match &proposed.check {
+                Some(ProposalCheck::Valid(warnings)) => (self.warned(warnings), " TorqOS checked it first: the configuration is valid with it.".to_string()),
+                Some(ProposalCheck::NotChecked(why)) => (String::new(), format!(" It could not be checked first ({}): it may fail when applied.", crate::history::one_line(why, 200))),
+                None => (String::new(), String::new()),
+            };
+            let said = format!("proposed as #{seq}: a person applies it (request system apply {seq}).{checked}");
+            return Ok(warned + &self.said(&said) + &kept);
+        }
         let (checked, reused) = self.checked(&base, &files, ssh_relevant)?;
         let reused_note = if reused { self.said("The candidate is as `commit check` checked it: that check's result is used, not evaluated again.") } else { String::new() };
         let warned = reused_note + &self.warned(&checked.result.warnings);
@@ -1985,26 +2040,6 @@ impl<'a> Session<'a> {
             (_, false) => Some(format!("This changes the settings of: {}.", others.join(", "))),
             _ => None,
         };
-        // The agent proposes, and a person applies (ADR-040, ADR-041): its commit stops at the
-        // proposal — there is no one here to ask, and nothing it could approve.
-        // By its name (`torq-agent-<someone>`), as convenience: the broker is the authority — it refuses an
-        // agent's apply whatever torqcli does here.
-        if crate::agent::is_agent(&self.me) {
-            if o.confirm.is_some() {
-                bail!("not proposed: the agent proposes, and a commit confirmed is a person's to make");
-            }
-            if at.is_some() {
-                bail!("not proposed: the agent proposes, and a commit at is a person's to approve");
-            }
-            let scratch = tempfile::tempdir()?;
-            let diff = candidate::unified_diff(scratch.path(), &changes)?;
-            let reason = crate::history::one_line(&o.comment.clone().unwrap_or_else(|| summary(&compare)), usize::MAX);
-            self.may_write()?;
-            let seq = self.machine.propose(&diff, &base, &reason)?;
-            let kept = self.discard_committed();
-            let said = format!("proposed as #{seq}: a person applies it (request system apply {seq})");
-            return Ok(warned + &self.said(&said) + &kept);
-        }
         // Already approved (the install question): asked again only with what it did not show.
         let more = shown[compared..].to_string();
         let why = why.filter(|_| !asked || !more.trim().is_empty());
@@ -2847,6 +2882,8 @@ mod tests {
         secret_calls: RefCell<Vec<String>>,
         /// The person's known_hosts lines.
         known_hosts: Vec<String>,
+        /// What the broker's check of an agent's proposal found (None: it says nothing of one).
+        proposal_check: Option<ProposalCheck>,
     }
     impl Machine for Fake {
         /// One evaluation: the warnings a test gives, and SSH after the change — as the evaluator would:
@@ -3044,9 +3081,9 @@ mod tests {
         fn apply_proposal(&self, seq: u64, me: &str) -> Result<String> {
             Ok(format!("applied proposal #{seq} for {me}\n"))
         }
-        fn propose(&self, diff: &str, base: &str, reason: &str) -> Result<u64> {
+        fn propose(&self, diff: &str, base: &str, reason: &str) -> Result<Proposed> {
             self.commits.borrow_mut().push((diff.into(), base.into(), "proposed".into(), reason.into(), None));
-            Ok(41)
+            Ok(Proposed { seq: 41, check: self.proposal_check.clone() })
         }
         fn revert(&self, seq: u64, me: &str) -> Result<String> {
             Ok(format!("reverted {seq} for {me}\n"))
@@ -4961,6 +4998,29 @@ mod tests {
         assert!(!out.contains("Commit?") && !out.contains("commit complete"), "{out}");
         assert_eq!(m.commits.borrow().len(), 1);
         assert_eq!(m.commits.borrow()[0].2, "proposed", "proposed, not committed");
+        // Nothing is evaluated as the agent (ADR-056: its account is refused at the Nix daemon): not the
+        // change, not SSH before it. The broker checks it, and its answer is what is said.
+        assert!(m.checks.borrow().is_empty() && *m.ssh_calls.borrow() == 0, "the agent's commit evaluated something");
+        let agent = |m: &Fake, lines: &[&str]| {
+            let mut s = Session::new(Schema::parse(include_str!("schema-fixture.json")).unwrap(), nixos_tree(), Repo::new(d.path()), None, m, "torq-agent-dev");
+            run(&mut s, lines)
+        };
+        // An evaluation that would fail is never reached, whatever the change touches (SSH too).
+        let m = Fake { broken: Some("cannot open connection to remote store 'daemon'".into()), proposal_check: Some(ProposalCheck::Valid(vec!["the option x is deprecated".into()])), ..Fake::default() };
+        let out = agent(&m, &["configure", "set services openssh enable true", "commit"]);
+        assert!(out.contains("proposed as #41: a person applies it (request system apply 41). TorqOS checked it first: the configuration is valid with it."), "{out}");
+        assert!(out.contains("warning: the option x is deprecated") && !out.contains("daemon"), "{out}");
+        assert!(m.checks.borrow().is_empty() && *m.ssh_calls.borrow() == 0 && m.asked.borrow().is_empty());
+        let out = agent(&m, &["configure", "set system time-zone UTC", "commit check"]);
+        assert!(out.contains("TorqOS checks an agent's change when it is proposed") && !out.contains("configuration check succeeds"), "{out}");
+        assert!(m.checks.borrow().is_empty(), "the agent's commit check evaluated something");
+        // The package search asks the Nix daemon too: said in plain words, not tried.
+        let mut s = Session::new(Schema::parse(include_str!("schema-fixture.json")).unwrap(), nixos_tree(), Repo::new(d.path()), None, &m, "torq-agent-dev");
+        let e = format!("{:#}", s.exec("show packages available htop").unwrap_err());
+        assert!(e.contains("cannot search the packages") && e.contains("propose the package by its name"), "{e}");
+        let m = Fake { proposal_check: Some(ProposalCheck::NotChecked("the check did not finish in time".into())), ..Fake::default() };
+        let out = agent(&m, &["configure", "set system time-zone UTC", "commit"]);
+        assert!(out.contains("proposed as #41: a person applies it (request system apply 41). It could not be checked first (the check did not finish in time): it may fail when applied."), "{out}");
         let mut s = Session::new(Schema::parse(include_str!("schema-fixture.json")).unwrap(), nixos_tree(), Repo::new(d.path()), None, &m, "torq-agent-dev");
         run(&mut s, &["configure", "set system time-zone UTC"]);
         let e = format!("{:#}", s.exec("commit confirmed 5").unwrap_err());

@@ -555,7 +555,7 @@ impl Machine for Real<'_> {
         ))
     }
 
-    fn propose(&self, diff: &str, base: &str, reason: &str) -> Result<u64> {
+    fn propose(&self, diff: &str, base: &str, reason: &str) -> Result<crate::session::Proposed> {
         let scratch = scratch_dir()?;
         let file = scratch.path().join("change.diff");
         fs::write(&file, diff)?;
@@ -567,7 +567,8 @@ impl Machine for Real<'_> {
         }
         let args: Vec<&str> = args.iter().map(String::as_str).collect();
         let proposed = done(run::broker_json(broker(self.cli, &args)?, &log)?, "propose")?;
-        proposed["seq"].as_u64().context("the broker did not say which proposal it made")
+        let seq = proposed["seq"].as_u64().context("the broker did not say which proposal it made")?;
+        Ok(crate::session::Proposed { seq, check: proposal_check(&proposed["data"]["check"]) })
     }
 
     fn proposals(&self, fit: Option<usize>) -> Result<String> {
@@ -1187,6 +1188,26 @@ fn writes_never_go_through_a_link() {
 /// `request system apply` takes.
 /// `propose`'s arguments. Every value given as `--name=value`: a reason or comment that starts with
 /// `-` (any change of an existing value does: "-   host-name two; …") must not read as an option.
+/// The broker's check of a proposal, as its entry has it (`data.check`, ADR-056: broker/src/check.rs): valid,
+/// with its warnings, or not checked, and why. None: the entry names none.
+fn proposal_check(check: &serde_json::Value) -> Option<crate::session::ProposalCheck> {
+    use crate::session::ProposalCheck;
+    match check["result"].as_str()? {
+        "valid" => Some(ProposalCheck::Valid(check["warnings"].as_array().into_iter().flatten().filter_map(|w| w.as_str().map(String::from)).collect())),
+        _ => Some(ProposalCheck::NotChecked(check["why"].as_str().unwrap_or("no reason was given").to_string())),
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn a_proposals_check_is_read_from_its_entry() {
+    use crate::session::ProposalCheck;
+    use serde_json::json;
+    assert_eq!(proposal_check(&json!({ "tree": "ab", "result": "valid", "warnings": ["w"] })), Some(ProposalCheck::Valid(vec!["w".into()])));
+    assert_eq!(proposal_check(&json!({ "tree": "ab", "result": "not checked", "why": "the check did not finish in time" })), Some(ProposalCheck::NotChecked("the check did not finish in time".into())));
+    assert_eq!(proposal_check(&json!(null)), None, "an entry that names no check");
+}
+
 fn propose_args(diff: &str, base: &str, reason: &str) -> Vec<String> {
     vec!["propose".into(), format!("--diff={diff}"), format!("--base={base}"), format!("--reason={reason}"), "--actor=user".into()]
 }
@@ -1592,6 +1613,13 @@ fn run_shell(args: &[String]) -> Result<i32> {
     }
     if let Some(gone) = removed_command(args) {
         bail!("{gone}");
+    }
+    // The broker's checker (ADR-056): one tree of the config repo evaluated, one line of JSON. Not a
+    // person's command: the broker runs it, as the account torq-check.
+    if let [flag, tree] = args {
+        if flag == "--check-tree" {
+            return Ok(crate::checktree::run(tree));
+        }
     }
     // The ISO installer (its console, as root, ADR-031): its own program too.
     if args.first().map(String::as_str) == Some("break-glass") {

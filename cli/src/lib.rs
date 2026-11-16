@@ -21,6 +21,7 @@ mod vocabulary;
 pub mod history;
 mod tree;
 mod candidate;
+mod checktree;
 pub mod session;
 pub mod desktop;
 pub mod cosmic_defaults;
@@ -402,6 +403,19 @@ fn a_kept_result_is_named_by_what_read_it() {
     assert_eq!(ssh_form(), ssh_form());
 }
 
+/// The commit's check failed: Nix's own reason, as one line. Said to a person as what is wrong and what to
+/// do (`explain_check_error`); the broker's checker says only what is wrong (checktree.rs).
+#[derive(Debug)]
+pub(crate) struct NotValid(pub(crate) String);
+
+impl std::fmt::Display for NotValid {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&pkg::explain_check_error(&self.0))
+    }
+}
+
+impl std::error::Error for NotValid {}
+
 /// One `nix eval` of the configuration in `copy`: always `torq`, the one the broker builds (never the
 /// host name), which the config repo must have; `what` is a Nix expression of its `config` (`c`) and
 /// `ssh` (SSH_NIX). Its JSON, and Nix's standard error (its warnings). Nix's output goes to the log,
@@ -421,7 +435,7 @@ fn eval_config(copy: &Path, what: &str, log: &Path, live: bool, check: bool) -> 
         // The whole of nix's explanation is in the log; the screen gets one clear sentence.
         let why = history::one_line(&last_error(&out.stderr), 300);
         if check {
-            bail!("{}", pkg::explain_check_error(&why));
+            return Err(NotValid(why).into());
         }
         bail!("cannot read the SSH settings: {why}");
     }

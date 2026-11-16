@@ -9,21 +9,37 @@ pub fn valid_user(name: &str) -> bool {
     matches!(c.next(), Some('a'..='z' | '_')) && c.all(|c| matches!(c, 'a'..='z' | '0'..='9' | '_' | '-'))
 }
 
-/// A failed pre-check (the Nix evaluation of the changed configuration), as a person needs it:
-/// what is wrong and what to do. Nothing has been proposed at this point.
-pub fn explain_check_error(msg: &str) -> String {
+/// What a failed check (the Nix evaluation of the changed configuration) found wrong, in one sentence,
+/// and what a person at torqcli does about it (None: nothing to add).
+fn check_error(msg: &str) -> (String, Option<String>) {
     let name = msg.split('\'').nth(1).unwrap_or_default();
     if msg.contains("is not a package in nixpkgs") {
-        format!("\"{name}\" isn't a package. Find the right name: show packages available {name}")
+        (format!("\"{name}\" isn't a package."), Some(format!("Find the right name: show packages available {name}")))
     } else if let Some((_, how)) = msg.split_once(" is unfree: ") {
-        format!("{name} is unfree: {how}")
+        (format!("{name} is unfree: {how}"), None)
     } else if msg.contains("is not available here") {
-        format!("{name} can't be installed here: it is broken, insecure, or not built for this machine.")
+        (format!("{name} can't be installed here: it is broken, insecure, or not built for this machine."), None)
     } else if msg.contains("is not a package name") {
-        format!("\"{name}\" isn't a package name. Find one: show packages available <words>")
+        (format!("\"{name}\" isn't a package name."), Some("Find one: show packages available <words>".into()))
     } else {
-        format!("This change wouldn't work: {msg}")
+        (msg.to_string(), None)
     }
+}
+
+/// A failed pre-check, as a person needs it: what is wrong and what to do. Nothing has been proposed
+/// at this point.
+pub fn explain_check_error(msg: &str) -> String {
+    match check_error(msg) {
+        (what, Some(to_do)) => format!("{what} {to_do}"),
+        (what, None) if what == msg => format!("This change wouldn't work: {msg}"),
+        (what, None) => what,
+    }
+}
+
+/// A failed check, as the broker's checker says it (ADR-056): what is wrong, and nothing to type — the
+/// one told is an agent, which has no shell to type it in.
+pub fn what_is_wrong(msg: &str) -> String {
+    check_error(msg).0
 }
 
 /// An AuthorizedKeysFile pattern as sshd expands it for one user: `%%`, `%h` (home), `%u` (name)
@@ -202,6 +218,11 @@ mod tests {
         assert!(explain_check_error("torq.packages: 'vscode' (user viper) is not available here: broken, ...")
             .starts_with("vscode can't be installed here"));
         assert!(explain_check_error("something else").starts_with("This change wouldn't work"));
+        // The checker's word (ADR-056): what is wrong, and no command to type.
+        assert_eq!(what_is_wrong("torq.packages: 'htpo' (user viper) is not a package in nixpkgs"), "\"htpo\" isn't a package.");
+        assert_eq!(what_is_wrong("torq.packages: 'a b' (user viper) is not a package name"), "\"a b\" isn't a package name.");
+        assert_eq!(what_is_wrong("something else"), "something else");
+        assert_eq!(explain_check_error("torq.packages: 'a b' (user viper) is not a package name"), "\"a b\" isn't a package name. Find one: show packages available <words>");
     }
 
     #[test]
