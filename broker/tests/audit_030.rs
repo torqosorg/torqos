@@ -48,7 +48,7 @@ fn adopt_takes_a_standing_grant_and_waiting_schedules() {
     b.init().unwrap();
     let head = b.repo.head().unwrap();
     b.ledger.append(NewEntry { actor: "user".into(), approved_by: Some("alice".into()), kind: "trust_granted".into(), tier: "user".into(), tainted: false,
-        reason: "x".into(), data: json!({ "person": "alice", "minutes": 60, "until": "2099-01-01T00:00:00Z" }) }).unwrap();
+        reason: "x".into(), data: json!({ "person": "alice", "minutes": 60, "until": "2099-01-01T00:00:00Z", "covers": "all-secrets" }) }).unwrap();
     for i in 0..100u64 {
         b.ledger.append(NewEntry { actor: "user".into(), approved_by: Some("alice".into()), kind: "apply_scheduled".into(), tier: "system".into(), tainted: false,
             reason: "x".into(), data: json!({ "proposal": 1, "at": "2099-01-01T00:00:00Z", "timer": i, "base": head, "diff_sha256": "0".repeat(64) }) }).unwrap();
@@ -62,6 +62,8 @@ fn adopt_takes_a_standing_grant_and_waiting_schedules() {
     let r = new_machine.check_stage(&Repo::new(stage), "git@host:x.git");
     println!("check_stage: {:?}", r.as_ref().map(|a| a.entries).map_err(|e| format!("{e:#}")));
     assert!(r.is_err(), "BUG: adopt accepts a ledger with a standing trust grant and 100 waiting schedules");
+    // The grant is what it names first (leave for an agent to use secrets, still standing).
+    assert!(r.err().is_some_and(|e| format!("{e:#}").contains("grant to an agent still standing")));
 }
 
 /// What the agent's session puts in its proposal's entry, in the ledger itself: its whole tainted_by.

@@ -991,10 +991,12 @@ impl Broker {
         for e in &list {
             shapes_ok(&e.body.data).with_context(|| format!("the repository's ledger, entry #{}", e.body.seq))?;
         }
-        // Nothing standing that a new machine would carry out for someone else: a trust grant not
-        // settled, or a commit at still waiting (the audit of 0.3.0). The old machine's are its own.
+        // Nothing standing that a new machine would carry out for someone else: a grant not settled
+        // (leave for an agent to use a secret; a grant of trust in proposals from before phase 2 of
+        // ADR-055 is none, and carries nothing out), or a commit at still waiting (the audit of 0.3.0).
+        // The old machine's are its own.
         if !session::unsettled(&list).is_empty() {
-            bail!("the repository's ledger has a trust grant still standing: refused");
+            bail!("the repository's ledger has a grant to an agent still standing: refused");
         }
         if !at::pending(&list).is_empty() {
             bail!("the repository's ledger has a commit at still waiting: refused");
@@ -2934,7 +2936,7 @@ impl Broker {
     }
 
     /// Apply under a lock already held; `scheduled`: what applies it with no person there — the `commit
-    /// at` schedule this is the run of (at.rs), or the trust it is applied under (session.rs).
+    /// at` schedule this is the run of (at.rs).
     fn apply_locked(&self, lock: &Lock, proposal_seq: u64, approved_by: &str, confirm_tainted: bool, confirm: Option<u32>, scheduled: Option<u64>) -> Result<Entry> {
         self.reconcile_locked(lock, approved_by)?;
         self.refuse_unledgered_head()?;
@@ -2984,8 +2986,9 @@ impl Broker {
         }
         if p.body.tainted && !confirm_tainted {
             bail!(
-                "proposal {proposal_seq} came from a session that read untrusted content; \
-                 re-run with explicit per-step confirmation (--confirm-tainted)"
+                "proposal {proposal_seq} is an agent's, or was made from untrusted text: it is applied only by \
+                 someone who has read it and says so (--confirm-tainted; torqcli's `request system apply \
+                 {proposal_seq}` shows it and asks)"
             );
         }
         let diff = self.proposal_text(&p, "diff")?;

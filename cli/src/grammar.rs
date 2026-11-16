@@ -329,9 +329,9 @@ static GRANT_FOR: &[Node] = &[
 /// without asking you, for a while (ADR-051 and ADR-052 4, amended 2026-11-13: a grant, the broker's, not a change of the rule).
 static SECRET_ALLOW: &[Node] = &[
     fixed("agent", "An agent: it uses the secret through TorqOS, never reading it (yours, for your own secret; a person's, named, for a system secret)", In::Op).then(SECRET_AGENT),
-    fixed("for", "For <minutes>, your agent uses it without asking you (it asks your password; ledgered; request system secret allow revoke ends it)", In::Op).then(&[value(Value::Minutes, "How many minutes: 1 to 480").whole(approval).then(GRANT_FOR)]),
+    fixed("for", "For <minutes>, your agent uses it without asking you. Add tainted-too: without it this never holds from a session that read untrusted text, and your agent's always counts as one today (it asks your password; ledgered; request system secret allow revoke ends it)", In::Op).then(&[value(Value::Minutes, "How many minutes: 1 to 480").whole(approval).then(GRANT_FOR)]),
     fixed("https", "Sent in an HTTPS header to this host, and to no other (a token)", In::Op).then(&[value(Value::Host, "The host: a DNS name (api.github.com)").whole(secret).then(SECRET_OWNER)]),
-    fixed("session", "In your agent's sessions running now, it uses it without asking you (it asks your password; ledgered)", In::Op).whole(approval).then(GRANT_OWNER),
+    fixed("session", "In your agent's sessions running now, it uses it without asking you, but never from a session that read untrusted text. Your agent's always counts as one today (TorqOS cannot see what it reads), so this lets nothing through yet (it asks your password; ledgered)", In::Op).whole(approval).then(GRANT_OWNER),
     fixed("ssh", "Signs for SSH to this host, and for no other (an SSH key)", In::Op).then(&[value(Value::Host, "The host: a DNS name (github.com)").whole(secret).then(SECRET_OWNER)]),
 ];
 
@@ -339,7 +339,7 @@ static SECRET_ALLOW: &[Node] = &[
 /// had (what its rule lets); a grant by that name is not offered, as it would read as every secret.
 static ALLOW_ALL: &[Node] = &[
     fixed("agent", "The secret named all: an agent may use it", In::Op).then(SECRET_AGENT),
-    fixed("for", "For <minutes>, your agent uses every secret of your own without asking you — never from a session that read untrusted text (it asks your password; ledgered)", In::Op).then(&[value(Value::Minutes, "How many minutes: 1 to 480").whole(approval)]),
+    fixed("for", "For <minutes>, your agent uses every secret of your own without asking you, but never from a session that read untrusted text. Your agent's always counts as one today (TorqOS cannot see what it reads), so this lets nothing through yet (it asks your password; ledgered)", In::Op).then(&[value(Value::Minutes, "How many minutes: 1 to 480").whole(approval)]),
     fixed("https", "The secret named all: sent in an HTTPS header to this host", In::Op).then(&[value(Value::Host, "The host: a DNS name (api.github.com)").whole(secret).then(SECRET_OWNER)]),
     fixed("revoke", "End your grant of all your own secrets, and no other: what you let it use of one secret stays (no password)", In::Op).whole(revoke_all_own),
     fixed("ssh", "The secret named all: signs for SSH to this host", In::Op).then(&[value(Value::Host, "The host: a DNS name (github.com)").whole(secret).then(SECRET_OWNER)]),
@@ -361,9 +361,9 @@ static REQUEST_SECRET: &[Node] = &[
         fixed("revoke", "End what you let your agent use without asking: one secret's grant, or with nothing after it, every one (no password)", In::Op).whole(approval).then(ALLOW_REVOKE),
         value(Value::Secret, "The secret's name").then(SECRET_ALLOW),
     ]),
-    fixed("approve", "When a person is asked before the agent uses it (a session that read untrusted text is always asked); or, with a waiting use's number, your yes to it", In::Op).then(&[value(Value::Secret, "The secret's name; or the number of a use that waits for you (show system secrets waiting)").whole(approval).then(&[
+    fixed("approve", "When a person is asked before the agent uses it (a session that read untrusted text is always asked, and your agent's always counts as one today); or, with a waiting use's number, your yes to it", In::Op).then(&[value(Value::Secret, "The secret's name; or the number of a use that waits for you (show system secrets waiting)").whole(approval).then(&[
         fixed("each-use", "Every time", In::Op).whole(secret).then(SECRET_OWNER),
-        fixed("first-use", "The first time in each of the agent's sessions", In::Op).whole(secret).then(SECRET_OWNER),
+        fixed("first-use", "The first time in each of the agent's sessions (and every time from a session that read untrusted text)", In::Op).whole(secret).then(SECRET_OWNER),
         fixed("never", "Never: only a session that read untrusted text asks", In::Op).whole(secret).then(SECRET_OWNER),
         fixed("never-even-tainted", "Never, even from a session that read untrusted text: your own secret only, and it asks your password", In::Op).whole(secret).then(SECRET_OWNER),
     ])]),

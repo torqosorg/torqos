@@ -181,7 +181,7 @@ fn command_line() -> clap::Command {
                 .about("Approve and apply a proposal: commit, rebuild, ledger.")
                 .arg(seq())
                 .arg(by())
-                .arg(Arg::new("confirm-tainted").long("confirm-tainted").action(ArgAction::SetTrue))
+                .arg(Arg::new("confirm-tainted").long("confirm-tainted").action(ArgAction::SetTrue).help("The one applying it has read it: needed for a proposal the ledger marks tainted (every one of an agent's, and one made from untrusted text)."))
                 .arg(Arg::new("confirm").long("confirm").value_name("MINUTES").value_parser(value_parser!(u32)).help(
                     "Commit confirmed: activate without making it the boot default, and roll it back unless `confirm` runs within this many minutes (a reboot rolls it back too).",
                 )),
