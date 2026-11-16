@@ -172,7 +172,9 @@ pkgs.testers.runNixOSTest {
     with subtest("its proposal: the broker's, an agent's, with what it read; it waits for alice"):
         assert got["proposed"]["isError"] is False, got
         text = got["proposed"]["content"][0]["text"]
-        assert "a person applies it" in text and "It waits for the person" in text and "taint" not in text, text
+        # torq-mcp's own sentence is the second line; below it is what torqcli printed (here the stand-in's).
+        said = text.splitlines()[1]
+        assert "a person applies it" in said and "It waits for the person" in said and "taint" not in said, text
         p = proposal("htop from claude")
         assert p["actor"] == "agent" and p["data"]["agent"] == "torq-agent-alice" and p["tainted"] is True, p
         assert p["data"]["session"]["tainted_by"] == ["agent-program", "show_alarms"], p
@@ -204,5 +206,4 @@ pkgs.testers.runNixOSTest {
         machine.succeed(f"git -C {repo} show HEAD:users/alice/packages.json | grep -q htop")
         machine.succeed("torq-broker verify")
   '';
-}  '';
 }

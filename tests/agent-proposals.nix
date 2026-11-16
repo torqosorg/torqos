@@ -66,10 +66,9 @@ pkgs.testers.runNixOSTest {
             return f"--- /dev/null\n+++ b/{path}\n@@ -0,0 +1 @@\n+{new}\n"
         return f"--- a/{path}\n+++ b/{path}\n@@ -1 +1 @@\n-{cur.strip()}\n+{new}\n"
 
-    def propose(diff, reason, session=None, tainted=False, who="torq-agent-dev"):
+    def propose(diff, reason, session=None, who="torq-agent-dev"):
         args = ["--json", "propose", f"--base={head()}", f"--reason={reason}"]
         args += [f"--session={session}"] if session else []
-        args += ["--tainted"] if tainted else []
         return ask(who, {"args": args, "diff": diff})
 
     def entries():
@@ -183,7 +182,8 @@ pkgs.testers.runNixOSTest {
         assert "could cut this machine off" in pane("w") and "commit confirmed" in pane("w"), pane("w")
         machine.succeed("su - dev -c 'tmux send-keys -t w n Enter'")
         # Nor at a set time: an agent's proposal is applied by a person who is there.
-        code, v = ask("dev", {"args": ["--json", "schedule", str(first["seq"]), "--at=2099-01-01T00:00:00Z"], "password": PASSWORD})
+        at = machine.succeed("date -u -d '+1 hour' +%Y-%m-%dT%H:%M:%SZ").strip()
+        code, v = ask("dev", {"args": ["--json", "schedule", str(first["seq"]), f"--at={at}"], "password": PASSWORD})
         assert code == 1 and "is an agent's" in v["error"], (code, v)
 
     with subtest("there is no trust to give: not a person's with their password, not the agent's, not root's"):
