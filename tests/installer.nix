@@ -54,8 +54,11 @@ let
 in
 pkgs.testers.runNixOSTest {
   name = "torq-installer";
+  # The whole test takes about 59 minutes on the check host (measured 2026-11-16: 3530 to 3650 seconds over three
+  # runs, most of it reading the disk back and one evaluation in the installed machine), so an hour cut it off
+  # in its last step on a slower run.
+  globalTimeout = 5400;
   nodes = { };
-  globalTimeout = 3600;
 
   testScript = ''
     import json, os, re, shlex, shutil, subprocess
