@@ -1,13 +1,11 @@
-{ lib, stdenv, rustPlatform, symlinkJoin, curl, pciutils, usbutils, iproute2, iw, util-linux, kmod, procps, coreutils }:
+{ lib, stdenv, rustPlatform, symlinkJoin, pciutils, usbutils, iproute2, iw, util-linux, kmod, procps, coreutils }:
 
 let
-  # The programs doctor mode runs (agent/src/tools.rs), by their store paths, never from PATH: curl
-  # for the model (agent/src/model.rs), the hardware tools that only report. journalctl and torqcli
-  # are the system's own (/run/current-system/sw/bin), matching its journal and its broker.
-  # Linux only, as torqcli's filters are.
-  doctorEnv = lib.optionalAttrs stdenv.hostPlatform.isLinux {
-    TORQ_CURL = lib.getExe curl;
-    TORQ_DOCTOR_BIN = "${symlinkJoin { name = "torq-doctor-tools"; paths = [ pciutils usbutils iproute2 iw util-linux kmod procps coreutils ]; }}/bin";
+  # The programs torq-mcp's tools run (agent/src/tools.rs), by their store paths, never from PATH: the
+  # hardware tools that only report. journalctl and torqcli are the system's own
+  # (/run/current-system/sw/bin), matching its journal and its broker. Linux only, as torqcli's filters are.
+  toolsEnv = lib.optionalAttrs stdenv.hostPlatform.isLinux {
+    TORQ_TOOLS_BIN = "${symlinkJoin { name = "torq-agent-tools"; paths = [ pciutils usbutils iproute2 iw util-linux kmod procps coreutils ]; }}/bin";
   };
 in
 
@@ -25,13 +23,13 @@ rustPlatform.buildRustPackage {
   buildAndTestSubdir = "agent";
   cargoLock.lockFile = ./Cargo.lock;
 
-  env = doctorEnv;
+  env = toolsEnv;
   # For the dev shell (flake.nix), so `cargo test` there builds the same way.
-  passthru = { inherit doctorEnv; };
+  passthru = { inherit toolsEnv; };
 
   meta = {
-    description = "TorqOS agent (unprivileged, as a person's torq-agent-<person>): the agent service, the bridge to the person's engine; torq-mcp; and, until it is removed, doctor mode's read-only tools and a change proposed in propose mode, never applied";
-    mainProgram = "torq-doctor";
+    description = "TorqOS agent (unprivileged, as a person's torq-agent-<person>): the agent service, the bridge to the person's engine; and torq-mcp, TorqOS's tools for it (reading the machine; a change proposed, never applied)";
+    mainProgram = "torq-agent-service";
     license = lib.licenses.asl20;
   };
 }

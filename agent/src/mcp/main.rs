@@ -1,11 +1,11 @@
 //! `torq-mcp` (ADR-051 7, step 5): TorqOS's tools for a coding tool — an MCP server on standard input and
 //! output (agent/src/mcp.rs), started by the tool, run as the person's agent account under `torq agent run`.
-//! Its session at the broker is started and reported a coding tool's before it reads a message.
+//! Its session at the broker is started before it reads a message.
 //!
 //! `torq-mcp --link`: TorqOS's server and skill linked into Claude Code's settings in this account's home
 //! (agent/src/link.rs) — run by the launcher, as the agent, at each start.
 
-// No unsafe code and no dead code, ever (ADR-020); in a test build `deny`, as the doctor's.
+// No unsafe code and no dead code, ever (ADR-020); in a test build `deny`, as torqcli's (cli/src/main.rs).
 #![forbid(unsafe_code)]
 #![cfg_attr(not(test), forbid(dead_code))]
 #![cfg_attr(test, deny(dead_code))]
@@ -38,7 +38,7 @@ fn home() -> Result<PathBuf> {
 }
 
 fn serve() -> Result<()> {
-    // The journal only where the agent may read it, as the doctor offers it (/etc/torq/agent.json; none, no journal).
+    // The journal only where the agents may read it (`torq agent journal`: /etc/torq/agent.json; none, no journal).
     let journal = std::fs::read_to_string("/etc/torq/agent.json")
         .ok()
         .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
@@ -46,7 +46,7 @@ fn serve() -> Result<()> {
         .unwrap_or(false);
     let machine = Machine { home: home()? };
     let mut server = mcp::Server::start(&machine, journal, PathBuf::from("/etc/torq/nixos-schema.json"))?;
-    eprintln!("torq-mcp: session {} at the broker, a coding tool's: tainted, so what it proposes waits for a person", server.session());
+    eprintln!("torq-mcp: session {} at the broker: what it proposes waits for a person", server.session());
     mcp::serve(&mut server, &mut std::io::stdin().lock(), &mut std::io::stdout().lock())
 }
 

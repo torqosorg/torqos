@@ -2,17 +2,13 @@
 name = "torq-agent"
 version = "0.4.0"
 edition = "2021"
-description = "TorqOS agent (unprivileged, run as a person's agent accounts, torq-agent-<person> and torq-resident-<person>): doctor mode's read-only tools, and in propose mode a change proposed, never applied"
+description = "TorqOS agent (unprivileged, run as a person's agent account, torq-agent-<person>): the agent's service, the bridge to the person's engine; and torq-mcp, TorqOS's tools for it: reading the machine, and a change proposed, never applied"
 license = "Apache-2.0"
 
-# What the three programs share: the tools, the cleaning, the session (ADR-051 step 5).
+# What the two programs share: the tools, the cleaning, the machine.
 [lib]
 name = "torq_agent"
 path = "src/lib.rs"
-
-[[bin]]
-name = "torq-doctor"
-path = "src/main.rs"
 
 # A person's agent, as a service (ADR-055 3): the bridge to their engine (Claude Code), one question at a time.
 [[bin]]
@@ -27,9 +23,10 @@ path = "src/mcp/main.rs"
 [dependencies]
 anyhow = "1"
 serde_json = "1"
-# The API key's header, handed to curl as a private (0600) file: never on a command line.
-tempfile = "3"
 # A tool program's whole process group stopped at its bounds; a record never written through a link.
 rustix = { version = "1.1.6", features = ["fs", "net", "process"] }
 # The words of the agent service's socket (ADR-044, ADR-051 3), shared with torqcli.
 torq-wire = { path = "../wire" }
+
+[dev-dependencies]
+tempfile = "3"

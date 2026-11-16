@@ -1,6 +1,6 @@
-//! Doctor mode's tools (ADR-042): read-only, all of them, and nothing else. The set is closed — an
-//! enum, matched by exact name — so a tool the model names that is not here (`propose`, `commit`, a
-//! shell) does not exist to be called. Each runs a fixed program by its absolute path, with its
+//! TorqOS's tools for an agent (ADR-042, ADR-051 7; offered by torq-mcp): six that only read, and one that
+//! proposes. The set is closed — an enum, matched by exact name — so a tool the model names that is not here
+//! (`commit`, a shell) does not exist to be called. Each runs a fixed program by its absolute path, with its
 //! arguments as separate words (no shell), from parameters checked against narrow patterns: what a
 //! log said, the model repeating it, cannot become a command, an option or a second torqcli command.
 
@@ -19,9 +19,8 @@ pub const TORQCLI: &str = "/run/current-system/sw/bin/torqcli";
 /// What a tool returns to the model, at most (the last of it, for a log).
 pub const MAX_OUTPUT: usize = 16_000;
 
-/// Every tool the agent has. Doctor mode's (`ALL`) only read; `Propose` (propose mode alone,
-/// ADR-042, 6) proposes a change through torqcli as the agent — which stops at the proposal: a
-/// person applies it.
+/// Every tool the agent has. Those of `ALL` only read; `Propose` (ADR-042, 6) proposes a change through
+/// torqcli as the agent — which stops at the proposal: a person applies it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Tool {
     Journal,
@@ -102,13 +101,13 @@ impl Tool {
 
     /// Whether what it returns is untrusted text — written by anyone who can log, a USB device's
     /// descriptor, a proposal's reason, a configuration value (a network's name, a description,
-    /// a file someone attached) — so a session that read it is tainted (AI-LAYER.md). Only NixOS's
-    /// own option docs are not.
+    /// a file someone attached) — so the broker is told the session read it, for the person who reads
+    /// what it proposes (AI-LAYER.md). Only NixOS's own option docs are not.
     pub fn taints(self) -> bool {
         !matches!(self, Tool::Options)
     }
 
-    /// What the tool is said to do, and its parameters' JSON schema (the chat API's and MCP's alike).
+    /// What the tool is said to do, and its parameters' JSON schema (as MCP gives it).
     pub fn describe(self) -> (&'static str, Value) {
         let none = json!({ "type": "object", "properties": {}, "additionalProperties": false });
         match self {
@@ -157,14 +156,6 @@ impl Tool {
                 "additionalProperties": false
             })),
         }
-    }
-
-    /// The tools as the chat API is told them.
-    pub fn definitions(offered: &[Tool]) -> Value {
-        Value::Array(offered.iter().map(|t| {
-            let (description, parameters) = t.describe();
-            json!({ "type": "function", "function": { "name": t.name(), "description": description, "parameters": parameters } })
-        }).collect())
     }
 
     /// The tool's parameters checked, as what it will do. Anything not in its schema is refused.
@@ -228,7 +219,7 @@ impl Tool {
                 Action::Run(vec![(PathBuf::from(JOURNALCTL), a)])
             }
             Tool::Hardware => {
-                let bin = |p: &str| PathBuf::from(format!("{}/{p}", option_env!("TORQ_DOCTOR_BIN").unwrap_or("/run/current-system/sw/bin")));
+                let bin = |p: &str| PathBuf::from(format!("{}/{p}", option_env!("TORQ_TOOLS_BIN").unwrap_or("/run/current-system/sw/bin")));
                 let r = |p: &str, a: &[&str]| (bin(p), a.iter().map(|s| s.to_string()).collect::<Vec<_>>());
                 Action::Run(match text("what")? {
                     Some("pci") => vec![r("lspci", &["-nnk"])],
@@ -370,8 +361,7 @@ pub fn perform(action: &Action, host: &dyn Host, schema: &Path, session: &str) -
 pub const MAX_PROGRAM_BYTES: usize = 1 << 20;
 /// How long a tool's program may run.
 pub const PROGRAM_TIMEOUT: Duration = Duration::from_secs(30);
-/// How long a proposal may take: torqcli evaluates the configuration before it proposes, and under a
-/// person's trust the broker applies it then and there — a build and a switch.
+/// How long a proposal may take: torqcli evaluates the configuration before it proposes.
 pub const PROPOSE_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 
 /// What torqcli's output says of a proposal it was given to make: made (its number), cut short (it may have been
@@ -462,7 +452,7 @@ pub fn bounded(mut cmd: Command, cap: usize, timeout: Duration) -> Result<String
 mod tests {
     use super::*;
 
-    /// The doctor's limits as numbers: changing one is a decision (the audit of 0.3.0).
+    /// The tools' limits as numbers: changing one is a decision (the audit of 0.3.0).
     #[test]
     fn the_limits_are_these_numbers() {
         assert_eq!((PROGRAM_TIMEOUT.as_secs(), PROPOSE_TIMEOUT.as_secs()), (30, 30 * 60));
@@ -499,7 +489,7 @@ mod tests {
             };
             match t.plan(&args).unwrap() {
                 Action::Options(_) => {}
-                Action::Propose(_) => panic!("doctor mode has no tool that proposes"),
+                Action::Propose(_) => panic!("none of the reading tools proposes"),
                 Action::Run(steps) => for (p, a) in steps {
                     let p = p.file_name().unwrap().to_str().unwrap().to_string();
                     match p.as_str() {
@@ -594,7 +584,7 @@ mod tests {
         ] {
             assert!(Tool::Propose.plan(&bad).is_err(), "{bad}");
         }
-        // Not among doctor mode's tools: offered only in propose mode.
+        // Not among the tools that only read.
         assert!(!Tool::ALL.contains(&Tool::Propose));
         // Each tool's tier: the read-only ones observe; this one proposes.
         assert!(Tool::ALL.iter().all(|t| t.tier() == Tier::Observe));

@@ -1,4 +1,4 @@
-//! The machine, as TorqOS's agent programs run things on it (`torq-doctor`, `torq-mcp`): a program run with
+//! The machine, as TorqOS's tools for an agent run things on it (`torq-mcp`): a program run with
 //! nothing of the caller's environment but a fixed PATH, its home and plain output, its input closed, its
 //! output and its time bounded (tools::bounded); torqcli, by its absolute path, for proposals and for the
 //! session at the broker.
@@ -132,7 +132,7 @@ mod tests {
         assert_eq!(SESSION_TIMEOUT.as_secs(), 30);
         // A descendant in a session of its own, out of the group's kill, holding the output: still bounded.
         let t = std::time::Instant::now();
-        let setsid = format!("{}/setsid", option_env!("TORQ_DOCTOR_BIN").unwrap_or("/run/current-system/sw/bin"));
+        let setsid = format!("{}/setsid", option_env!("TORQ_TOOLS_BIN").unwrap_or("/run/current-system/sw/bin"));
         let e = within(sh(&format!("{setsid} sleep 60 & echo id")), std::time::Duration::from_millis(500)).unwrap_err();
         assert!(e.to_string().contains("still held open"), "{e}");
         assert!(t.elapsed() < std::time::Duration::from_secs(10), "{:?}", t.elapsed());
