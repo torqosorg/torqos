@@ -117,7 +117,7 @@ pkgs.testers.runNixOSTest {
         # Refused for that reason, not any (the exit code alone).
         code, out = machine.execute(f"su -s /bin/sh torq-agent-bob -c 'torqcli agent session taint {sa} read_journal' 2>&1")
         assert code != 0 and "not torq-agent-bob's" in out, (code, out)
-        machine.succeed(f"jq -e '.tainted == true and .tainted_by == [\"agent-program\"] and .agent == \"torq-agent-alice\"' /var/lib/torq/state/sessions/{sa}.json")
+        machine.succeed(f"jq -e '(has(\"tainted\") | not) and .tainted_by == [\"agent-program\"] and .agent == \"torq-agent-alice\"' /var/lib/torq/state/sessions/{sa}.json")
         # alice's own agent, on its own session: a proposal, which waits for alice.
         code, v = propose("torq-agent-alice", packages("alice", ["tree"]), "tree for alice", session=sa)
         assert code == 0 and v["tainted"] is True and v["data"]["agent_for"] == "alice", (code, v)

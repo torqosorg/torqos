@@ -95,7 +95,7 @@ pkgs.testers.runNixOSTest {
             code, out = machine.execute(f"su - dev -c {shlex.quote(gone)} 2>&1 < /dev/null")
             assert code != 0, (gone, out)
 
-    with subtest("a session the agent starts is the broker's: its record root's, the ledger untouched, tainted from its start"):
+    with subtest("a session the agent starts is the broker's: its record root's, the ledger untouched, marked from its start as one the broker cannot see into"):
         n = len(entries())
         sid = start()
         assert len(entries()) == n, "a session costs the ledger nothing until a proposal cites it"
@@ -103,7 +103,8 @@ pkgs.testers.runNixOSTest {
         machine.fail(f"su -s /bin/sh torq-agent-dev -c 'cat {state}/sessions/{sid}.json'")
         machine.fail(f"su -s /bin/sh torq-agent-dev -c 'touch {state}/sessions/x.json'")
         rec = json.loads(machine.succeed(f"cat {state}/sessions/{sid}.json"))
-        assert rec["tainted"] is True and rec["tainted_by"] == ["agent-program"] and rec["agent"] == "torq-agent-dev" and "resident" not in rec, rec
+        # (The record says what the session read, `agent-program` first; it has no flag of its own beside that.)
+        assert "tainted" not in rec and rec["tainted_by"] == ["agent-program"] and rec["agent"] == "torq-agent-dev" and "resident" not in rec, rec
         # A person's reads are their own: sessions are the agent's.
         code, v = ask("dev", {"args": ["--json", "session-start"]})
         assert code == 1 and "the agent's" in v["error"], (code, v)
@@ -129,7 +130,7 @@ pkgs.testers.runNixOSTest {
             code, v = ask("torq-agent-dev", {"args": ["--json"] + args})
             assert code != 0, (args, code, v)
         rec = json.loads(machine.succeed(f"cat {state}/sessions/{sid}.json"))
-        assert rec["tainted"] is True and rec["tainted_by"] == ["agent-program", "read_journal", "show_ledger"], rec
+        assert "tainted" not in rec and rec["tainted_by"] == ["agent-program", "read_journal", "show_ledger"], rec
         # What the agent is told it proposed is the broker's record of the session.
         told = json.loads(as_account("torq-agent-dev", f"torqcli agent session show {sid}"))
         assert told["proposals"] == [{"proposal": first["seq"]}, {"proposal": jq["seq"]}], told

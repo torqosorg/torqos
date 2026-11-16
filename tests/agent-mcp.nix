@@ -189,7 +189,7 @@ pkgs.testers.runNixOSTest {
         sid = p["data"]["session"]["id"]
         assert p["tainted"] is True and p["data"]["session"]["tainted_by"] == ["agent-program"], p
         held = json.loads(machine.succeed(f"cat {state}/sessions/{sid}.json"))
-        assert held["tainted"] is True and held["tainted_by"] == ["agent-program"] and "resident" not in held, held
+        assert "tainted" not in held and held["tainted_by"] == ["agent-program"] and "resident" not in held, held
         assert head() == before, "it waits"
         # Naming no session at all: the same.
         as_alice("torq agent run -- torqcli -c " + shlex.quote('configure; set users alice packages htop; commit comment "no session"'))

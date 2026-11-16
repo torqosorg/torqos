@@ -143,6 +143,8 @@ pkgs.testers.runNixOSTest {
     with subtest("dev keeps a token, and says the agent may use it for api.example.test"):
         code, v = ask("dev", {"args": ["--json", "secret-set", "--name", "gh", "--user", "dev"], "key": "dev-token-1"})
         assert code == 0, (code, v)
+        # The rule says when dev is asked in a word from before 2026-11-16 (`never`: "never, unless the agent
+        # read untrusted text", which every agent counts as having done). It is read as what it did: asked each time.
         rules = '{"gh": {"kind": "token", "https": {"hosts": ["api.example.test"]}, "actors": ["torq-agent"], "approve": "never"}}'
         diff = f"--- /dev/null\n+++ b/users/dev/secrets.json\n@@ -0,0 +1 @@\n+{rules}\n"
         code, p = ask("dev", {"args": ["--json", "propose", f"--base={head()}", "--reason=gh for the agent"], "diff": diff})
@@ -180,19 +182,21 @@ pkgs.testers.runNixOSTest {
         machine.wait_until_succeeds(f"test -s /tmp/s-{user}{tag}", timeout=60)
         return int(machine.succeed(f"cat /tmp/s-{user}{tag}").strip()), machine.succeed(f"cat /tmp/b-{user}{tag}")
 
-    with subtest("a session of dev's agent's starts tainted: each use waits for dev, and only dev answers"):
-        # One agent per person (ADR-051 3): `torq-agent` in dev's rules is dev's agent, torq-agent-dev. Every
-        # session of an agent account's is tainted from its start (the broker cannot see what its programs
-        # read), so its use waits at the broker for dev (ADR-052 4, amended 2026-11-13), under a number, and
-        # sends nothing until dev says yes.
+    with subtest("each use by dev's agent waits for dev, and only dev answers"):
+        # One agent per person (ADR-051 3): `torq-agent` in dev's rules is dev's agent, torq-agent-dev. The
+        # broker cannot see what an agent's programs read, so each use waits at the broker for dev (ADR-052 4,
+        # amended 2026-11-16), under a number, and sends nothing until dev says yes.
         code, s = ask("torq-agent-dev", {"args": ["--json", "session-start"]})
         assert code == 0, (code, s)
         session = s["session"]
         n = len(requests())
         begin("torq-agent-dev", "/user/dev/gh/api.example.test/echo", "-H", f"X-Torq-Session: {session}", "-H", "X-Torq-Reason: listing the repositories")
-        machine.wait_until_succeeds("su - dev -c 'torqcli show system secrets waiting' | grep -q 'so it counts as having READ UNTRUSTED TEXT'", timeout=30)
+        machine.wait_until_succeeds("su - dev -c 'torqcli show system secrets waiting' | grep -q 'why you are asked: TorqOS cannot see what your agent has read'", timeout=30)
+        shown = machine.succeed("su - dev -c 'torqcli show system secrets waiting'")
+        assert "taint" not in shown.lower() and "untrusted" not in shown.lower(), shown
         w = waiting("dev")
-        assert len(w) == 1 and w[0]["facts"]["secret"] == "gh" and w[0]["facts"]["host"] == "api.example.test" and w[0]["facts"]["tainted"] and w[0]["agent_says"] == "listing the repositories", w
+        assert len(w) == 1 and w[0]["facts"]["secret"] == "gh" and w[0]["facts"]["host"] == "api.example.test" and w[0]["agent_says"] == "listing the repositories", w
+        assert "tainted" not in w[0]["facts"] and "why" not in w[0]["facts"], w
         assert waiting("sam") == [], "asked of dev alone"
         assert len(requests()) == n, "nothing sent while it waits"
         # The agent's own account and another person are refused (dev is this machine's only administrator).
@@ -219,7 +223,7 @@ pkgs.testers.runNixOSTest {
         n = len(requests())
         for user, path, flags in [
             ("torq-agent-dev", "/user/dev/gh/other.example.test/echo", ["-H", f"X-Torq-Session: {session}"]),
-            # No session: dev is asked, as for a tainted one, and with no answer it is refused at its two minutes.
+            # No session: dev is asked, as for any use of the agent's, and with no answer it is refused at its two minutes.
             ("torq-agent-dev", "/user/dev/gh/api.example.test/echo", []),
             ("sam", "/user/dev/gh/api.example.test/echo", []),
             ("dev", "/system/gh/api.example.test/echo", []),
@@ -294,10 +298,8 @@ pkgs.testers.runNixOSTest {
         status, body = ended("torq-agent-sam", tag="-w3")
         assert status == 200 and "sam-token-1" not in body and requests()[-1]["headers"]["Authorization"] == "Bearer sam-token-1", (status, body)
 
-    with subtest("a grant lets the agent's uses of one secret through unasked: with dev's password, for minutes, from a session that read untrusted text only where it says so, and until dev ends it"):
-        # Every session of an agent's is tainted from its start. So what a grant that does not say tainted-too
-        # would let through (a clean session's use) cannot be shown: no agent has such a session (the rule is
-        # the unit tests' in broker/src/session.rs). Nor is "this session" (`allow <name> session`).
+    with subtest("a grant lets the agent's uses of one secret through unasked: with dev's password, for minutes, and until dev ends it"):
+        # One kind of grant (ADR-052 4, amended 2026-11-16): one named secret, for minutes.
         PASSWORD = "Torq-sock-2210"
         def entries(kind):
             return [e for e in (json.loads(l) for l in machine.succeed("torq-broker --json log --brief").splitlines()) if e["kind"] == kind]
@@ -323,9 +325,26 @@ pkgs.testers.runNixOSTest {
             assert "denied" in out, out
             status, body = ended("torq-agent-dev", tag=tag)
             assert status == 403 and "denied" in body and len(requests()) == n, (status, body)
+        def goes_through():
+            """A use of gh from s3 is sent at once, with no one asked."""
+            n = len(requests())
+            status, body, _ = use("torq-agent-dev", gh, "-H", f"X-Torq-Session: {s3}")
+            assert status == 200 and "dev-token-1" not in body and requests()[-1]["headers"]["Authorization"] == "Bearer dev-token-1", (status, body)
+            assert waiting("dev") == [] and len(requests()) == n + 1
 
+        # With no grant, dev is asked.
+        asks_and_is_denied("-g0")
         # No password, no grant: with no terminal to ask at, torqcli gives none.
         machine.fail("su - dev -c 'torqcli request system secret allow gh for 5 user dev' < /dev/null")
+        assert grants() == [] and entries("trust_granted") == []
+        # The kinds of grant there were before (all of one's secrets, "this session", and the word for one that
+        # held whatever the agent read) are no commands of torqcli's, and no arguments of the broker's.
+        for gone in ["allow all", "allow all revoke", "allow gh session user dev", "allow gh for 5 tainted-too user dev", "approve gh never-even-tainted user dev", "approve gh first-use user dev", "approve gh never user dev"]:
+            out = machine.fail(f"su - dev -c 'torqcli request system secret {gone}' 2>&1 < /dev/null")
+            assert "Password" not in out, (gone, out)
+        for args in [["--all", "--minutes", "5"], ["--name", "gh", "--user", "dev", "--session"], ["--name", "gh", "--user", "dev", "--minutes", "5", "--tainted-too"]]:
+            code, v = ask("dev", {"args": ["--json", "secret-grant"] + args, "password": PASSWORD})
+            assert code not in (0, 77), (args, code, v)
         assert grants() == [] and entries("trust_granted") == []
         # At a terminal, torqcli asks dev's password there, and the grant is on the record with what it covers.
         machine.succeed("su - dev -c \"tmux new-session -d -s g -x 200 -y 50 'torqcli request system secret allow gh for 5 user dev; sleep 600'\"")
@@ -333,16 +352,20 @@ pkgs.testers.runNixOSTest {
         machine.succeed(f"su - dev -c 'tmux send-keys -t g {PASSWORD} Enter'")
         machine.wait_until_succeeds("su - dev -c 'tmux capture-pane -p -t g' | grep -c 'without asking, for 5 minutes' > /dev/null", timeout=60)
         machine.succeed("su - dev -c 'tmux kill-session -t g'")
-        plain = entries("trust_granted")[-1]
-        assert plain["approved_by"] == "dev" and plain["data"]["person"] == "dev" and plain["data"]["covers"] == "secret gh" and plain["data"]["minutes"] == 5 and plain["data"]["owner"] == "user" and "tainted_too" not in plain["data"], plain
-        assert [(g["seq"], g["person"], g["tainted_too"]) for g in grants()] == [(plain["seq"], "dev", False)], grants()
+        first_grant = entries("trust_granted")[-1]
+        assert first_grant["approved_by"] == "dev" and first_grant["data"]["person"] == "dev" and first_grant["data"]["covers"] == "secret gh" and first_grant["data"]["minutes"] == 5 and first_grant["data"]["owner"] == "user", first_grant
+        held = grants()
+        assert len(held) == 1 and held[0]["seq"] == first_grant["seq"] and held[0]["person"] == "dev" and held[0]["covers"] == {"name": "gh", "system": False}, held
+        assert "tainted_too" not in held[0] and "session" not in held[0], held
         shown = machine.succeed("su - sam -c 'torqcli show system secrets allowed'")
-        assert "dev's agent: their secret gh, until" in shown and "UNTRUSTED" not in shown, shown
-        # It does not say tainted-too, and this session read untrusted text as far as the broker can tell: dev is asked.
-        asks_and_is_denied("-g1")
-        # One grant of a thing at a time: a second is refused while the first holds, whatever it would add.
-        tainted_too = {"args": ["--json", "secret-grant", "--name", "gh", "--user", "dev", "--minutes", "5", "--tainted-too"], "password": PASSWORD}
-        code, v = ask("dev", tainted_too)
+        assert "dev's agent: their secret gh, without asking until" in shown and "UNTRUSTED" not in shown.upper() and "taint" not in shown.lower(), shown
+        # Now the same use goes through at once, with no one asked, and is on the record as under that grant.
+        goes_through()
+        under = [e for e in entries("secret_first_use") if e["data"].get("grant") == first_grant["seq"]]
+        assert len(under) == 1 and under[0]["data"]["session"] == s3 and under[0]["tainted"], under
+        # One grant of a thing at a time: a second is refused while the first holds.
+        grant = {"args": ["--json", "secret-grant", "--name", "gh", "--user", "dev", "--minutes", "5"], "password": PASSWORD}
+        code, v = ask("dev", grant)
         assert code == 1 and "revoke it first" in v["error"], (code, v)
         # Ended, by name and with no password, as dev's own (`user dev`): with no `user` the line names the system's
         # secret, and torqcli says the line dev meant; at the socket, the system's of that name is another grant,
@@ -352,42 +375,36 @@ pkgs.testers.runNixOSTest {
         assert code == 0 and v["revoked"] == [], (code, v)
         code, v = ask("sam", {"args": ["--json", "secret-revoke", "--name", "gh", "--user", "dev"]})
         assert code == 1, (code, v)
-        assert [g["seq"] for g in grants()] == [plain["seq"]], grants()
+        assert [g["seq"] for g in grants()] == [first_grant["seq"]], grants()
         out = machine.succeed("su - dev -c 'torqcli request system secret allow revoke gh user dev'")
         assert "revoked" in out, out
         ended_grants = entries("trust_revoked")
-        assert ended_grants[-1]["data"]["grant"] == plain["seq"] and ended_grants[-1]["approved_by"] == "dev", ended_grants[-1]
+        assert ended_grants[-1]["data"]["grant"] == first_grant["seq"] and ended_grants[-1]["approved_by"] == "dev", ended_grants[-1]
         assert grants() == []
         assert "no such grant" in machine.succeed("su - dev -c 'torqcli request system secret allow revoke deploy'")
+        # Ended, the next use asks again.
+        asks_and_is_denied("-g1")
 
-        # Tainted-too: only with dev's own password, only dev's own, only one named secret, only for minutes.
-        code, v = ask("dev", dict(tainted_too, password="wrong"))
+        # Only with dev's own password, only dev's own to give, only for 1 to 480 minutes.
+        code, v = ask("dev", dict(grant, password="wrong"))
         assert code == 77, (code, v)
         for who, request in [
-            ("torq-agent-dev", {"args": tainted_too["args"]}),
-            ("sam", {"args": tainted_too["args"], "password": "Sam-sock-7742"}),
-            ("dev", {"args": ["--json", "secret-grant", "--all", "--minutes", "5", "--tainted-too"], "password": PASSWORD}),
-            ("dev", {"args": ["--json", "secret-grant", "--name", "gh", "--user", "dev", "--session", "--tainted-too"], "password": PASSWORD}),
-            ("dev", {"args": ["--json", "secret-grant", "--name", "gh", "--user", "dev", "--minutes", "481", "--tainted-too"], "password": PASSWORD}),
+            ("torq-agent-dev", {"args": grant["args"]}),
+            ("sam", {"args": grant["args"], "password": "Sam-sock-7742"}),
+            ("dev", {"args": ["--json", "secret-grant", "--name", "gh", "--user", "dev", "--minutes", "481"], "password": PASSWORD}),
+            ("dev", {"args": ["--json", "secret-grant", "--name", "gh", "--user", "dev", "--minutes", "0"], "password": PASSWORD}),
         ]:
             code, v = ask(who, request)
             assert code not in (0, 77), (who, request["args"], code, v)
         assert grants() == [], grants()
-        code, v = ask("dev", tainted_too)
-        assert code == 0 and v["kind"] == "trust_granted" and v["data"]["tainted_too"] is True and v["data"]["covers"] == "secret gh", (code, v)
-        shown = machine.succeed("su - sam -c 'torqcli show system secrets allowed'")
-        assert "EVEN FROM A SESSION THAT READ UNTRUSTED TEXT" in shown, shown
-        # Now the same use goes through at once, with no one asked, and is on the record as under that grant.
+        code, v = ask("dev", grant)
+        assert code == 0 and v["kind"] == "trust_granted" and v["data"]["covers"] == "secret gh", (code, v)
+        goes_through()
         n = len(requests())
-        status, body, _ = use("torq-agent-dev", gh, "-H", f"X-Torq-Session: {s3}")
-        assert status == 200 and "dev-token-1" not in body and requests()[-1]["headers"]["Authorization"] == "Bearer dev-token-1", (status, body)
-        assert waiting("dev") == [] and len(requests()) == n + 1
-        first = [e for e in entries("secret_first_use") if e["data"].get("grant") == v["seq"]]
-        assert len(first) == 1 and first[0]["data"]["session"] == s3 and first[0]["tainted"], first
         # A grant widens no rule: another host is still refused, and a secret it does not name still asks (sam's
         # agent, for sam's own gh, is no part of dev's grant: it waits for sam, who says no).
         status, body, _ = use("torq-agent-dev", "/user/dev/gh/other.example.test/echo", "-H", f"X-Torq-Session: {s3}")
-        assert status == 403 and len(requests()) == n + 1, (status, body)
+        assert status == 403 and len(requests()) == n, (status, body)
         begin("torq-agent-sam", "/user/sam/gh/api.example.test/echo", "-H", f"X-Torq-Session: {sams['session']}", tag="-g3")
         for _ in range(30):
             if waiting("sam"):
@@ -396,26 +413,68 @@ pkgs.testers.runNixOSTest {
         code, d = ask("sam", {"args": ["--json", "secret-deny", str(waiting("sam")[0]["n"])]})
         assert code == 0, (code, d)
         status, body = ended("torq-agent-sam", tag="-g3")
-        assert status == 403 and len(requests()) == n + 1, (status, body)
-        # A grant of all dev's own secrets beside it, ended alone (`allow all revoke`): the one of gh stays, and the
-        # use still goes through. Then everything dev allowed is ended, and the next use asks again.
-        code, every = ask("dev", {"args": ["--json", "secret-grant", "--all", "--minutes", "5"], "password": PASSWORD})
-        assert code == 0 and every["data"]["covers"] == "all-secrets", (code, every)
-        out = machine.succeed("su - dev -c 'torqcli request system secret allow all revoke'")
-        assert "revoked" in out, out
-        assert [g["seq"] for g in grants()] == [v["seq"]], grants()
-        status, body, _ = use("torq-agent-dev", gh, "-H", f"X-Torq-Session: {s3}")
-        assert status == 200, (status, body)
+        assert status == 403 and len(requests()) == n, (status, body)
+        # Everything dev allowed is ended in one line, and the next use asks again.
         out = machine.succeed("su - dev -c 'torqcli request system secret allow revoke all'")
         assert "revoked" in out, out
         assert grants() == []
         asks_and_is_denied("-g2")
 
-    with subtest("a session tainted by what it read too is asked; with no answer in two minutes the use is refused, and recorded as timed out"):
+    with subtest("without-asking is dev's own word for their own secret: set with their password, it lets the agent's uses through; a word from before never does"):
+        def rule_of_gh(word, reason):
+            """Propose dev's rules with gh's `approve` as `word`: the proposal."""
+            now = machine.succeed(f"git -C {repo} show HEAD:users/dev/secrets.json").rstrip("\n")
+            assert "\n" not in now, now
+            new = json.loads(now)
+            new["gh"]["approve"] = word
+            diff = f"--- a/users/dev/secrets.json\n+++ b/users/dev/secrets.json\n@@ -1 +1 @@\n-{now}\n+{json.dumps(new)}\n"
+            code, p = ask("dev", {"args": ["--json", "propose", f"--base={head()}", f"--reason={reason}"], "diff": diff})
+            assert code == 0, (code, p)
+            return p
+        p = rule_of_gh("without-asking", "gh without asking")
+        assert p["data"]["standing"] == ["users/dev/secrets.json: gh"], p
+        # A change that makes a secret never ask is dev's own, with their password: not without it, not with a
+        # wrong one, and not sam's (with sam's own password).
+        # (77: the socket's word for "this needs a password", and for a wrong one.)
+        code, v = ask("dev", {"args": ["--json", "apply", str(p["seq"])]})
+        assert code == 77 and v["password"] is True, (code, v)
+        code, v = ask("dev", {"args": ["--json", "apply", str(p["seq"])], "password": "wrong"})
+        assert code == 77, (code, v)
+        code, v = ask("sam", {"args": ["--json", "apply", str(p["seq"])], "password": "Sam-sock-7742"})
+        assert code != 0, (code, v)
+        assert json.loads(machine.succeed(f"git -C {repo} show HEAD:users/dev/secrets.json"))["gh"]["approve"] == "never", "not applied"
+        asks_and_is_denied("-n0")
+        code, v = ask("dev", {"args": ["--json", "apply", str(p["seq"])], "password": PASSWORD})
+        assert code == 0, (code, v)
+        assert grants() == []
+        goes_through()
+        shown = machine.succeed("su - dev -c 'torqcli show system secrets'")
+        assert "approved without-asking [!! NEVER ASKS YOU]" in shown, shown
+        # A grant widens no rule, and neither does this: another host is still refused.
+        status, body, _ = use("torq-agent-dev", "/user/dev/gh/other.example.test/echo", "-H", f"X-Torq-Session: {s3}")
+        assert status == 403, (status, body)
+        # The system's rules cannot say it for the people whose agents they name.
+        system_rules = '{"ci": {"kind": "token", "https": {"hosts": ["api.example.test"]}, "actors": ["torq-agent-dev"], "approve": "without-asking"}}'
+        diff = f"--- /dev/null\n+++ b/secrets/system.json\n@@ -0,0 +1 @@\n+{system_rules}\n"
+        code, v = ask("dev", {"args": ["--json", "propose", f"--base={head()}", "--reason=ci unasked"], "diff": diff, "password": PASSWORD})
+        assert code not in (0, 77) and "not the system's" in v["error"], (code, v)
+        # Taken back in a word from before 2026-11-16 (`first-use`: once asked the first time in a session, and
+        # every time since each agent counts as having read untrusted text). No password: it lets nothing
+        # through. It reads as asked each time, never as anything looser.
+        back = rule_of_gh("first-use", "gh asks again")
+        assert "standing" not in back["data"], back
+        code, v = ask("dev", {"args": ["--json", "apply", str(back["seq"])]})
+        assert code == 0, (code, v)
+        asks_and_is_denied("-n1")
+        asks_and_is_denied("-n2")
+        shown = machine.succeed("su - dev -c 'torqcli show system secrets'")
+        assert "approved each-use" in shown and "NEVER ASKS" not in shown, shown
+
+    with subtest("with no answer in two minutes the use is refused, and recorded as timed out, with why it was asked"):
         code, _ = ask("torq-agent-dev", {"args": ["--json", "session-taint", session, "--source", "web"]})
         assert code == 0
         status, body, _ = use("torq-agent-dev", "/user/dev/gh/api.example.test/echo", "-H", f"X-Torq-Session: {session}")
-        assert status == 403 and "untrusted" in body and "no one answered" in body, (status, body)
+        assert status == 403 and "no one answered" in body and "TorqOS cannot see what an agent has read" in body, (status, body)
         assert "secret_use_timed_out" in machine.succeed("torq-broker log --json")
 
     with subtest("an SSH key, from a file, for the host the person checked: its key in the rule (step 3)"):
@@ -430,14 +489,15 @@ pkgs.testers.runNixOSTest {
         machine.succeed("su - dev -c 'torq request system secret allow deploy ssh git.example.test user dev'")
         machine.fail("su - dev -c 'torq request system secret allow deploy ssh elsewhere.example.test user dev'")
         machine.succeed("su - dev -c 'torq request system secret allow deploy agent user dev'")
-        machine.succeed("su - dev -c 'torq request system secret approve deploy never user dev'")
         rules = json.loads(machine.succeed(f"git -C {repo} show HEAD:users/dev/secrets.json"))
+        # A new rule asks each time. And torqcli wrote the file in today's words: gh's word from before is gone.
+        assert rules["deploy"]["approve"] == "each-use" and rules["gh"]["approve"] == "each-use", rules
         assert rules["deploy"]["ssh"]["hosts"] == ["git.example.test"] and rules["deploy"]["ssh"]["known"][0].startswith("git.example.test ssh-ed25519 "), rules
         assert machine.succeed("stat -c %a /var/lib/torq/secrets/store/users/dev/deploy.pub").strip() == "644"
         shown = machine.succeed("su - dev -c 'torq show system secrets'")
         assert "deploy" in shown and "SSH key, has a value; ssh to git.example.test" in shown, shown
 
-    with subtest("dev's agent account gets its own agent socket, its key listed, and is refused each signature while it is tainted"):
+    with subtest("dev's agent account gets its own agent socket, its key listed, and each signature waits for dev"):
         code, s = ask("torq-agent-dev", {"args": ["--json", "session-start"]})
         session2 = s["session"]
         out = machine.succeed(f"su -s /bin/sh torq-agent-dev -c \"curl -s -X POST -H 'X-Torq-Session: {session2}' http://127.0.0.1:7800/ssh-agent\"")
@@ -447,11 +507,11 @@ pkgs.testers.runNixOSTest {
         ssh = f"SSH_AUTH_SOCK={sock} ssh -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=/tmp/agent-known -o IdentitiesOnly=no"
         listed = machine.succeed(f"su -s /bin/sh torq-agent-dev -c 'SSH_AUTH_SOCK={sock} ssh-add -l'")
         assert "torq:dev/deploy" in listed, listed
-        # Its session started tainted, as an agent's does: each signature waits for dev, who says no here.
+        # Each signature of the agent's waits for dev, who says no here.
         machine.succeed(f"rm -f /tmp/ssh-agent-dev; su -s /bin/sh torq-agent-dev -c '{ssh} git@git.example.test echo signed-in; echo $? > /tmp/ssh-agent-dev' >&2 &")
         machine.wait_until_succeeds("su - dev -c 'torqcli show system secrets waiting' | grep -q 'to sign in over SSH to git.example.test'", timeout=60)
         w = waiting("dev")
-        assert len(w) == 1 and w[0]["facts"]["secret"] == "deploy" and w[0]["facts"]["ssh"] and w[0]["facts"]["tainted"], w
+        assert len(w) == 1 and w[0]["facts"]["secret"] == "deploy" and w[0]["facts"]["ssh"], w
         code, v = ask("dev", {"args": ["--json", "secret-deny", str(w[0]["n"])]})
         # Denied by dev for this secret, and on the record (a failed ssh alone could be anything).
         assert code == 0 and v["kind"] == "secret_use_denied" and v["data"]["secret"] == "deploy" and v["data"]["user"] == "dev", (code, v)

@@ -300,7 +300,7 @@ pkgs.testers.runNixOSTest {
             if waiting:
                 break
             time.sleep(1)
-        assert len(waiting) == 1 and waiting[0]["facts"]["secret"] == "gh" and waiting[0]["facts"]["person"] == "alice" and waiting[0]["facts"]["tainted"], waiting
+        assert len(waiting) == 1 and waiting[0]["facts"]["secret"] == "gh" and waiting[0]["facts"]["person"] == "alice", waiting
         n = waiting[0]["n"]
         # The applet has seen that very use (it asks every 10 seconds), and its notification went out without an
         # error. What the applet writes to its standard error is in the journal: cosmic-panel, which starts it,
