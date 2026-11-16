@@ -1,55 +1,67 @@
 # AI layer
 
-**Status (2026-11-15): experimental, and being changed (ADR-055, `docs/HARNESS-AS-A-SYSTEM.md`). The machine's agent is now the person's coding tool, Claude Code first (`torq agent engine`), run by each person's agent service as a bridge; TorqOS's own loop (`torq doctor`, `torq agent propose`, the settings under `torq agent doctor`, the second account `torq-resident-<person>`, the broker's "resident agent" rule and session trust) is still here and is removed next (phase 2). Until this page is rewritten then, read what it says of doctor mode, the resident agent and session trust as the old loop's: nothing on a machine earns an untainted session any more, and every proposal from an agent waits for its person. Nothing of this is released; the real Claude Code has been driven through the bridge by hand, outside its unit, once.**
+**Status (2026-11-16): experimental, and not released.** TorqOS does not write an AI agent (ADR-055,
+`docs/HARNESS-AS-A-SYSTEM.md`): the machine's agent is the person's coding tool, Claude Code first (`torq
+agent engine`), fenced by TorqOS. TorqOS's own agent loop is gone (phase 2 of ADR-055, 2026-11-16): there is
+no `torq-doctor`, no `torq doctor` or `torq agent propose`, no settings under `torq agent doctor` or `torq
+agent model`, no local model's service, no second account `torq-resident-<person>`, no "resident agent" rule
+at the broker and no session trust. Every proposal from an agent waits for its person, who reads it and
+approves it, one by one. The real Claude Code has been driven through the agent's service by hand, outside its
+unit, once (2026-11-15); in the unit and in every test a stand-in runs. This page says what exists now; how it
+came to be is in `docs/DECISIONS.md` (ADR-041, 042, 051, 055).
 
-**Status before that (2026-11-14): experimental. M5 (ADR-034) is built in part: the account (ADR-035, ADR-041), doctor mode, proposals and session trust (ADR-042) exist and are in v0.3.x. Doctor is off by default, no model ships, and no real model has ever been tried (the tests use a scripted endpoint). The resident agent, torq-mcp and ADR-051 are on main (steps 1 to 5, and approval of an agent's use of a secret, ADR-052 step 4) and not yet released.**
-Everything built so far (the broker as the only writer, actors, tiers, the ledger) was built so
-this could be added without a bypass. Each person's agent is an *account* of its own,
-`torq-agent-<person>` (ADR-051 3, amending ADR-041 1: `torq.agent.people`, the owner by default),
-whose identity the kernel vouches for (`SO_PEERCRED`) — never a flag the caller sets. The broker
-knows which agent serves whom from its map in /etc/torq/broker.json: an account is an agent only if
-the map names it and its uid is no person's.
+Everything built before (the broker as the only writer, actors, tiers, the ledger) was built so that an agent
+could be added without a bypass. Each person's agent is an *account* of its own, `torq-agent-<person>`
+(ADR-051 3: `torq.agent.people`, the owner by default), whose identity the kernel vouches for
+(`SO_PEERCRED`), never a flag the caller sets. The broker knows which agent serves whom from its map in
+/etc/torq/broker.json: an account is an agent only if the map names it and its uid is no person's.
+
+## What it is made of
+
+1. **The fence.** The agent runs as its own account, in a sandbox: it sees its own home and the folders the
+   person shares, not the person's home. It cannot change the system; it can propose a change.
+2. **TorqOS as tools** (`torq-mcp`). The agent reads the configuration, the journal (where the owner allows
+   it), the hardware, the ledger and the alarms, and proposes changes, through tools TorqOS gives it.
+3. **The bridge** (`torq-agent@<person>.service`). It hands a question from the desktop or `torq ask` to the
+   engine and brings the answer back as it is written. It decides nothing.
+4. **The model proxy** (not built: phase 3). Every request the engine makes to its model will go through a
+   TorqOS service that records it.
 
 ## One agent per person (ADR-051 3)
 
-- **Its account:** `torq-agent-<person>`, a static system user in its own group, no password, no
-  login, no other group, its home `/var/lib/torq-agent-<person>` (0700, its own). Neither agent reads
-  the other's home.
-- **What it may propose:** packages only in its own person's folder (`users/<person>/packages.json`),
-  never another person's; settings only as `torq.agent.mayPropose.settings` allows (the machine's
-  list, the same for every agent). A refusal is ledgered with the agent account that tried.
-- **Sessions and trust:** a session is its agent account's: no other agent reports into it or cites
-  it. A person's trust (`request system agent trust`) applies only their own agent's proposals,
-  judged by the broker's map at the time of the apply, and only one the agent sent itself over the socket.
-  Limits (proposals waiting, refusals ledgered,
-  sessions started and kept) are counted per agent, so one person's agent cannot crowd out another's.
-- **`torq agent run`** runs the caller's own agent (the account of sudo's `SUDO_UID`, which the launcher's rule never
-  lets a caller set), never one the caller
-  names; a person with none is told so, and so is someone who is not an administrator (the launcher's sudo
-  rule is the administrators' group's; torqcli says it in one sentence before sudo would). A restore from a
-  backup into any agent's folder is refused. With the agent's service running, `--share` holds it still
-  (systemd's freezer) through the walk. A folder shared is inside the person's home, never the home itself,
-  and never a hidden folder directly under it or anything inside one (`~/.ssh`, `~/.config`: keys, sign-ins
-  and settings live there).
+- **Its account:** `torq-agent-<person>`, a static system user in its own group, no password, no login, no
+  other group, its home `/var/lib/torq-agent-<person>` (0700, its own). No agent reads another's home. There
+  is one account for each person's agent, and no other.
+- **What it may propose:** packages only in its own person's folder (`users/<person>/packages.json`), never
+  another person's; settings only as `torq.agent.mayPropose.settings` allows (the machine's list, the same
+  for every agent). `torq.*` is never the agent's: its own engine, tools and journal access are there. A
+  refusal is ledgered with the agent account that tried.
+- **Limits** (proposals waiting, refusals ledgered, sessions started and kept) are counted per agent, so one
+  person's agent cannot crowd out another's.
+- **`torq agent run`** runs the caller's own agent (the account of sudo's `SUDO_UID`, which the launcher's
+  rule never lets a caller set), never one the caller names; a person with none is told so, and so is
+  someone who is not an administrator (the launcher's sudo rule is the administrators' group's; torqcli says
+  it in one sentence before sudo would). A restore from a backup into any agent's folder is refused. With the
+  agent's service running, `--share` holds it still (systemd's freezer) through the walk. A folder shared is
+  inside the person's home, never the home itself, and never a hidden folder directly under it or anything
+  inside one (`~/.ssh`, `~/.config`: keys, sign-ins and settings live there).
 - **`claude`, typed plainly** (`torq agent claude`, which the command on people's PATH runs; `torq agent
   plainCommand`): Claude Code as the person's agent, the folder they are in shared with it as `torq agent run
   --share` would. Where that folder is never shared (the home itself, outside it, a hidden folder of it)
   nothing is shared, one line says so, and Claude Code runs in the agent's own folder: `claude --version`
   works anywhere. The long "Shared with your agent…" line is printed the first time a folder is shared only.
-- **Its service** (ADR-051 3; the bridge since ADR-055, 2026-11-15): `torq-agent@<person>.service`, reached only
-  by that person (`torq ask "<question>"`, the agent's window and applet). It is there where an engine is chosen
-  (`torq agent engine claude-code`; the engine is the program that answers) and runs that engine, Claude Code,
-  as one long-lived process for the person's conversation, as `torq-agent-<person>`, in a sandbox at least as
-  strict as `torq agent run`'s: its own home and no other, no runtime directory, a /tmp and a /dev/shm of its
-  own, no privilege, the rest of the system read-only. It passes questions and answers and decides nothing.
-  Stop ends the engine's process and the next question continues the conversation; so does closing the
-  window or the terminal that asked. Forget deletes the conversation: the engine is ended, its own record of
-  the conversation is deleted from the agent's home (`agent/src/service/engine.rs`, `erase`), and the next
-  question starts a new one. The engine signs in by itself, once, in the agent's account (`claude` in a
-  terminal, then /login; an administrator's command). What it proposes through TorqOS's tools (`torq-mcp`)
-  is a coding tool's at the broker: marked tainted, which to the person means it always waits for them, one
-  by one. A proposal's number, as the engine's output names it, is looked up in the ledger before it is shown
-  as one to apply, by the window and by `torq ask`.
+- **Its service** (ADR-051 3, ADR-055): `torq-agent@<person>.service`, reached only by that person (`torq ask
+  "<question>"`, the agent's window and applet). It is there where an engine is chosen (`torq agent engine
+  claude-code`; the engine is the program that answers) and runs that engine, Claude Code, as one long-lived
+  process for the person's conversation, as `torq-agent-<person>`, in a sandbox at least as strict as `torq
+  agent run`'s: its own home and no other, no runtime directory, a /tmp and a /dev/shm of its own, no
+  privilege, the rest of the system read-only. Stop ends the engine's process and the next question
+  continues the conversation; so does closing the window or the terminal that asked. Forget deletes the
+  conversation: the engine is ended, its own record of the conversation is deleted from the agent's home
+  (`agent/src/service/engine.rs`, `erase`), and the next question starts a new one. The engine signs in by
+  itself, once, in the agent's account (`claude` in a terminal, then /login; an administrator's command).
+  A proposal's number, as the engine's output names it, is looked up in the ledger before it is shown as one
+  to apply, by the window and by `torq ask`.
 - **Instructions for your agent** (the owner, 2026-11-15): a text of the person's own that their agent is
   always given. It lives in the person's home, `~/.config/torq/agent-instructions.md` (at most 16 KiB of
   plain text; `torq agent instructions [edit | clear]`, or the Agent page's **Edit…**). The agent cannot
@@ -73,70 +85,79 @@ Three things a person says to their machine; each is an acceptance test (ROADMAP
 
 | | The agent does | The gate |
 |---|---|---|
-| "Fix my wifi." | reads logs and hardware (doctor), proposes a system-tier change | the person's one answer; `commit confirmed`, so it reverts itself if the machine does not come back |
-| "Build me an application for this." | writes and builds it in the person's home, installs it through the tree (ADR-037, rung 3) | none: user tier; every step a ledger line; `rollback` undoes it |
-| "Watch while I try it." | screenshots and input through the compositor's protocols | the person's session; nothing of the broker's |
+| "Fix my wifi." | reads logs and hardware (TorqOS's tools), proposes a system-tier change | the person's one answer; `commit confirmed`, so it reverts itself if the machine does not come back |
+| "Build me an application for this." | writes and builds it in the folder the person shared, proposes installing it through the tree (ADR-037, rung 3) | the person's answer to the proposal; a ledger line; `rollback` undoes it |
+| "Watch while I try it." | screenshots and input through the compositor's protocols (not built) | the person's session; nothing of the broker's |
 
-In order: **doctor mode** (read, explain, propose nothing; built, ADR-042: `torq doctor "<question>"`), **proposals** (built: `torq agent propose "<ask>"`), **session trust** (built: `request system agent trust <minutes>`; "for
-the next hour, user-tier changes without asking" — ledgered, revertible, never for system tier).
-On a desktop the approval is a dialog with the owner's password, the one thing a program in the
-owner's shell does not have; in a terminal it is torqcli's prompt, the same text.
+On a desktop the approval of a system change is a dialog with the owner's password, the one thing a program
+in the owner's shell does not have; in a terminal it is torqcli's prompt, the same text.
 
 ## Components
 
 | Component | Privilege | Language | Role |
 |---|---|---|---|
-| `torq-doctor` (`agent/`), as the person's `torq-agent-<person>` | unprivileged, sandboxed (`torq agent run`, or the agent service) | Rust | TorqOS's harness: talks to the model (OpenAI-compatible chat API), calls its read-only tools, *proposes* changes (ADR-042); one process per question or task |
-| `torq-agent@<person>.service` (`agent/`: `torq-agent-service`), as `torq-agent-<person>` (ADR-055) | unprivileged, the launcher's sandbox and systemd's hardening; socket-activated, its socket the person's alone, SO_PEERCRED checked | Rust | The bridge to the person's engine (ADR-055 3): runs Claude Code as one long-lived process for their conversation, hands it each question (with the person's standing instructions) and streams what it says to `torq ask`, the agent's window and the applet; `stop` ends the engine and everything it started, `forget` also deletes the engine's record of the conversation. It keeps the conversation's name, count and number, and nothing of what was said |
-| `torq-mcp` (`agent/`), as `torq-agent-<person>` under `torq agent run` | unprivileged, the launcher's sandbox | Rust | TorqOS's tools for a coding tool (ADR-051 7): an MCP server on standard input and output with the doctor's closed set of tools and `propose_change`; its session reported a coding tool's first, so what it proposes waits for a person |
+| The engine: Claude Code, as the person's `torq-agent-<person>` | unprivileged, sandboxed (the agent's service, or `torq agent run`) | not TorqOS's | The agent itself. The person installs it (`torq agent tools`) and signs in; TorqOS ships none |
+| `torq-agent@<person>.service` (`agent/`: `torq-agent-service`), as `torq-agent-<person>` (ADR-055) | unprivileged, the launcher's sandbox and systemd's hardening; socket-activated, its socket the person's alone, SO_PEERCRED checked | Rust | The bridge to the person's engine: runs Claude Code as one long-lived process for their conversation, hands it each question (with the person's standing instructions) and streams what it says to `torq ask`, the agent's window and the applet; `stop` ends the engine and everything it started, `forget` also deletes the engine's record of the conversation. It keeps the conversation's name, count and number, and nothing of what was said |
+| `torq-mcp` (`agent/`), as `torq-agent-<person>` | unprivileged, the same sandbox | Rust | TorqOS's tools for the engine (ADR-051 7): an MCP server on standard input and output with a closed set of tools, six that read and `propose_change`; linked into Claude Code's settings in the agent's home at each start |
 | `torq-broker` | privileged (root, minimal) | Rust | Only writer of the config repo; tiers, commits, rebuild, rollback, ledger |
-| Model runtime | unprivileged (DynamicUser) | llama.cpp (`llama-server`, a unix socket) | Local inference; or a remote endpoint as a setting (ADR-042) |
 | torqcli | the person's | Rust | Shows proposals, diffs and the ledger; a person approves at a terminal |
+
+There is no model runtime on the machine: the engine asks its maker's service itself. A local model returns
+with opencode (phase 4 of `docs/HARNESS-AS-A-SYSTEM.md`).
 
 ## Permission tiers
 
 | Tier | Examples | Requirement |
 |---|---|---|
 | `observe` | read logs, hardware info, settings, config repo | automatic, still ledgered |
-| `user` | one user's *data* files: today `users/<name>/packages.json` (apps); later themes, dotfiles. Never a `.nix` module (that is `system`, wherever it lives) | approve once per category; /home snapshot first |
+| `user` | one user's *data* files: today `users/<name>/packages.json` (apps); later themes, dotfiles. Never a `.nix` module (that is `system`, wherever it lives) | the person's approval, for each proposal; /home snapshot first |
 | `system` | services, drivers, kernel params, packages | always preview + explicit approval; commit + generation |
 | `forbidden` | AI permissions, ledger, Secure Boot keys, firmware password, disabling audit | **never** via agent; user-only, at a terminal |
 
-## Taint tracking
+## An agent's proposals always wait
 
-Any agent session that has ingested untrusted content (logs, device names, the ledger, configuration
-values; web pages, email, downloaded files) is marked **tainted**. Tainted sessions cannot use
-"approve once" shortcuts: every `user` or `system` action requires explicit per-step approval
-with the taint source displayed.
+The broker cannot see what a program run as an agent reads: the web, a file it fetched, what its model was
+told. So it treats everything an agent proposes as possibly steered by text someone else wrote:
 
-Built (ADR-042 6, amended): the taint is the **broker's**. TorqOS's agent starts its session at the
-broker and reports each tainting read there before the model sees it; the broker keeps the record in
-its own state directory, where the agent cannot write, and nothing clears it. The ledger holds a
-session where a proposal cites it: the proposal's entry carries the session and what tainted it.
-A proposal names its session and is tainted as the broker's record says;
-one that names no session — any other program run as the agent — is tainted; one that names another
-agent's session is refused. `request system apply`
-says what the session read; session trust never covers a tainted proposal, nor another person's
-agent's. The broker holds what it
-is told, and cannot see what a program reads (KNOWN-GAPS 6zq): so only the person's resident agent —
-a process in `torq-agent@<person>.service`'s own control group, which the broker reads from the peer's pidfd
-(ADR-051 step 5) — starts a session untainted and has its proposals judged by it. Every other program of an
-agent account (a coding tool, `torq doctor`, anything under `torq agent run`) starts tainted
-(`not-the-resident-agent`), and may not cite the resident agent's sessions (KNOWN-GAPS 6zzo). Even the resident agent
-starts tainted when its model is one another account here could stand in for — any TCP model on this machine
-(`local-tcp-model`), a socket in a place others write — so a local model is trusted only on a root-held socket.
+- Every proposal of an agent's is marked in the ledger (the entry's `tainted` field, the ledger's own word
+  from v0, kept because the ledger's bytes never change) and waits for a person. No apply happens without one:
+  there is no setting, grant or kind of session that applies an agent's proposal by itself. Session trust
+  ("for the next hour, user-tier changes without asking", ADR-042 7) existed until phase 2 of ADR-055 and
+  only TorqOS's own loop could earn it; it was removed with the loop.
+- An apply of such a proposal must say that the person looked (`--confirm-tainted` at the broker; torqcli
+  asks in words, TorqOS Settings shows the proposal's page). A `commit at` refuses it: it is applied by a
+  person who is there.
+- A person reads where it comes from in plain words, at torqcli's apply prompt and on the Proposals page:
+  "Your agent proposed this", and what it reported reading ("the system's log, the record of changes"), with
+  the advice to judge the change itself and not the reason given for it.
+- **Sessions.** A program of the agent's (torq-mcp) starts a session at the broker; the broker keeps its
+  record in its own state directory, where the agent cannot write. Every session is marked from its start
+  (`agent-program`: one whose reading the broker cannot see), and what the program reports reading is added
+  (a tool's name), for good. A proposal that names its session carries that list in its ledger entry. One
+  agent never cites or reports into another's session. The same sessions count and bound an agent's uses of
+  secrets (ADR-052 4).
+- **What this means for secrets** (ADR-052 4, unchanged in its rules): a secret's rule and a person's grant
+  both speak of "a session that read untrusted text". Every session of an agent's now counts as one, so a
+  use asks its person unless the secret is `never-even-tainted` or a grant that says `tainted-too` covers it;
+  `first-use` and `never` ask at each use, and `allow all` and `allow <name> session` cover no use of an
+  agent's (KNOWN-GAPS 6zzu). That was already so in practice since phase 1, when the service stopped running
+  as the old loop's account.
+
+A person's own proposal is marked the same way only if the one who made it says so (`torq-broker propose
+--tainted`, the root path).
 
 ## Ledger format (v0)
 
 Append-only JSON Lines at `/var/lib/torq/state/ledger.jsonl`, owned by the broker.
 Entry kinds: `init`, `proposal`, `applied`, `apply_failed`, `reverted`, `revert_failed`,
-`interrupted`, `repaired`, `confirmed`, `rolled_back` (an unconfirmed `commit confirmed`), and a
-person's `trust_granted`, `trust_revoked`, `trust_expired`, and `declined` (a waiting proposal turned down)
-(failures and restores carry `restored: true|false` — see ADR-008).
+`interrupted`, `repaired`, `confirmed`, `rolled_back` (an unconfirmed `commit confirmed`), `declined` (a
+waiting proposal turned down), and a person's `trust_granted`, `trust_revoked` and `trust_expired`, which
+today are leave for their agent to use a secret without asking (`data.covers`: `secret <name>` or
+`all-secrets`). Failures and restores carry `restored: true|false` (ADR-008).
 
 ```json
 {"seq":1042,"ts":"2026-10-30T15:20:11Z","actor":"agent","approved_by":"casey",
- "kind":"applied","tier":"user","tainted":false,
+ "kind":"applied","tier":"user","tainted":true,
  "reason":"User asked for night light at sunset",
  "data":{"proposal":1041,"commit":"8f3a2c1…","files":["desktop.nix"]},
  "prev_hash":"…","hash":"…"}
@@ -149,6 +170,15 @@ person's `trust_granted`, `trust_revoked`, `trust_expired`, and `declined` (a wa
   checks the other: `status` does that cross-check (KNOWN-GAPS 2); `verify` alone does not, and cannot detect
   truncation of the newest entries except against a remote copy of the ledger (ADR-036; built, off by default).
 - Built, opt-in: the ledger and configuration pushed to a remote after every change (ADR-036). Not built: anchoring in a TPM NV index or an external witness.
+- **Words from before phase 2.** A ledger written before 2026-11-16 can hold what no broker writes any more:
+  a `trust_granted` that covers proposals (`covers: proposals`, or no `covers` at all), its `trust_revoked`
+  and `trust_expired`, an `applied` entry with `data.trust` (the grant it was applied under), `data.resident`,
+  a caller named `torq-resident-<person>`, and sessions' `tainted_by` naming `not-the-resident-agent`,
+  `coding-tool`, `local-tcp-model`, `model-socket-open` or `model-unknown`. An entry's kind and data are
+  free text to `verify`, which checks the chain: such a ledger verifies as it always did
+  (`wire/tests/fixtures/before-phase-2.jsonl`, written by the old broker, is held to that). Such a grant is
+  honoured by nothing; torqcli shows those entries with the reasons they were written with, and reads the old
+  session words as "your agent proposed this".
 
 ## Change lifecycle
 
@@ -163,17 +193,19 @@ person's `trust_granted`, `trust_revoked`, `trust_expired`, and `declined` (a wa
 
 Or, instead of 3–4, `decline` (ADR-051, amended): a person turns a waiting proposal down — `declined` in the
 ledger (who; the proposal), a commit at scheduled for it cancelled first, and from then on no path applies it
-(apply, commit confirmed, commit at, session trust) and it no longer waits. The person whose own folder it is,
+(apply, commit confirmed, commit at) and it no longer waits. The person whose own folder it is,
 or whose agent proposed it, declines without a password; anyone else, an administrator with theirs; an agent
 never.
 
 ## Tool inventory
 
-Built (doctor mode, ADR-042, `agent/src/tools.rs`; all read-only): `read_journal`,
-`hardware_facts`, `show_configuration`, `show_ledger`, `show_alarms`, `nixos_option_docs`. All but
-the option docs return untrusted text (a configuration value too) and
-taint the session. In propose mode (ADR-042 6): `propose_change`, structured words of the tree, a
-proposal through torqcli as the agent. Each tool has its tier (`tools.rs`, `Tool::tier`): the six read-only
-ones `observe`, `propose_change` `propose` (the change's own tier is the broker's). The same set is offered to
-coding tools by `torq-mcp` (ADR-051 7), without the screen's (step 6).
+Built (`agent/src/tools.rs`, offered by `torq-mcp`, ADR-051 7): six that only read, `read_journal`,
+`hardware_facts`, `show_configuration`, `show_ledger`, `show_alarms`, `nixos_option_docs`; and
+`propose_change`, structured words of the tree, a proposal through torqcli as the agent. All but the option
+docs return untrusted text (a configuration value too): what they return is cleaned, cut, marked as data and
+not instructions, and the read is reported to the broker before a word of it is returned. Each tool has its
+tier (`tools.rs`, `Tool::tier`): the six read-only ones `observe`, `propose_change` `propose` (the change's own
+tier is the broker's). `read_journal` is offered only where the owner lets the agents read the system journal
+(`torq agent journal`, off by default: on, every agent account joins `systemd-journal`, so everything run as
+an agent reads every service's and every account's log). Nothing for the screen (ADR-051 6: not built).
 Later: `logs.coredump`, `pkg.search`, `power.status`, `secureboot.status`, `files.read_scoped`.

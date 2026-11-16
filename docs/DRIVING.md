@@ -156,13 +156,16 @@ Largely built (ROADMAP M4 has the detail: the flatpaks reconcile, rung 3 and syn
 - [ ] **⏹ audit** — light: the desktop's attack surface (what listens, what the portal grants).
 
 ### M5 — the agent (AI-LAYER.md)
-Only after M3's audit (done). The agent's safety is M3's; do not build it on the sudo broker.
-- [x] Doctor mode (built; experimental: no real model tried). *Test:* the agent's tools cannot write — a VM test that every tool is read-only
-      against the fence and the repo. **⏹ adversarial:** prompt-inject the doctor into proposing.
+Only after M3's audit (done). The agent's safety is M3's; do not build it on the sudo broker. Since
+2026-11-15 the agent's plan and its steps are `docs/HARNESS-AS-A-SYSTEM.md` (ADR-055): a session picks its next
+step there.
+- [x] Doctor mode (built 2026-11-07; **removed 2026-11-16**, ADR-055 phase 2: TorqOS writes no agent loop).
+      Its tools live on in `torq-mcp`. *Test:* the tools cannot write (`agent/src/tools.rs`'s unit tests;
+      `tests/agent-mcp.nix`).
 - [x] Proposals (built, non-GUI half; experimental). *Test:* scenario (a), "fix my wifi": the proposal, the approval, `commit
       confirmed`, the revert when the machine does not confirm. **⏹ adversarial.**
-- [x] Session trust (built, non-GUI half). *Test:* it never covers system tier; it expires; each change is ledgered.
-      **⏹ adversarial.**
+- [x] Session trust (built 2026-11-07; **removed 2026-11-16**, ADR-055 phase 2). *Test:* nothing applies an
+      agent's proposal without a person (`broker/tests/sessions.rs`, `tests/agent-proposals.nix`).
 - [ ] "Build me an application" (scenario b) and "watch while I try it" (scenario c). *Test:* each
       end to end in a VM. **⏹ review.**
 - [ ] **⏹ audit** — full, before anyone outside the project runs an agent.

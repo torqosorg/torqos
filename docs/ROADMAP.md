@@ -5,11 +5,12 @@ drive. M1–M2 built the base and the server face. M3–M5 build what the laptop
 each of them serves the server face too.
 
 Milestones and releases (2026-11-12): v0.2.0 = M2; v0.3.x = M3 and the agent's non-GUI half (M5's
-doctor, proposals and session trust); 0.4.0 = the desktop (M4) and secrets (ADR-052; command line
+doctor, proposals and session trust: the doctor and session trust were removed from `main` on 2026-11-16,
+ADR-055 phase 2, and are in those releases only); 0.4.0 = the desktop (M4) and secrets (ADR-052; command line
 only in rc1, a Secrets page in TorqOS Settings after it), its first candidate v0.4.0-rc1 published as a pre-release. The checkboxes below are the current record; a box is ticked only for what is built,
 and a part not built has its own unticked line.
 
-## Milestones (built on x86_64; development on the owner's laptop, full checks on a second machine, ADR-030)
+## Milestones (built on x86_64; development and full checks on the check host, torq5, since 2026-11-15; the owner's laptop is the try-it-out machine; ADR-030)
 
 ### M1 — The trust loop  ✓ done
 Done in the aarch64 UTM VM on the M4 Mac, which was the dev host at the time (retired, ADR-030):
@@ -265,29 +266,33 @@ Not a product: a config repo, `torqos-desktop`, loaded on the skeleton. COSMIC, 
       (not torqcli's prompt word for word). Its two open questions settled by the owner.
 - [ ] **Releases carry the desktop configuration** as a second artifact, versioned with TorqOS.
 
-### M5 — The agent (AI-LAYER.md)  ← the non-GUI half is released (v0.3.x); the resident agent and its desktop are on main, not released; all experimental
-Experimental: doctor mode is off by default, no model ships, and no real model has been tried (the
-tests use a scripted endpoint). The resident agent, torq-mcp and ADR-051 steps 1 to 5 are built and on `main`
-(not released). Built on the account M3 made, over the configuration M4 made. The three scenarios of ADR-034 are the
-acceptance tests, each a VM test.
+### M5 — The agent (AI-LAYER.md)  ← the machine's agent is the person's coding tool (ADR-055, `docs/HARNESS-AS-A-SYSTEM.md`: the plan, and what is done); on main, not released; experimental
+Experimental. Since 2026-11-15 the plan for the agent is `docs/HARNESS-AS-A-SYSTEM.md` (ADR-055): TorqOS writes
+no agent; the person's coding tool (Claude Code first) is the machine's agent, fenced. Its phases and their
+boxes are there. Phase 1 (the bridge) and phase 2 (TorqOS's own loop removed) are on `main` or on their branch,
+not released; no real Claude Code has run inside the agent's unit. What v0.3.x released of M5 is the old loop's
+non-GUI half. Built on the account M3 made, over the configuration M4 made. The three scenarios of ADR-034 are
+the acceptance tests, each a VM test.
 
-- [x] **Doctor mode** (built 2026-11-07 on `work/w3`, ADR-042; `agent/`, `tests/doctor.nix`, green in CI in the v0.3.2 release run;
-      no real model has ever been tried, the tests use a scripted endpoint): `torq doctor "why is my wifi flaky?"` — `torq-doctor` as `torq-agent`, read-only
-      tools only (the journal, hardware, `show configuration`, the ledger, alarms, NixOS option docs);
-      explains, proposes nothing; the session tainted once it reads untrusted text. Local model by
-      default (ADR-005, llama-server on a unix socket); a remote one as a setting.
-- [x] **Proposals**, non-GUI (built 2026-11-07 on `work/w5`, ADR-042 6 as amended; `tests/agent-proposals.nix`, green in CI in the v0.3.2 release run):
-      `torq agent propose "<ask>"` — the doctor with `propose_change`, structured
-      words of the tree, through torqcli as the agent, which proposes and stops; the allow-list enforced
-      at the broker; the taint held by the broker (sessions, `broker/src/session.rs`), sessionless
-      proposals tainted; `request system apply` says why one is tainted; an agent's change to the
-      network, SSH, units, /etc, boot, hardware, the console or the display applied only as a `commit confirmed`.
-- [ ] Proposals, what is not built: a VM test of the doctor's own propose step (KNOWN-GAPS 6zq). (The desktop side is built: TorqOS Settings' Proposals page applies through the approval dialog, with Review and Decline.)
-- [x] **Session trust**, non-GUI (built 2026-11-07 on `work/w5`, ADR-042 7 as amended): `request system
-      agent trust <minutes>` (at most 60, the person's password, their own folder) and `… revoke`;
-      ledgered (grant, each apply under it, revoke, expiry), shown in `show system alarms`, never system
-      tier, never tainted.
-- [ ] **The machine's agent on the desktop** (ADR-051, accepted 2026-11-10): TorqOS's own agent, its model chosen in
+- [x] ~~**Doctor mode**~~ (built 2026-11-07, ADR-042; in v0.3.x). **Removed 2026-11-16** (ADR-055 phase 2):
+      `torq doctor`, `torq-doctor`, the model's settings and the local model's service. Its closed set of
+      read-only tools lives on in `torq-mcp`.
+- [x] **Proposals** (built 2026-11-07 on `work/w5`, ADR-042 6 as amended; as they are since 2026-11-16,
+      `tests/agent-proposals.nix`): `propose_change`, structured words of the tree, through torqcli as the
+      agent, which proposes and stops; the allow-list enforced at the broker; the agent's sessions kept by
+      the broker (`broker/src/session.rs`); every proposal of an agent's marked and waiting for a person;
+      `request system apply` says where one comes from and what the agent had read; an agent's change to the
+      network, SSH, units, /etc, boot, hardware, the console or the display applied only as a `commit
+      confirmed`. The command `torq agent propose` (the old loop's) was removed 2026-11-16; the engine
+      proposes through `torq-mcp`. The desktop side is built: TorqOS Settings' Proposals page applies through
+      the approval dialog, with Review and Decline.
+- [x] ~~**Session trust**~~ (built 2026-11-07, ADR-042 7; in v0.3.x). **Removed 2026-11-16** (ADR-055 phase
+      2): `request system agent trust`. Every proposal of an agent's is asked, one by one. It may return,
+      decided from what the model proxy sees (its own ADR then).
+- [ ] **The machine's agent on the desktop** (ADR-051, accepted 2026-11-10; *as decided then: since ADR-055
+      the agent is the person's coding tool, not TorqOS's own, with no model setting and one account; the steps
+      below are the record of what was built, of which the accounts, the service's socket, the client, the
+      applet, the window, the Agent page, the entry points, Decline and `torq-mcp` stand*): TorqOS's own agent, its model chosen in
       TorqOS Settings (local, Claude, OpenAI), resident as each person's own agent account (Claude Code, Codex, opencode as its tools), in the default
       panel, a key, the launcher, Settings, the applets, crash notifications and the terminal; the
       screen by the person's portal grant, marked and ended by them; `torq-mcp`. Hermes and OpenClaw not bundled.
@@ -305,10 +310,12 @@ acceptance tests, each a VM test.
       a tree line into the draft; the key's entry left to ADR-052). **Step 4 built** (2026-11-10): Decline beside Review
       everywhere; the entry points — Super+Shift+A, `ask <question>` in the launcher and the terminal, Ask the agent in
       Settings and the applets, a crash offered when the person clicks. Next: `torq-mcp` and Claude Code (5), the screen (6).
-- [ ] **The harness's tool catalogue** (ADR-051 9, phase 2; its own ADR first): apps and packages, settings
+- [ ] **The harness's tool catalogue** (ADR-051 9, phase 2; its own ADR first; *superseded by ADR-055: the
+      engine brings its own tools, and TorqOS's are `torq-mcp`'s*): apps and packages, settings
       explained and proposed, files written in shared folders, the web (tainting), a workbench, reminders and
       scheduled tasks, notifications; outside MCP servers as pinned, tiered tree settings.
-- [ ] **Subagents and their UIs** (ADR-051 9, phase 3; its own ADR first): each subagent its own process and
+- [ ] **Subagents and their UIs** (ADR-051 9, phase 3; its own ADR first; *superseded by ADR-055: the
+      engine's own helpers, shown in the workbench, phase 6 of the plan*): each subagent its own process and
       broker session, its own taint and tools; a window that shows them working, stops them, keeps the record.
 - [ ] **Build me an application**: the agent writes and builds in the person's home, installs via
       rung 3 (ADR-037), tests, undoes.

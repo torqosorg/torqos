@@ -5,7 +5,7 @@ Four layers, bottom up. Each lists what we **reuse** and what we **build**.
 ```
 ┌──────────────────────────────────────────────────────────────────┐
 │ 3  AI (next)       torq-agent-<person>, one each ─► broker        │
-│                    read tools · proposals only · session trust    │
+│                    the person's coding tool · proposals only      │
 ├──────────────────────────────────────────────────────────────────┤
 │ 2  Configurations  a server's · torqos-desktop · yours            │
 │                    config repos, with a remote: the machine is a  │
@@ -60,14 +60,16 @@ A configuration is a config repo loaded on the base. The base does not know whic
 Layers 0 and 1 were built so it can be added without a bypass: the broker is the only writer,
 every proposal names its actor, tiers decide what needs a person. Now (ADR-034):
 
-- **Agent** (`torq-agent-<person>`: each person's own account, ADR-051 3; unprivileged, sandboxed): reads the system through
-  typed tools, *proposes* changes. Its identity is the kernel's word (`SO_PEERCRED`, ADR-035), never
+- **Agent** (`torq-agent-<person>`: each person's own account, ADR-051 3; unprivileged, sandboxed): the
+  person's coding tool, Claude Code first (ADR-055: TorqOS writes no agent of its own). It reads the system through
+  typed tools (`torq-mcp`), *proposes* changes. Its identity is the kernel's word (`SO_PEERCRED`, ADR-035), never
   a flag.
 - Proposals go to the broker like anyone's; what an agent may propose is a default-deny
   allow-list by identity (KNOWN-GAPS 6m). A person approves system changes — at a terminal, or on a
   desktop in a dialog — with their password, the one thing a program in their shell does not have.
-- Doctor first (read, explain, propose nothing), then proposals, then session trust ("for an hour,
-  user-tier changes without asking" — still ledgered, still reversible).
+- Every proposal of an agent's waits for a person, who reads it and approves it, one by one: the broker
+  cannot see what an agent has read, and nothing applies its proposals without asking (session trust, "for an
+  hour, user-tier changes without asking", was removed with TorqOS's own agent loop: ADR-055, phase 2).
 
 ## Change flow
 

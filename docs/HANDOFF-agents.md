@@ -1,5 +1,11 @@
 # Handoff: the agents work (ADR-051), now on main
 
+**Since 2026-11-15 the agents' plan is `docs/HARNESS-AS-A-SYSTEM.md` (ADR-055): read that first.** The machine's
+agent is the person's coding tool, run by each person's agent service as a bridge (phase 1, on `main`), and
+TorqOS's own loop is removed (phase 2, 2026-11-16: `torq doctor`, `torq agent propose`, the model's settings, the
+account `torq-resident-<person>`, the broker's resident rule, session trust). What this note says below of the
+resident agent is of the old loop, kept as the record of what was merged then.
+
 The resident agent, torq-mcp, the agent's applet and window, and the approval of an agent's use of a secret
 (ADR-051 steps 1 to 5; ADR-052 step 4) are on `main`. This note used to describe the parked `work/agents`
 branch, its commits and its rebase; all of that is done and is gone from here. What is built is in ADR-051's and
@@ -29,9 +35,9 @@ A full `nix flake check` (every check, all VM tests) passed on .52 for 880c7ff (
 
 ## Still open by design
 
-See KNOWN-GAPS 6zq, 6zzk, 6zzo and 6zzs.
+See KNOWN-GAPS 6zq, 6zzk, 6zzo, 6zzs, 6zzt (the bridge) and 6zzu (phase 2).
 
-- Root can be the resident.
-- A kernel before 6.5 taints everything.
-- A remote https model is believed; a plain-http or open-socket one on this machine is tainted.
-- `torq doctor` and `torq agent propose` have no session trust and cannot use a keyed model; `torq ask` is the way.
+The four points that stood here (root could be the resident; a kernel before 6.5 tainted everything; which
+model was believed; `torq doctor` and `torq agent propose` without session trust) were all of the old loop's
+resident rule and are gone with it (2026-11-16): every session of an agent's is tainted from its start, on any
+kernel, and every proposal waits for its person.

@@ -25,8 +25,8 @@ TorqOS is the system around it. Four parts:
    service on the machine, which records it: who, when, which model, how much, what was asked and what
    the agent had read. This is the audit of AI on the machine, whatever the engine is.
 
-What is removed: TorqOS's own agent loop (`torq-doctor`, its prompts, its model client), the one-shot
-`torq doctor`, the model settings under `torq agent doctor`, and the second account
+What is removed (done, phase 2): TorqOS's own agent loop (`torq-doctor`, its prompts, its model client), the
+one-shot `torq doctor`, the model settings under `torq agent doctor`, and the second account
 `torq-resident-<person>`. Breaking changes are accepted: TorqOS has no users yet.
 
 ## Why (the owner, 2026-11-15)
@@ -131,12 +131,18 @@ The person sets the engine, and the desktop's AI is Claude Code.
 ### Phase 2: TorqOS's own loop is removed
 One consistent deletion, so nothing dead is left behind.
 
-- [ ] `torq-doctor`, its loop, prompts and model client; `torq doctor`, `torq agent propose`.
-- [ ] The settings under `torq agent doctor` and the local model's unit (local models return with
-      opencode in phase 4).
-- [ ] The account `torq-resident-<person>`, the broker's "resident rule", and session trust, which
-      only the old loop could earn. Every proposal from an agent is asked, one by one.
-- [ ] The tests and documents that describe them (ADR-041, 042, 051 amended; AI-LAYER.md rewritten).
+- [x] `torq-doctor`, its loop, prompts and model client; `torq doctor`, `torq agent propose`. (Removed
+      2026-11-16; the crates' unit tests ran.)
+- [x] The settings under `torq agent doctor` and the local model's unit (local models return with
+      opencode in phase 4). (Removed with `modules/ai.nix`; `torq agent model` too. A configuration that
+      still sets one is refused in words that say what to delete: `tests/agent-assertions.nix`, evaluated.
+      The journal's setting is `torq agent journal`.)
+- [x] The account `torq-resident-<person>`, the broker's "resident rule", and session trust, which
+      only the old loop could earn. Every proposal from an agent is asked, one by one. (Removed; the
+      broker's unit tests ran, and a ledger written by the old broker still verifies.)
+- [x] The tests and documents that describe them (ADR-041, 042, 051 amended; AI-LAYER.md rewritten).
+      (`tests/doctor.nix` deleted; `agent-proposals`, `agent-mcp`, `agents-per-person`, `agent-assertions`,
+      `agent-units` rewritten or edited: which of them ran is below.)
 - [ ] One full check.
 
 ### Phase 3: the model proxy and the audit
@@ -311,9 +317,50 @@ Kimi); a person's own Claude Code outside the fence.
     derivations instantiate): `agent-mcp`, `agent-units`, `agents-per-person`, `agent-proposals`, `agent-run`.
     Not run: `nix flake check`; every other VM test; `agent-units`' build; the VM-level guards were not broken
     to see the VM test fail (the unit tests and `agent-assertions` were).
-- **Left for phase 2, still in the tree after phase 1:** `torq-doctor` and its commands (`torq doctor`,
+- **Left for phase 2, still in the tree after phase 1** (all removed in phase 2, below)**:** `torq-doctor` and its commands (`torq doctor`,
   `torq agent propose`, and `torq-doctor --propose --task`, which nothing starts any more); the settings
   under `torq agent doctor` (`apiKeyFile` now has no use at all) and the local model's unit; the
   `torq-resident-<person>` accounts (made where doctor mode is on, nothing runs as them) with the broker's
   resident rule and session trust; `Task` and `Turn` in `wire/src/agent.rs`; the taint words in torqcli
   and the window ("coding-tool", "not-the-resident-agent"); the Agent page's lines for doctor mode.
+- 2026-11-16, **phase 2, the old loop removed**, built on `work/harness-p2` (not merged, no full
+  check yet). What went, what stayed and why is under ADR-055 ("As built, phase 2"); what is left open is
+  KNOWN-GAPS 6zzu. In short:
+  - *Gone:* `torq-doctor` and everything of it in the agent crate; `torq doctor`, `torq agent propose`,
+    `request system agent trust`; `modules/ai.nix` (`torq agent doctor …`, `torq agent model …`, llama.cpp's
+    unit); the accounts `torq-resident-<person>`; at the broker the resident rule, the model's judgement and
+    session trust; `Task`, `Turn` and the `tainted` event on the agent's socket; the reserved unit name
+    `torq-agent-key@`; `Brain` (now `Engine`: what answers, and whose service it asks).
+  - *Every proposal waits.* A session of an agent's is marked from its start and a proposal of an agent's is
+    marked whatever it names; nothing applies one without a person. A person reads "Your agent proposed
+    this" and what it had read, in words, at the apply prompt and on the Proposals page; "proposed by an
+    agent" in the ledger's view. The ledger's own field keeps its name (`tainted`): its bytes never change.
+  - *Kept, to read what older machines hold:* the ledger's old words verify (a fixture written by the broker
+    of 74339a1, `wire/tests/fixtures/before-phase-2.jsonl`); a session record from before is read, and is
+    tainted; torqcli says the old session words as it says the new one.
+  - *A machine that still sets a removed setting* is told what to delete (`delete torq agent doctor`,
+    `delete torq agent model`, in the commit that updates TorqOS), not that an option is unknown.
+  - *Not decided here, for the owner:* secrets' rules (ADR-052 4) still tell a clean session from a tainted
+    one, and no agent has a clean one now, so `first-use` and `never` ask every time and `allow all` and
+    `allow <name> session` cover nothing (KNOWN-GAPS 6zzu).
+- **What was run for phase 2** (2026-11-16, the check host, on `work/harness-p2`). Unit tests, each
+    crate's whole suite: agent 59 (+2 ignored: the tests' helper, and the by-hand entry), torqcli 495, wire 23,
+    secrets 15, broker 319 (across its test binaries; they include every ledger fixture read and written back
+    byte for byte, the new one among them). TorqOS Settings: type-checked (`nix develop .#torq-settings`), not
+    started. Each new guard was broken once and a test seen to fail, then put back: in the broker, a record
+    from before read as tainted, an agent's proposal marked with and without a session, a session marked at
+    its start, an old grant of trust read as no grant, another agent's session refused; in torqcli, the old
+    loop's words kept out of what a person reads; in the modules, the removed option's words and the
+    journal's group (`agent-assertions` threw each time). Every check of the flake evaluates
+    (`nix eval .#checks.x86_64-linux`, each one's derivation: 37 checks; `doctor` is gone). VM tests, three:
+    `agent-proposals` passed, 7 subtests, on its second run (the first stopped at the test's own date for a
+    `commit at`, further off than a schedule may be); `agent-service` passed, 27 subtests, the first time
+    (the real torq-mcp through the bridge: the proposal is alice's agent's, marked, waiting; nothing of the
+    old loop in the schema, on the disk or in /etc/passwd); `agent-mcp` passed, 6 subtests, on its second run
+    (the first stopped at an expectation of the test's own). And `agent-units` (no VM: the check on the
+    agent's units as built, every case and the flake's own hosts) built, on its second run (the first
+    stopped at one case of the test's own, a link to nothing named as an agent's unit, which is refused under
+    both rules). Not run: `nix flake check`; every other VM test (`agents-per-person`, `secrets`, `desktop`,
+    `desktop-agent` and `agent-run` were edited or touch what changed, and only evaluate); nothing on a
+    machine that has the old settings or an old ledger (the fixture stands in for the ledger; the removed
+    settings' refusal is held at evaluation only); nothing on a desktop.

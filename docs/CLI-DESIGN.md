@@ -457,8 +457,8 @@ alice@torq# commit
   proposes the candidate with its base, and has the broker `schedule` it; the candidate is the
   proposal then, and is discarded. The broker (broker/src/at.rs):
   - is asked over the socket exactly as `apply` is (`schedule` is gated as `apply`: a person's own
-    folder theirs, anything else an administrator's with their password), and refuses a tainted
-    proposal, one without a base, one already applied, or — its base no longer HEAD — one that would now
+    folder theirs, anything else an administrator's with their password), and refuses a proposal
+    marked `tainted` in the ledger (every one of an agent's is: it is applied by a person who is there), one without a base, one already applied, or — its base no longer HEAD — one that would now
     do something different from what was shown (ADR-053: re-checked on the current head; its entry then
     says `rechecked_on`);
   - arms a transient timer of its own (`commitAt` in broker.json: `systemd-run … --unit=torq-commit-at-<id>
@@ -544,7 +544,7 @@ process) and returns to the prompt. Scripts (`-c`, piped input) still stop at th
 | `configure exclusive` | enter it with the shared candidate held by this session alone, until it leaves: your other sessions read it, cannot change or commit it, and are told which session holds it |
 | `help [<command> \| <words>]` | (both modes) the commands; one command; or a search of commands and settings |
 
-Beside the shell, each its own entry before the grammar (as `torq doctor` and `torq break-glass` are):
+Beside the shell, each its own entry before the grammar (as `torq agent run` and `torq break-glass` are):
 
 | Command | Does |
 |---|---|
@@ -757,7 +757,8 @@ and never with NO_COLOR, TERM=dumb, or when the output is not a terminal. There 
   in the columns. A column empty in every row takes no room.
 - **The ledger is one line per entry**, its text cut to the window (`…`) and never wrapped, so a
   reason cannot draw what looks like another entry; who made each change is a column of its own,
-  never cut (`⚠ tainted` included). `show system commit` shows each subject whole.
+  never cut (with its mark where the ledger has one: `⚠ proposed by an agent`, or `⚠ made from untrusted
+  text`). `show system commit` shows each subject whole.
 - **Taller than the window:** the pager (above); `| no-more` skips it.
 - **Data is never wrapped or cut:** a configuration, `show | compare`, a diff, `| display set`;
   the terminal wraps a long line itself.

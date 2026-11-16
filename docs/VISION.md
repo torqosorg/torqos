@@ -38,7 +38,7 @@ as the base. Nothing the server face needs is given up for the laptop face, and 
 Three things a person should be able to say to their machine, each a VM test when built
 (ADR-034):
 
-- **"Fix my wifi."** The agent reads logs and hardware (doctor mode), proposes a system-tier change,
+- **"Fix my wifi."** The agent reads logs and hardware (TorqOS's tools for it), proposes a system-tier change,
   the person approves with one answer; it is applied with `commit confirmed`, and reverts itself if
   the machine does not come back. No other desktop OS can let an AI try this safely.
 - **"Build me an application for this."** The agent writes it in the person's home (free), builds

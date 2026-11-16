@@ -125,7 +125,7 @@ Status (2026-11-11): **built** = in the code and tested; **opt-in** = built and 
 | Firmware keys reset to factory | Firmware admin password; PCR 7 change → disk stays locked | not built | `show system alarms` warns |
 | Malware during a session | read-only /nix/store, few services, sandboxed services | partly: the store is read-only and few services run (built); sandboxed services not built | The broker's units are not sandboxed (KNOWN-GAPS N5) |
 | Malware persistence across boots | Signed UKIs only; config rebuilt from repo | config rebuilt from the repository: built. Signed UKIs: not built | Optional impermanence later |
-| Prompt injection steering the AI | Broker tiers + taint tracking | built, with limits | Untrusted-content-derived actions need per-step approval. Taint is what TorqOS's own doctor reports; another program run as the agent can simply not report (KNOWN-GAPS 6zq) |
+| Prompt injection steering the AI | Broker tiers; every proposal of an agent's waits for a person | built, with limits | The broker cannot see what an agent reads, so it trusts none of it: each proposal is approved by a person, shown as the broker's diff, with what the agent reported reading (ADR-055 phase 2; KNOWN-GAPS 6zzu). A person can still be talked into approving |
 | Compromised signing key on device | Only the db key lives on device (broker-only, TPM-sealed); PK/KEK exported offline then deleted | not built | Needs Secure Boot and the TPM |
 | Secure Boot bypass vulns (BlackLotus, LogoFAIL class) | fwupd firmware + dbx updates, applied via broker | not built | |
 | A ledger rewritten by root on the machine | Pushing the configuration and ledger to a remote | opt-in | Off by default; without it the hash chain only detects partial edits (KNOWN-GAPS 2) |

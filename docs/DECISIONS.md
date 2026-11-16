@@ -1186,6 +1186,10 @@ Short ADRs. Newest at the bottom. Format: context → decision → consequences.
   changed input itself and checks its hash and signature.
 
 ## ADR-041 — The agent's account: `torq-agent`, and what it may propose
+- **Amended 2026-11-16: removed in phase 2 of ADR-055** — nothing of the account, the list (`mayPropose`) or
+  `torq agent run`. What went is what this ADR says of TorqOS's own agent beside the tools (M5's doctor, its
+  session notes in the agent's home) and of trust applying a proposal: every proposal of an agent's waits for a
+  person. The rest stands as amended by ADR-051 3 (one account per person).
 - **Amended by ADR-051** (3, built 2026-11-10): one agent account per person, `torq-agent-<person>`, in place of the one `torq-agent` of 1; `torq.agent.mayPropose.users` replaced by `torq.agent.people`.
 - **Status:** accepted (the owner, 2026-11-04: "do it"); 1–4 built 2026-11-05, 5 designed and next. ADR-035's account lever, after ADR-040 (the socket). The owner:
   people will drive TorqOS with the AI tools they already use — Claude Code first — so the account
@@ -1253,6 +1257,14 @@ Short ADRs. Newest at the bottom. Format: context → decision → consequences.
   model, tools or prompts (M5).
 
 ## ADR-042 — The agent's runtime: doctor mode, the model, the tool boundary
+- **Amended 2026-11-16: removed in phase 2 of ADR-055.** Doctor mode (1, 2: `torq doctor`, `torq-doctor`, its
+  prompts), the model and its settings (3, 4: `torq agent doctor …`, `torq agent model …`, llama.cpp's unit, the
+  model client), `torq agent propose` (6, as a command) and session trust (7: `request system agent trust`,
+  `trust-grant`, `trust-revoke`) are gone. What stands: the tool boundary (5), now torq-mcp's (the closed set of
+  tools, their cleaning and bounds, `propose_change` as words of the tree); the broker's record of an agent's
+  sessions and what they report reading (6), with every session now marked from its start; what could cut the
+  machine off applied only as a commit confirmed. The journal's setting is `torq agent journal`. What follows
+  is the record of what was decided and built then.
 - **Amended by ADR-051 (step 2)** (3, built 2026-11-10): 1 is no longer so — each person's agent is resident, `torq-agent@<person>.service` on its socket, holding their conversation and running one task at a time, each still its own process with its own session and record (`torq ask`); `torq doctor` and `torq agent propose` stay one question, one process.
 - **Status:** proposed (2026-11-07); built (status updated 2026-11-11 from ROADMAP M5): doctor mode (1–5) on `work/w3`, Proposals (6) and Session trust (7) on `work/w5`, all 2026-11-07, in v0.3.x, the taint held by the broker, amended from their design as each says; `tests/doctor.nix`, `tests/agent-proposals.nix` and `tests/commit-at.nix` ran green in the v0.3.2 release run (CI 42667820600). Experimental: doctor is off by default, no real model has been tried. ROADMAP M5's first item, building
   on ADR-005 (local by default), ADR-034, ADR-040 and ADR-041 (the account, `torq agent run`).
@@ -2073,6 +2085,17 @@ off many times a day.
 
 ## ADR-051 — The machine's agent: TorqOS's own, in every part of the desktop, the screen by grant
 
+**Amended 2026-11-16: removed in phase 2 of ADR-055.** TorqOS's own agent as the harness (9, and "the machine's
+agent: TorqOS's own" of the title), the resident agent's second account `torq-resident-<person>` (3, as amended
+2026-11-11), the broker's resident rule and what a model must be for a session to start untainted (step 5 and its
+reviews), and a person's trust applying their agent's proposals (3) are gone: the machine's agent is the person's
+coding tool (ADR-055), it has one account, every session of it is one whose reading the broker cannot see, and
+every proposal waits for its person. What stands: one agent account per person and what it may propose (3); its
+service on its socket, now the bridge (ADR-055 3); the applet, the window, the entry points and Decline (4);
+coding tools installed for the agents and `torq-mcp` (5, 7); the screen by grant, not built (6); leave for the
+agent to use a secret (as amended 2026-11-13, with ADR-052 4). What follows is the record of what was decided
+and built then.
+
 **Status:** accepted, 2026-11-10, to be built (the owner: "rethink the applets and integration with agents, think
 omarchy … a default agent for the machine … allows users to set up claude, openai or opencode … the system has
 a full-on agent that has its own account and is there to help the users for anything … watch the screen for new
@@ -2880,6 +2903,12 @@ vouches for, that only proposes, every change ledgered and undone in one command
   subtests are written and have not run. Open: KNOWN-GAPS 6zzo.
 
 ## ADR-052 — Secrets the agent may use and never read: `torq-secrets`
+- **Note, 2026-11-16 (phase 2 of ADR-055; nothing here was changed).** Step 4's rules speak of a session that
+  read untrusted text and one that did not. Only the old loop's resident agent ever had the second kind, and it
+  is gone: every session of an agent's now counts as the first. So `first-use` and `never` ask at each use, and
+  `allow all` and `allow <name> session` cover no use; `never-even-tainted` and `tainted-too` are what let a use
+  through unasked. Whether to reword the rules for that, or to give taint meaning again from what the model
+  proxy sees, is open (KNOWN-GAPS 6zzu).
 - **Status:** accepted, 2026-11-10; its four questions settled by the owner the same day (below). Proposed
   2026-11-10 (the owner: "is it possible to allow the torqos-agent to access and use passwords from the secret
   manager without exposing the secret to the AI? … store secrets and allow AI to use them and limit which
@@ -3458,3 +3487,34 @@ content at the next), and a proposal must be judged on what it does, not on what
      and `torq ask` now looks it up in the ledger before printing the command to apply it, as the window
      did. The broker's own words for a coding tool's taint are no longer shown; the person reads "Your
      agent's proposals always wait for you to read and approve them."
+- **As built, phase 2 (2026-11-16, `work/harness-p2`): TorqOS's own loop is removed.**
+  1. *What is gone.* `torq-doctor` (its loop, prompts, model client, its notes of its sessions), `torq doctor`,
+     `torq agent propose`; `modules/ai.nix` with every setting under `torq agent doctor` and `torq agent model`
+     and the local model's service; the account `torq-resident-<person>` and the broker's map of them; the
+     broker's resident rule (the control group read through the peer's pidfd, `--resident`, the model judged for
+     whether another account could stand in for it); session trust (`request system agent trust`, `trust-grant`,
+     `trust-revoke`, `trust`, the apply with no person there); the socket event that said a proposal was tainted;
+     the reserved unit name `torq-agent-key@…`.
+  2. *Every session of an agent's is marked from its start, and every proposal waits.* The broker cannot see
+     what a program run as an agent reads, and no program is believed any more: a session's record begins
+     `tainted`, with `agent-program` as why; what torq-mcp reports reading is added. An agent's proposal is
+     marked whatever session it names. An apply needs the person's word that they looked, as before; a `commit
+     at` refuses it, as before. Nothing was loosened: where the old rule made a session clean, there is none now,
+     and a record of a clean session kept from before is read as tainted.
+  3. *The ledger's `tainted` stays, and old ledgers verify.* An entry's fields cannot change (ADR-044: the
+     ledger's bytes), so the field keeps its name; to a person it is said as where a change came from ("your
+     agent proposed this", "proposed by an agent", "made from untrusted text"). The words only the old loop wrote
+     (`covers: proposals`, `data.trust`, `data.resident`, `not-the-resident-agent`, the model's words, callers
+     named `torq-resident-<person>`) are read as they were written and verified with the chain; a fixture written
+     by the old broker holds that (`wire/tests/fixtures/before-phase-2.jsonl`). A grant of trust in proposals
+     left on a ledger is honoured by nothing. Rejected: writing `trust_expired` for such a grant (it would need
+     the broker to keep a notion of what it no longer does).
+  4. *The settings that went are refused by name.* `torq.agent.doctor` and `torq.agent.model` are each one
+     removed option (`lib.mkRemovedOptionModule`), so a configuration that still sets anything under them is
+     told what to delete at `commit check` and at the build, not that NixOS knows no such option. The journal's
+     setting, which was doctor mode's and is the agents', is `torq agent journal` (not carried over: off unless
+     set again). `torq.agent.doctor.package` is `torq.agent.package`.
+  5. *Secrets are not touched, and are affected* (ADR-052's note of the same day; KNOWN-GAPS 6zzu): their rules
+     distinguish a clean session from a tainted one, and no agent has a clean one now. Left for the owner.
+  6. *Session trust may return* (5 of the decision), decided from what the model proxy saw: its own ADR then.
+     Nothing is kept in the tree for it.

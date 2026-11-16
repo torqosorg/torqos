@@ -34,9 +34,7 @@ command can be abbreviated to a unique beginning, and `?` or `help` works anywhe
 | `request system restore <backup> [<snapshot>] <path>` | put a path back from a backup, what is there set aside |
 | `request system software rollback <n>` | load configuration `<n>`'s software into the candidate (a downgrade); offered for install as an update is |
 | `request system revert <change>` | undo one recorded change (`#85` or `85`) |
-| `request system apply <n>` | apply a proposal of the agent's, after showing what it does (says why, if its session read untrusted text; one that could cut you off is applied as a commit confirmed) |
-| `request system agent trust <minutes>` | for up to 60 minutes, the agent's untainted proposals in your own folder apply without asking (asks your password) |
-| `request system agent trust revoke` | end that trust now |
+| `request system apply <n>` | apply a proposal of the agent's, after showing what it does and what your agent had read before proposing it (one that could cut you off is applied as a commit confirmed) |
 | `request system snapshot take` | take a snapshot of your data now (asks your password) |
 | `request system snapshot restore <n> <path>` | put a path back as it was before change `n` (asks your password) |
 | `request system snapshot delete <n>` | delete one snapshot; recorded first, and cannot be undone (asks your password) |
@@ -49,7 +47,7 @@ command can be abbreviated to a unique beginning, and `?` or `help` works anywhe
 | `request system secret set <name>` | give a secret's value (typed, or `file <path>`): kept encrypted, outside the configuration, never in the ledger |
 | `request system secret allow <name> https <host>` or `ssh <host>`, or `agent user <you>` / `agent <person>` | let a secret be used for that host (a token in an HTTPS header, or an SSH key), or by an agent, which uses it without reading it: your own secret by your own agent (`agent user <you>`), a system secret by the agent of the person named (`agent alice`: alice's agent, `torq-agent-alice`) |
 | `request system secret disallow <name> …` | take a use back |
-| `request system secret approve <name> each-use`, `first-use` or `never` | when you are asked before your agent uses it. A session that read untrusted text is always asked, and so is a coding tool run as your agent. A use that asks waits two minutes for you, then is refused |
+| `request system secret approve <name> each-use`, `first-use` or `never` | when you are asked before your agent uses it. A session that read untrusted text is always asked, and your agent's always counts as one (TorqOS cannot see what it reads), so today each of these asks at every use. A use that asks waits two minutes for you, then is refused |
 | `request system secret approve <name> never-even-tainted user <you>` | your own secret is used with no one asked, even from a session that read untrusted text, until you choose another rule (asks your password) |
 | `show system secrets waiting` | your agent's uses of secrets that wait for your answer, each with its number |
 | `request system secret approve <n>` | your yes to the waiting use `<n>`, once |
@@ -135,8 +133,9 @@ typed at the `torqcli` prompt:
 
 | Command | Does |
 |---|---|
-| `torq doctor "<question>"` | ask the agent a question about the machine; it reads and explains, and proposes nothing (experimental; see [The agent](../guide/agent.md)) |
-| `torq agent propose "<ask>"` | as `doctor`, and the agent may propose one change |
+| `torq ask "<question>"` | ask your agent; the answer comes as it is written, and a change it proposes waits for you (`torq ask --forget` deletes the conversation; experimental; see [The agent](../guide/agent.md)) |
+| `claude [<words for Claude Code>]` | Claude Code as your agent, with the folder you are in shared with it (`torq agent claude`; where Claude Code is installed for the agents) |
+| `torq agent instructions [edit \| clear]` | what your agent is always told: show it, edit it, remove it |
 | `torq agent run [--share <dir>] [--] [<command>]` | run a program (Claude Code, say) as the agent's account, in a sandbox, sharing one directory |
 | `torq break-glass "<why>"` | in strict mode, the one way to a root shell: asks your password, records who and why, then opens it |
 | `torq setup` | first-boot setup (the image's console, as root, until change #1) |

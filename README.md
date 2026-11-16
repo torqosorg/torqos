@@ -282,7 +282,7 @@ maintainers rather than in a public issue.
 | **M3** — trust: identity from the kernel, the agent's account, the config repo's remote (off by default), strict mode, data snapshots | ✅ | Done; in `v0.3.x` |
 | **M3.5** — the install on real hardware | 🟧 | Partly: an offline first build, network-first setup, and TorqOS installed on the owner's laptop. Not built: the console UI, an answers file for unattended installs, recipes (shared configuration repositories), the installer's other ways (beside another system, a partition) |
 | **M4** — the desktop as a configuration, applications, data | 🟧 | Largely built, in the `v0.4.0-rc1` pre-release: COSMIC, TorqOS Settings, a panel applet, SSH tunnels, approval as a dialog. It has run on one physical machine, the owner's laptop. Not built: wrapping COSMIC's own settings pages, applications by rung, syncing data |
-| **M5** — the agent: doctor mode, proposals, session trust | 🟧 | The non-GUI half is built, in `v0.3.x`, and is experimental: the doctor is off by default, no model ships with it, and no real model has been tried (the tests use a scripted one). The resident agent (one for each person), its applet and window, and `torq-mcp` for coding tools are on `main`, not released; the harness's other tools and subagents are not built |
+| **M5** — the agent: your coding tool, fenced; it proposes, you approve | 🟧 | Experimental, and on `main` only. `v0.3.x` released an earlier design (a small agent of TorqOS's own: `torq doctor`, session trust), which `main` has removed. On `main` the machine's agent is the coding tool you choose (Claude Code first), run in an account of its own for each person, with its panel item and window and TorqOS's tools for it (`torq-mcp`); every change it proposes waits for you. TorqOS ships no AI program and no model. Claude Code has been driven through it once, by hand; the tests use a stand-in. Not built: the record of what the agent asks its model, opencode and local models ([docs/HARNESS-AS-A-SYSTEM.md](docs/HARNESS-AS-A-SYSTEM.md)) |
 | Later — owner-rooted boot security: the owner's Secure Boot keys, TPM2, disk encryption | ⬜ | Designed (ADR-033, [docs/SECURITY-MODEL.md](docs/SECURITY-MODEL.md)); not built |
 
 Released: `v0.1.0` to `v0.3.2`, and `v0.4.0-rc1` as a pre-release: the desktop and secrets
@@ -328,8 +328,7 @@ nix develop -c sh -c 'cd wire && cargo test'     # torq-wire, the words the thre
 | `free`, `size` | Nothing unfree in an image or the ISO; a new machine within its size budget |
 | `first-build-offline` | A first boot's configuration builds from what the installer carries, with nothing downloaded |
 | `commit-at` | `commit at`: a change approved now lands at its time, as the person who approved it; a cancelled one does not |
-| `doctor` | Doctor mode against a scripted model: it reads, a hostile log line taints the session, a tool that writes is refused, nothing is proposed |
-| `agent-proposals` | The broker holds each session's taint; a tainted proposal says why; a change that could cut the machine off applies only as a commit confirmed; session trust is bounded |
+| `agent-proposals` | Every proposal of an agent's waits for a person, who is told where it comes from; a change that could cut the machine off applies only as a commit confirmed; nothing applies an agent's proposal by itself |
 | `release-path` | What a changed `flake.lock` builds is what it names; TorqOS's own releases must be signed by the release key |
 | `backup` | The declared backup: its key kept outside the configuration, a restore as the folder's owner, every restore in the ledger |
 | `desktop` | The desktop boots to COSMIC's greeter and logs in; the approval dialog works (software rendering; smoothness is judged on real hardware) |
@@ -350,7 +349,7 @@ flake.nix          the entry point: packages, images, the ISO, VM tests, the mac
 modules/           the distribution, as NixOS modules (torq.* options)
 cli/               torqcli, the shell, and the ISO's installer (Rust)
 broker/            torq-broker, the privileged writer, ledger and rollback (Rust)
-agent/             torq-doctor, the agent's program (doctor mode, proposals), torq-agent-service (each person's resident agent) and torq-mcp (Rust; experimental)
+agent/             torq-agent-service (each person's agent: the bridge to their coding tool) and torq-mcp (TorqOS's tools for it) (Rust; experimental)
 secrets/           torq-secrets, the daemon that uses a secret for a program that never reads it (Rust)
 wire/              torq-wire, the words of the broker's socket and the ledger, shared by the three (Rust)
 settings/          TorqOS Settings, the panel applet, the SSH-tunnels applet and the agent's applet and window for the desktop (Rust)

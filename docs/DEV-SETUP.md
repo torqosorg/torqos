@@ -117,7 +117,7 @@ a `switch` restarts sshd, and a dropped connection would otherwise kill the run.
 cd ~/torq
 nix develop --command bash -c 'cd broker && cargo test'   # the broker's unit tests
 nix develop --command bash -c 'cd cli    && cargo test'   # torqcli's
-nix develop --command bash -c 'cd agent  && cargo test'   # the agent's doctor mode (a scripted model)
+nix develop --command bash -c 'cd agent  && cargo test'   # the agent's service (a stand-in engine) and torq-mcp
 nix develop --command bash -c 'cd wire   && cargo test'   # torq-wire, the words the three share (ADR-044)
 nix flake check                                           # evaluation, tree checks, VM tests
 nix build .#checks.x86_64-linux.trust-loop                # one VM test
@@ -208,23 +208,24 @@ nix build .#nixosConfigurations.dev-vm-x86_64.config.system.build.vm
 
 Fast here, now that KVM is available.
 
-## A local model (doctor mode, ADR-042)
+## The agent (ADR-055)
 
-Off by default. On a machine, the owner turns it on in the tree, naming a model file (GGUF) by its
-URL and hash — Nix fetches it when the change is built; nothing is downloaded otherwise:
+Off by default: a machine has an agent once an engine is chosen. On a machine, the owner allows Claude Code,
+installs it for the agents and makes it the engine, in the tree:
 
 ```
 configure
-set torq agent doctor enable true
-set torq agent model url https://…/model.gguf
-set torq agent model hash sha256-…
+set torq unfree packages claude-code
+set torq agent tools claude-code
+set torq agent engine claude-code
 commit
-torq doctor "why is my wifi flaky?"
+claude            # once, to sign in: then type /login
+torq ask "why is my wifi flaky?"
 ```
 
-llama-server then runs on `/run/llama-cpp/llama.sock`; the model must fit in memory. No real model has been tried with doctor mode yet;
-the tests use a scripted one. The journal is off unless `set torq agent doctor journal true` (then every program run as
-the agent reads it). A remote endpoint instead: `set torq agent doctor endpoint https://…/v1` —
-what the tools return, the configuration included, then leaves the machine — its key in a
-file outside the repo (`torq.agent.doctor.apiKeyFile`). The doctor's unit tests need no model:
-`nix develop --command bash -c 'cd agent && cargo test'`.
+TorqOS ships no agent program and no model (the local model, `torq doctor` and the settings under `torq agent
+doctor` and `torq agent model` were removed in phase 2 of ADR-055; a local model returns with opencode, phase 4
+of `docs/HARNESS-AS-A-SYSTEM.md`). The journal is off unless `set torq agent journal true` (then every program
+run as an agent reads it). What the engine reads goes to its maker's service. The agent crate's unit tests need
+no engine and no model (a stand-in engine, a stand-in MCP client): `nix develop --command bash -c 'cd agent &&
+cargo test'`.

@@ -1081,7 +1081,10 @@ Its §5 lists claims without a test.
      quoted in TorqOS's wrapper only, an option would mean one thing in the backup and another in the
      restore. Setting one is a system change, an administrator's.
 
-6zn. **Doctor mode (ADR-042, built on `work/w3` 2026-11-07).** Fixed from its review (2026-11-07): the
+6zn. **Doctor mode (ADR-042, built on `work/w3` 2026-11-07).** *Removed on 2026-11-16 with TorqOS's own agent
+   loop (ADR-055 phase 2; 6zzu): `torq doctor`, `torq-doctor`, its model client and the local model's service are
+   gone, and what follows is history. What lives on is its closed set of tools, in torq-mcp, with the bounds
+   said here (bytes, time, cleaning), and the journal's setting, now `torq agent journal`.* Fixed from its review (2026-11-07): the
    session's record is written before the first model call and after every tool result (a failed
    call left none); its id is random and made new (inside the launcher every pid is 2); the journal is
    off by default with any model; a tainted answer is headed so on standard output; plain http's host
@@ -1167,7 +1170,12 @@ Its §5 lists claims without a test.
      layout check skips it. Theirs stay grown by growpart, which does nothing once grown.
    - **Only the image's layout grows.** Any other (an install by hand, a partition added) is left as it
      is, and its root is not grown: by design, never repartitioned rather than guessed at.
-6zq. **Proposals and session trust (ADR-042 6 and 7, amended; built on `work/w5` 2026-11-07).** Open:
+6zq. **Proposals and session trust (ADR-042 6 and 7, amended; built on `work/w5` 2026-11-07).** *Session trust
+   and the resident agent's untainted sessions were removed on 2026-11-16 (ADR-055 phase 2; 6zzu): every proposal
+   of an agent's is marked and waits for a person, whatever session it names, so what follows about trust, about
+   whose session is believed and about `torq agent propose` is history. What still holds: the broker cannot see
+   what a program reads (it now assumes the worst of every agent session), a session's record is bounded, and
+   what could cut the machine off is applied only as a commit confirmed.* Open (as written then):
    - **A session's taint is what was reported — now only the resident agent's is believed** (closed for the
      case it named by ADR-051 step 5, 2026-11-10; what is left is 6zzo's). The broker cannot see what a program
      of the agent's reads; it holds what it is told. Any program run as an agent account (Claude Code under
@@ -1324,8 +1332,8 @@ Its §5 lists claims without a test.
    `tests/agent-service.nix`).** The service no longer runs TorqOS's own loop: it runs the person's engine
    (Claude Code) as their agent account. What 6zzl and 6zzo say of the service as the *resident agent* (its
    own account `torq-resident-<person>`, its memory, the model's key as its credential, the word of a missing
-   key, an untainted session from its unit) is the old loop's, kept only as history until phase 2 removes the
-   loop and rewrites them; what they say of the socket, the freeze through a share's walk, the unit's files
+   key, an untainted session from its unit) is the old loop's, which phase 2 removed on 2026-11-16 (6zzu): it
+   is history there; what they say of the socket, the freeze through a share's walk, the unit's files
    and nothing delegated still holds. Open:
    - **The real Claude Code has not run inside the unit.** It was driven through the service by hand, outside
      systemd (`docs/HARNESS-AS-A-SYSTEM.md`, "Where it stands"); the VM tests use a stand-in that speaks the
@@ -1428,7 +1436,68 @@ Its §5 lists claims without a test.
      `agent-proposals`, `doctor` and `secrets` after their edits (they evaluate); the Agent page, the window
      and the applet are type-checked only.
 
-6zzl. **The agent service (ADR-051 3, step 2, built 2026-11-10, `tests/agent-service.nix`).** Open:
+6zzu. **TorqOS's own agent loop is removed (ADR-055, phase 2, 2026-11-16, on `work/harness-p2`; what was run is in
+   `docs/HARNESS-AS-A-SYSTEM.md`).** Gone: `torq-doctor` and its loop, prompts and model client; `torq doctor` and
+   `torq agent propose`; the settings under `torq agent doctor` and `torq agent model`, and the local model's
+   service (llama.cpp); the account `torq-resident-<person>`, the broker's resident rule, and session trust
+   (`request system agent trust`, the broker's `trust-grant`, `trust-revoke` and `trust`). Every proposal of an
+   agent's waits for a person. What remains open, or is left behind:
+   - **A configuration that still sets a removed setting does not build, and says what to delete.** Any setting
+     under `torq agent doctor` or `torq agent model` is refused at `commit check` and at the build with the words
+     of `modules/agent.nix` ("TorqOS no longer has an agent loop of its own … `delete torq agent doctor`"), not as
+     an unknown option. A machine that has one must delete it in the same commit that updates TorqOS: `request
+     system update`, `configure`, `delete torq agent doctor`, `delete torq agent model`, `commit`. The torqcli of the
+     running (older) system still knows the settings, so the delete works there; once the machine runs the new
+     TorqOS, torqcli no longer knows them (`"doctor" is not a setting`) and a leftover in `nixos/torq.json` could
+     only be taken out by hand, as root, which the build's refusal exists to make unnecessary. Not tried on a
+     machine: the assertions are held by `tests/agent-assertions.nix` (evaluation).
+   - **The journal's setting moved.** `torq agent doctor journal` is `torq agent journal`. It is not carried over:
+     a machine that had it on must set the new one (the refusal above says so), or its agents lose the journal,
+     which is the safe way to fail.
+   - **What a machine that had doctor mode on keeps on its disk.** The accounts `torq-resident-<person>` go from
+     /etc/passwd at the switch (users are not mutable); they had no home (`/var/empty`). Left, and cleaned up by
+     nothing: `/var/lib/torq-agent-<person>/.local/state/torq-agent/sessions/` (the old loop's own notes of its
+     questions, the agent's files, 0600); a model file the configuration named by `path` (one fetched by `url` is
+     in the store and goes with its generations); the store's llama.cpp until the old generations are collected;
+     and the broker's own records of old sessions in `/var/lib/torq/state/sessions/`, which are read as before
+     (each is now tainted whatever it said) and go as new sessions push them out (2000 kept for each agent).
+     A uid a removed account had can be given to a later account, as 6zzk says of the old single `torq-agent`.
+   - **The ledger keeps the old words, and verifies.** `trust_granted` covering proposals, `applied` entries with
+     `data.trust`, `data.resident`, callers named `torq-resident-<person>`, and `not-the-resident-agent`,
+     `coding-tool` or a model's word in a session's `tainted_by`. The chain is all `verify` checks, and each line
+     is read and written back as it was (`wire/tests/fixtures/before-phase-2.jsonl`, written by the old broker;
+     `broker/tests/ledger_fixtures.rs`, `broker/tests/sessions.rs`). A trust grant left standing is honoured by
+     nothing, and is never written off as expired either: it stays the last word on the record about itself.
+     `show system ledger` shows it with the reason it was written with ("…apply without asking, for 60 minutes"),
+     which is no longer true of the machine: history, not marked as such on the screen.
+   - **Secrets: a session of an agent's is always one that "read untrusted text" (open; the owner's to
+     decide).** ADR-052 4's rules are written in terms of a clean and a tainted session, and only the old loop's
+     resident agent ever had a clean one. Nothing was loosened: every agent session is now tainted from its start
+     (and one kept from before is read as tainted). So, for an agent's use of a secret: `first-use` and `never`
+     ask at every use, as `each-use` does; `request system secret allow all for <minutes>` and `allow <name>
+     session` are accepted, ledgered and listed, and cover no use; only `allow <name> for <minutes> tainted-too`
+     and a secret's own `never-even-tainted` let a use through unasked. This has been so in practice since phase 1
+     (the service has run as the agent account since then). The broker's code for the clean case is still there
+     and is tested as pure functions (`asks`, `Grant::covers_use`); no test can reach it through a session any
+     more (`broker/tests/secrets.rs` now says what happens instead). The dialog's and the Secrets page's offers
+     for a clean use (`For this session`, plain minutes) are never drawn. Either the rules are reworded for a
+     world where every agent session is unseen (three approval words become one, two kinds of grant go), or
+     taint comes back with meaning from what the model proxy sees (phase 3; "Later" in the plan). Not decided here.
+   - **The ledger's word for it is still `tainted`**, and the broker's `--confirm-tainted`, `session-taint` and
+     `torqcli agent session taint`: the ledger's bytes never change, and the secrets' words are built on it. A
+     person no longer reads the word for a proposal (torqcli and TorqOS Settings say "your agent proposed this",
+     "proposed by an agent", "made from untrusted text"); they still read "a session that read untrusted text" of
+     secrets, and `tainted-too` and `never-even-tainted` are commands they type.
+   - **`torq-agent-key@…` is no longer a reserved unit name** (it was the old loop's key unit's, refused by the
+     check on the agent's units since phase 1 though nothing wrote it). A unit so named is now another unit:
+     systemd applies none of its files or drop-ins to `torq-agent@<person>` (`tests/agent-units.nix`,
+     `a-unit-named-past-the-dash`; evaluated, its build not run here).
+   - **Not looked at, not run.** TorqOS Settings' Agent and Proposals pages, the agent's window and the applets
+     are type-checked only, as before. Of the VM tests only three were run for this phase (the plan says which).
+
+6zzl. **The agent service (ADR-051 3, step 2, built 2026-11-10, `tests/agent-service.nix`).** *As the old loop's
+   resident agent (its own account, its memory, the model's key) this is history since phase 1 and phase 2 of
+   ADR-055 (6zzt, 6zzu); what is said of the socket and of a client that stops reading still holds.* Open:
    - **A client that stops reading is given up** after 10 s on one event (the review of the rebased branch, B2):
      nothing more is written to it and its connection's writing side is closed, so the client, reading again, says it
      ended before it answered; its task runs on to its end (or `stop`, or the client going), its answer kept as any other.
@@ -1551,7 +1620,11 @@ Its §5 lists claims without a test.
      the page; from the launcher it is only in the plugin's log.
 
 6zzo. **torq-mcp, Claude Code as a tool, and the broker's resident rule (ADR-051 5 and 7, step 5, built 2026-11-10,
-   `tests/agent-mcp.nix`).** Open:
+   `tests/agent-mcp.nix`).** *The resident rule was removed on 2026-11-16 (ADR-055 phase 2; 6zzu): no session of an
+   agent's is untainted, so nothing rests on who the resident is, and what follows about that rule, the resident
+   account and the model is history. What still holds, and is still checked: the agent's unit files are only what
+   TorqOS's module writes, word for word, and delegate nothing (the bridge's sandbox rests on it), and torq-mcp's
+   tools.* Open (as written then):
    - **What the resident rule rests on** (amended 2026-11-11: the resident agent's own account, ADR-051 3). A
      session is untainted only from `torq-resident-<person>` — the broker's map's word for the uid — *and* from
      inside `torq-agent@<person>.service`'s own control group (read through the peer's pidfd; a second guard). That the unit delegates nothing is checked in what this configuration writes, an instance or the template (`tests/agent-assertions.nix`), at evaluation. A unit file or drop-in a package brings (`systemd.packages`) cannot be seen there: it is a file inside a built package, which evaluation reads only by building the package first. Since 2026-11-14 those are read in the units as built (`modules/agent-units-check.nix`, a build the system's build depends on through `system.checks`): the directory `/etc/systemd/system` is made from, where the packages' files and the configuration's are together. It refuses a `Delegate…` line in any `torq-agent@` unit file or drop-in directory, in `torq-.service.d` and in `service.d`, and a file there that is not in the store. This found one case the evaluation check missed: a package that brings `torq-agent@<person>.service` itself stays the unit, and NixOS turns this configuration's unit into its `overrides.conf`. `checks.agent-units` (small builds, no VM, run 2026-11-14: fake unit directories and a real configuration's with stand-in programs). Left: `commit check` only evaluates, so such a package is refused at the build, with the check's words in the build's log, not at the check; unit files systemd reads from elsewhere are not in that directory, so not read: `/run/systemd/system` and `/etc/systemd/system.control` (written at run time: `systemctl edit --runtime`, `systemctl set-property`), and root's Nix profile (`/nix/var/nix/profiles/default/lib/systemd/system`). Each takes root on the running machine, which is root acting (6zzk), and `tests/agent-service.nix` reads `Delegate=no` from the running unit.
@@ -1705,6 +1778,9 @@ Its §5 lists claims without a test.
 
 6zzs. **An agent's use of a secret waits for its person, who answers at a terminal or in the panel's dialog; the
   dialog has not run on a desktop (ADR-051 and ADR-052 4, both amended 2026-11-13; the VM subtests passed in the full check of 2026-11-14).**
+  *Since 2026-11-16 (6zzu) every session of an agent's counts as one that read untrusted text: where this item
+  speaks of a clean session, the resident agent or a use that goes without asking under `never`, `first-use`, `allow
+  all` or `allow <name> session`, no agent has that any more.*
   `torq-agent` in a person's rules is their own agent, and a system rule names each agent's account. A use that
   asks (the rule says each use, or the first; no session; a tainted session) waits for up to two minutes for the
   person the agent serves. They answer with `request system secret approve <n>` or `deny <n> [session]`

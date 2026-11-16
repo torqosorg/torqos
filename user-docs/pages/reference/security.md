@@ -120,11 +120,10 @@ What the page does not do:
 
 You decide whether your agent may use a secret at all (`request system secret allow <name> agent …`),
 and when you are asked first (`approve`): never, the first time in each of its sessions, or every
-time. Two kinds of use always ask, whatever you chose:
-
-- a use from a session that read untrusted text (a web page, an email, a downloaded file);
-- a use by a coding tool run as your agent, such as Claude Code. TorqOS cannot see what a coding tool
-  read, so it treats its session as one that read untrusted text.
+time. Whatever you chose, a use from a session that read untrusted text (a web page, an email, a
+downloaded file) always asks. And TorqOS cannot see what your agent reads, so it treats every session of
+your agent's as one that did. In practice, then, your agent asks at every use, unless you gave it leave
+that says "even from a session that read untrusted text" (below).
 
 A use that asks waits two minutes for you. Only you are asked: the person whose agent it is, also for
 a system secret. With no answer, the use is refused. The agent never gets the value either way.
@@ -133,8 +132,7 @@ a system secret. With no answer, the use is refused. The agent never gets the va
 in the panel, whose mark has a badge while a use waits. The panel shows:
 
 - First, what TorqOS knows for itself: the secret and whose it is, whether it is for an HTTPS request
-  or an SSH sign-in and to which host, whether your agent or a coding tool asked, what is known of its
-  session, and how long you have left.
+  or an SSH sign-in and to which host, what is known of its session, and how long you have left.
 - Then, under a line that says so, what your agent says about it. These are the agent's own words.
   Nothing has checked them, and text the agent has read can put words in its mouth. Decide by the
   lines above them.
@@ -197,12 +195,13 @@ change the system.
 Add `user <you>` for a secret of your own; without it, the command means a system secret that your
 agent is allowed. In the panel, **Allow for…** does the first two for the secret being asked about.
 
-None of these covers a session that read untrusted text. So none covers a coding tool: it still asks
-every time. Two things do, and each is for one named secret only, never for all of them:
+None of these covers a session that read untrusted text, and every session of your agent's counts as
+one (TorqOS cannot see what it reads). So today none of the three lets a use through: your agent still
+asks every time. Two things do, and each is for one named secret only, never for all of them:
 
 - `request system secret allow <name> for <minutes> tainted-too`: for up to 480 minutes, the agent
   uses that secret without asking, even from a session that read untrusted text. In the panel, this
-  is what **Allow for…** offers, in red, when a coding tool asks.
+  is what **Allow for…** offers, in red.
 - `request system secret approve <name> never-even-tainted user <you>`: the same, with no end, for a
   secret of your own. It asks your password, and holds until you choose another `approve` rule.
 

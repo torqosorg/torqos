@@ -51,9 +51,8 @@ modules/               the distribution, as NixOS modules (torq.* options)
   releases.nix         where a machine takes TorqOS from, signatures checked (ADR-028)
   settings-fence.nix   what the configuration tree may never change
   dev.nix              development mode (ADR-009) — and the assertion that guards a path: source
-  ai.nix               doctor mode and the model it asks: torq.agent.doctor, torq.agent.model (ADR-042)
   secrets.nix          torq-secrets: a program uses a secret and never reads it (ADR-052)
-  agent.nix            each person's agent account torq-agent-<person>, what it may propose, `torq agent run`, the engine (`torq agent engine`) and torq-agent@<person>, the bridge to it (ADR-041, ADR-051 3, ADR-055)
+  agent.nix            each person's agent account torq-agent-<person>, what it may propose, `torq agent run`, the engine (`torq agent engine`) and torq-agent@<person>, the bridge to it, `torq agent journal` (ADR-041, ADR-051 3, ADR-055)
 hosts/
   image/               the release image's own system (`.#image`, `.#image-vmdk`)
   installer/           the ISO installer's system and the image it carries (`.#iso`)
@@ -62,8 +61,7 @@ templates/config/      the per-machine config repo the broker manages
                        (`nix flake new -t .#config /var/lib/torq/config`)
 broker/                Rust crate: torq-broker (ledger, policy, git, rebuild, rollback)
 cli/                   Rust crate: torqcli — the grammar, the candidate, the tree (ADR-025)
-agent/                 Rust crate: torq-doctor — the agent: doctor mode, propose mode, its session at the broker (ADR-042);
-                       torq-agent-service — each person's agent on its socket: the bridge to their engine, Claude Code (ADR-055);
+agent/                 Rust crate: torq-agent-service — each person's agent on its socket: the bridge to their engine, Claude Code (ADR-055);
                        torq-mcp — TorqOS's tools for a coding tool, an MCP server (ADR-051 7)
 wire/                  Rust crate: torq-wire — the socket's types and the ledger's words, shared by the three (ADR-044)
 tests/                 NixOS VM tests
@@ -92,7 +90,7 @@ machine stays thin. `nix develop` for a shell, or `nix develop --command …` fo
 # The Rust crates
 nix develop --command bash -c 'cd broker && cargo test'   # incl. ledger tamper detection
 nix develop --command bash -c 'cd cli    && cargo test'   # the grammar, candidate, tree
-nix develop --command bash -c 'cd agent  && cargo test'   # doctor mode, against a scripted model
+nix develop --command bash -c 'cd agent  && cargo test'   # the agent's service against a stand-in engine; torq-mcp
 nix develop --command bash -c 'cd wire   && cargo test'   # torq-wire: the socket's bytes (ledger fixtures: the broker's)
 nix develop --command bash -c 'cd secrets && cargo test'  # torq-secrets
 # settings/ has no tests of its own; it is type-checked in its own shell: nix develop .#torq-settings
@@ -124,25 +122,29 @@ Released so far: `v0.1.0` to `v0.3.2` (v0.3.2 on 2026-11-09), and `v0.4.0-rc1` a
 only). No `rc2` tag exists. Releases, version bumps and upgrade-path hardening are parked by the
 owner since 2026-11-12 (there is no install base): polish and the pending features come first.
 
-On `main` and not released: the agents work (ADR-051: each person's resident agent, `torq-mcp`, one
-agent per person as two accounts, `torq-agent-<person>` and `torq-resident-<person>`), secrets steps
+On `main` and not released: the agents work (ADR-051 as amended by ADR-055: one agent account per person,
+`torq-agent-<person>`, its service, applet and window, `torq-mcp`), secrets steps
 1 to 5 including the approval flow (ADR-052 step 4: waiting uses, grants, `secret-grant --replace`, the
 panel applet's dialog, and the Secrets page in TorqOS Settings), and several polish rounds
 (2026-11-12 to 2026-11-14). The old branch `work/agents` and its tag `park/agents-known-good` are
 only history now. Nothing may be said to be released that is only on `main`.
 
-Being built on `work/harness` (ADR-055, 2026-11-15; `docs/HARNESS-AS-A-SYSTEM.md` is the plan and says what
-is done): the machine's agent is the person's coding tool, Claude Code first. Phase 1 is the bridge: `torq
-agent engine claude-code`, the agent's service running that engine as `torq-agent-<person>`, `claude` typed in a
-terminal (`torq agent claude`), and a person's standing instructions for their agent (`torq agent instructions`).
-TorqOS's own loop (`torq doctor`, `torq agent propose`, `torq agent doctor …`, the `torq-resident-<person>` accounts, the
-broker's resident rule and session trust) is still in the tree and is removed in phase 2.
+The agent's plan (ADR-055, 2026-11-15; `docs/HARNESS-AS-A-SYSTEM.md` is the plan and says what is done): the
+machine's agent is the person's coding tool, Claude Code first; TorqOS writes no agent. Phase 1, on `main`, is
+the bridge: `torq agent engine claude-code`, the agent's service running that engine as `torq-agent-<person>`,
+`claude` typed in a terminal (`torq agent claude`), and a person's standing instructions for their agent (`torq
+agent instructions`). Phase 2 (2026-11-16, built on `work/harness-p2`; on `main` only once the controller has
+merged it after its full check) removed TorqOS's own loop: `torq-doctor`, `torq doctor`, `torq agent propose`,
+the settings under `torq agent doctor` and `torq agent model` with the local model's unit, the
+`torq-resident-<person>` accounts, the broker's resident rule and session trust. Every proposal of an agent's
+waits for its person. Do not bring any of it back as a stub: a local model returns with opencode (phase 4).
 
 Milestones as built (`docs/ROADMAP.md`'s checkboxes are the most current record): M1, M1.5, M2 and M3
 are done. M3.5 (the install on real hardware) is partly done: the offline first build, network-first
 setup and the laptop install are built; the console UI, the answers file, recipes and the
-installer's other ways are not. M4 (the desktop) is largely built. M5 (the agent) has its non-GUI half
-released (doctor mode, proposals, session trust); the resident agent and its desktop are on `main`.
+installer's other ways are not. M4 (the desktop) is largely built. M5 (the agent): v0.3.x released the old
+loop's non-GUI half (doctor mode, proposals, session trust), of which doctor mode and session trust are
+removed since phase 2; the agent as it is now (ADR-055) is unreleased.
 
 ## Engineering principles
 
@@ -156,8 +158,8 @@ released (doctor mode, proposals, session trust); the resident agent and its des
 - **Test the trust properties, not just features.** Every security or reversibility claim
   should have a NixOS VM test (`tests/`) that would fail if the claim broke.
 - **Thin.** What the system does not need is not installed; torq stays small.
-- **Prefer existing, maintained components** (NixOS, nixpkgs, the real Linux tools, llama.cpp,
-  MCP). Original work goes into the broker, ledger, torqcli and the agent tools.
+- **Prefer existing, maintained components** (NixOS, nixpkgs, the real Linux tools, the person's coding
+  tool, MCP). Original work goes into the broker, ledger, torqcli and the agent tools.
 
 ## Guardrails for Claude Code working in this repo
 
@@ -184,27 +186,31 @@ released (doctor mode, proposals, session trust); the resident agent and its des
   Step 4 (an agent's use that asks waits for its person, who approves or denies it at a terminal or in
   the panel applet's dialog; grants such as `allow <name> session`; `secret-grant --replace`) and
   step 5 (the Secrets page in TorqOS Settings) are on `main`.
-- **The agent is experimental.** The `torq-agent-<person>` accounts, `torq agent run`, doctor mode,
-  proposals, session trust, the resident agent (`torq-agent@<person>`, as `torq-resident-<person>`) and
-  `torq-mcp` exist on `main`. Doctor is off by default, no model ships, and no real model has ever been
-  tried with TorqOS's own loop (the tests use a scripted endpoint and a stand-in MCP client). The
-  default allow-list is the owner's own packages. Since 2026-11-16 the agent's service on `main` is the bridge to
-  Claude Code instead (`torq agent engine`): the real Claude Code 2.1.316 was driven through it once, by
-  hand, outside its unit, on the check host (2026-11-15); inside the unit only a stand-in has run.
-- **Tests.** Unit tests are `#[test]` functions: torqcli 473, broker 338 (+1 ignored, across its test
-  binaries), wire 23, secrets 15, agent 72 (+1 ignored) (run 2026-11-15; with the bridge, before its fix round: torqcli 498,
-  wire 23, agent 87 (+2 ignored); the broker's and the secrets daemon's ran as their packages were built). The
+- **The agent is experimental.** The `torq-agent-<person>` accounts, `torq agent run`, the agent's service
+  (`torq-agent@<person>`, the bridge to the engine, `torq agent engine`), `claude` typed plainly, `torq ask`,
+  proposals and `torq-mcp` exist. TorqOS has no agent loop or model of its own (removed in phase 2, above):
+  nothing may be written as if `torq doctor`, a local model, a resident agent or session trust existed. Every
+  proposal of an agent's waits for its person; the ledger's field for that is still called `tainted`, and a
+  person is shown plain words instead. The real Claude Code 2.1.316 was driven through the bridge once, by
+  hand, outside its unit, on the check host (2026-11-15); inside the unit only a stand-in has run. The
+  default allow-list is the owner's own packages. Secrets' rules still speak of a clean and a tainted session,
+  and no agent has a clean one any more (KNOWN-GAPS 6zzu: the owner's to decide).
+- **Tests.** Unit tests are `#[test]` functions: torqcli 495, broker 319 (across its test binaries), wire 23,
+  secrets 15, agent 59 (+2 ignored) (run 2026-11-16 on `work/harness-p2`, after phase 2 removed the old loop
+  and its tests). The
   `settings/` crate has no tests of its own; it is type-checked with `nix develop .#torq-settings`.
   VM tests are `checks` in `flake.nix`, one file each in `tests/`. CI's `test` workflow runs on pull
   requests, by hand and inside each release, **not on pushes to `main`**, and GitHub does not run the
   full `nix flake check` for development: it runs on the check host. The last full `nix flake check`
-  passed on 2026-11-16 at bf07824 (phase 1 of `docs/HARNESS-AS-A-SYSTEM.md`); the Secrets page and the agent's UIs
+  passed on 2026-11-16 at bf07824 (phase 1 of `docs/HARNESS-AS-A-SYSTEM.md`); phase 2 has not had one yet
+  (what was run for it is in that file); the Secrets page and the agent's UIs
   are type-checked only, and no test presses a button in the approval dialog (a VM test has the applet see a waiting use and send its yes). Say what was actually run; do not write that
   something is tested when it only exists.
 - **The dev host** is torq5, "the check host" (user `viper`, repo `~/torq`), an x86_64 ESXi VM with KVM, since 2026-11-15: development and every heavy build (`nix flake check`, VM tests, the images) run there. The owner's laptop (hostname `torqlaptop`, user `cwdavis`) is a TorqOS machine, the only one the desktop runs on, and is the try-it-out machine: it follows the `tested` branch and nothing is developed on it. Session worktrees live beside
   `~/torq`; do not edit in another session's.
 - **Known limits** are in `docs/KNOWN-GAPS.md` (the desktop and launcher items 6zx and 6zy, and 6zz,
-  `torq agent run`'s set-id sweep, are fixed; the agents' own are 6zzk to 6zzo, the approval flow's 6zzs, the bridge's 6zzt).
+  `torq agent run`'s set-id sweep, are fixed; the agents' own are 6zzk to 6zzo, the approval flow's 6zzs, the bridge's 6zzt,
+  the old loop's removal 6zzu).
 
 ## Working here
 
