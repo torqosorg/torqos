@@ -100,6 +100,7 @@ in the owner's shell does not have; in a terminal it is torqcli's prompt, the sa
 | `torq-agent@<person>.service` (`agent/`: `torq-agent-service`), as `torq-agent-<person>` (ADR-055) | unprivileged, the launcher's sandbox and systemd's hardening; socket-activated, its socket the person's alone, SO_PEERCRED checked | Rust | The bridge to the person's engine: runs Claude Code as one long-lived process for their conversation, hands it each question (with the person's standing instructions) and streams what it says to `torq ask`, the agent's window and the applet; `stop` ends the engine and everything it started, `forget` also deletes the engine's record of the conversation. It keeps the conversation's name, count and number, and nothing of what was said |
 | `torq-mcp` (`agent/`), as `torq-agent-<person>` | unprivileged, the same sandbox | Rust | TorqOS's tools for the engine (ADR-051 7): an MCP server on standard input and output with a closed set of tools, six that read and `propose_change`; linked into Claude Code's settings in the agent's home at each start |
 | `torq-broker` | privileged (root, minimal) | Rust | Only writer of the config repo; tiers, commits, rebuild, rollback, ledger |
+| The checker: `torq --check-tree`, as `torq-check` (ADR-056) | unprivileged, a locked account of its own, in a transient unit with no network, no home and bounded memory and time | Rust (torqcli's own check) | Evaluates the tree an agent's proposal leaves, before the broker records it: valid, not valid (refused), or not checked (recorded, and said) |
 | torqcli | the person's | Rust | Shows proposals, diffs and the ledger; a person approves at a terminal |
 
 There is no model runtime on the machine: the engine asks its maker's service itself. A local model returns
@@ -190,6 +191,13 @@ honoured). Failures and restores carry `restored: true|false` (ADR-008).
 2. Broker validates: diff applies cleanly, touches only allowed paths for its tier, tier ≤ allowed.
    Paths are what the diff actually changes (applied to a scratch index): both sides of a
    rename, raw names — so renames, deletions and quoted names cannot dodge the forbidden tier.
+   An agent's proposal that passed is then checked (ADR-056): an agent's account is refused at the Nix
+   daemon, so its torqcli evaluates nothing; the broker writes the scratch index as a git tree and has
+   `torq --check-tree <tree>` evaluate it as the account `torq-check`, the broker's lock let go meanwhile
+   and everything vetted again after. Valid: recorded, with the tree and the warnings. Not valid (and the
+   configuration as it is valid): refused, ledgered, one plain line back. Could not be checked: recorded,
+   and the agent and the person are both told. A person's own change is checked by their own torqcli, as
+   before.
 3. Preview shown; approval collected (torqcli at a terminal, or the desktop's dialog). Who approves is the uid the kernel reports on the broker's socket, never a flag; `--approved-by` is taken only on the root recovery path (`sudo torq-broker`).
 4. `apply` — snapshot data (ADR-038), commit, build and switch, ledger append, push and anchor
    (ADR-036). (Signing on the machine is not the defence — ADR-035; the anchor is.)

@@ -143,6 +143,14 @@ One consistent deletion, so nothing dead is left behind.
 - [x] The tests and documents that describe them (ADR-041, 042, 051 amended; AI-LAYER.md rewritten).
       (`tests/doctor.nix` deleted; `agent-proposals`, `agent-mcp`, `agents-per-person`, `agent-assertions`,
       `agent-units` rewritten or edited: which of them ran is below.)
+- [x] **Found on the laptop (2026-11-16, the real Claude Code): no agent could propose anything on a real
+      machine.** A proposal was torqcli's commit as the agent, which evaluates the change (`nix eval`), and the
+      Nix daemon refuses an agent's account, by design. No test saw it: no VM evaluated a real
+      configuration. Added (ADR-056, KNOWN-GAPS 6zzv): the agent's torqcli evaluates nothing; the broker has
+      the change checked by `torq --check-tree` as the locked account `torq-check`, in a unit of its own,
+      and records it as valid, refuses it as not valid, or records it as not checked and tells the agent and
+      the person. The agent stays refused at the daemon. (Built; the crates' unit tests and the VM test
+      `agent-check`, with a real evaluation, ran: below. Not seen on the laptop yet.)
 - [ ] One full check.
 
 ### Phase 3: the model proxy and the audit
@@ -390,3 +398,39 @@ Kimi); a person's own Claude Code outside the fence.
     Every check of the flake evaluates. Not run: `nix flake check`; `desktop-agent` and every other VM test
     (not edited); anything on a machine with rules or a ledger from before (the wire crate's units and the
     broker's fixture stand in); anything on a desktop.
+- 2026-11-16, **an agent's proposal is checked by the broker's checker** (ADR-056, KNOWN-GAPS 6zzv; built on
+    `work/harness-p2`, not merged, no full check). Found on the owner's laptop with the real Claude Code: no
+    agent could propose anything on a real machine (torqcli's commit as the agent ran `nix eval`, and the Nix
+    daemon refuses an agent's account). Now the agent's torqcli evaluates nothing; the broker, after its own
+    vetting, has the git tree the change leaves evaluated by `torq --check-tree` as the locked account
+    `torq-check` in a unit of its own, and records the proposal as valid, refuses it as not valid, or records
+    it as not checked and tells the agent and the person. The agent stays refused at the daemon; `torq-check`
+    is the one account added to `allowed-users` (never trusted).
+- **What was run for it** (2026-11-16, the check host, on `work/harness-p2`). Unit tests, each crate's
+    whole suite: torqcli 505, broker 334 (across its test binaries, `trust_loop` among them; 10 of them the
+    new `tests/check.rs`, with stand-in checkers), wire 24, secrets 15, agent 59 (+2 ignored). TorqOS
+    Settings: type-checked, not started (the Proposals page's new line has been drawn nowhere). Every check
+    of the flake evaluates (38: `agent-check` is new). VM tests, one at a time: `agent-check` (new) passed,
+    4 subtests, on its third run (the first stopped at an expectation of the test's own, the list of trusted
+    users written twice; the second at torqcli itself refusing, before anything is proposed, a name that is
+    no package at all, so the test now names one only the evaluation knows is none); `agent-proposals`
+    (7 subtests), `agent-mcp` (6) and `agent-service` (27) each passed on their second run (the first of
+    each stopped where the first proposal's check took half a minute: with the little room a test VM's store
+    has, Nix collected garbage before each check; they set `nix.settings.min-free = 0` now, as the image's
+    test does). In `agent-check` the evaluation is real and offline: the first check took 78 seconds in the
+    VM (29 of CPU, a gigabyte at its peak), and 4 minutes 10 in the run before, with `fsync-store-paths` on,
+    which the test turns off for its VM. Each guard was broken once and a test seen to fail, then put back.
+    In the VM test: the agent's account added to `allowed-users` ((a) fails at the list, and with that
+    assertion out too, at the agent's `nix store info` succeeding); the checker's verdict thrown away
+    ((b)'s refusal). In the broker's units: the check started before the policy's vetting, the broker's lock
+    held through the check, the tree's comparison dropped, the refusals' gate dropped, `--check-cmd` taken
+    from a caller, the configuration as it is not asked before "not valid", the checker's output read
+    without a bound, and a "not valid" recorded instead of refused (that one fails the broker's own tests
+    when its package is built, before any VM starts). In torqcli: the agent's commit evaluating first, and
+    the checker answering "not valid" for what kept it from evaluating at all. On the check host itself the
+    final unit's properties were run with the real `torq --check-tree` on this machine's own configuration
+    (as the user `viper`: there is no `torq-check` here; the account's place at the daemon is the VM test's):
+    `{"ok":true,"warnings":[…]}` in 15.7 seconds, a gigabyte at its peak, nothing dropped from the list; and
+    on a tree with a package that does not exist, `{"ok":false,"why":"\"nosuch-package-xyz\" isn't a
+    package."}` in 5 seconds. Not run: `nix flake check`; every other VM test; anything on the laptop, where
+    the fault was found; two agents proposing at once; a machine whose TorqOS comes from a folder in a home.

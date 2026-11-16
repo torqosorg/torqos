@@ -1200,7 +1200,9 @@ Its §5 lists claims without a test.
      of a listed option are caught only where listed.
    - **`tests/agent-proposals.nix` ran green in CI** (the v0.3.2 release run). No VM test runs the
      doctor's own propose step (torqcli's commit as the agent evaluates the configuration, which the
-     test VM cannot): it is covered by the agent crate's tests, with torqcli stubbed.
+     test VM cannot): it is covered by the agent crate's tests, with torqcli stubbed. *(2026-11-16: this gap
+     hid a real fault. On a real machine an agent's account is refused at the Nix daemon, so that commit
+     never worked: ADR-056, item 6zzv. One VM test now evaluates a real configuration, `tests/agent-check.nix`.)*
    - **Sessions share one budget.** At most 600 are started an hour and 2000 records kept (the oldest
      go; a proposal naming a gone one is refused). The doctor's and any other agent program's are one
      account's, so no separate budget by uid: a program run as the agent can keep the doctor from
@@ -1574,7 +1576,9 @@ Its §5 lists claims without a test.
    - **The service needs doctor mode on** (its harness and model are the doctor's): without it there is no
      socket, and `torq ask` says so.
    - **The VM test's proposal is made by a stand-in torqcli** (its commit evaluates the configuration, which
-     a VM test cannot: 6zn's); the doctor, its session, the broker and the ledger are the real ones.
+     a VM test cannot: 6zn's); the doctor, its session, the broker and the ledger are the real ones. *(Since
+     ADR-056 an agent's torqcli evaluates nothing, and `tests/agent-check.nix` runs the real one on a real
+     configuration; these tests' repos are still stubs, so their stand-in stays: 6zzv.)*
 
 6zzm. **The agent's applet, window and Agent page (ADR-051 4, step 3, built 2026-11-10, `tests/desktop-agent.nix`).** Open:
    - **The window's single-instance name is first come, first served.** `torq-agent-ui` holds
@@ -1931,3 +1935,50 @@ Its §5 lists claims without a test.
    - **The panel takes the change at once** (cosmic-panel watches its configuration and restarts applets when
      `plugins_wings` changes: `cosmic-panel-bin/src/space_container/space_container.rs`), in the running session; cosmic-comp
      likewise watches the shortcut keys. Not seen on a desktop; the VM test is to show it.
+
+6zzv. **An agent's proposal is checked by the broker's checker (ADR-056, built 2026-11-16 on `work/harness-p2`;
+  what was run is in `docs/HARNESS-AS-A-SYSTEM.md`).** Before it, no agent could propose anything on a real
+  machine: torqcli's commit as the agent ran `nix eval`, and the Nix daemon refuses an agent's account (seen on
+  the owner's laptop with the real Claude Code). No test saw it because no VM evaluated a real configuration
+  (6zn). Now the agent's torqcli evaluates nothing; the broker has the change evaluated as the locked account
+  `torq-check`, in a unit of its own, on the git tree its vetting made, and records the proposal as valid,
+  refuses it as not valid, or records it as not checked and says so to the agent and the person.
+  `tests/agent-check.nix` evaluates a real configuration in a VM, offline. What remains:
+   - **A person who is not an administrator cannot commit on a real machine.** Their own torqcli evaluates
+     their change, and the daemon admits only root, the administrators and `torq-check`: "cannot open
+     connection to remote store". The VM test records it (`nix store info` as a non-administrator fails). Not
+     changed here: it needs its own decision (their commit checked by the broker's checker too, or the people
+     the configuration declares admitted to the daemon).
+   - **`torq-check` may talk to the Nix daemon.** Allowed, not trusted; what that gives and what bounds it is
+     ADR-056 5: the bound is the policy (an agent's change is JSON data in the person's packages and the
+     subtrees the owner listed), not the daemon. `allow-import-from-derivation` stays on (TorqOS's own
+     `modules/host.nix` reads tzdata while it evaluates). A build the daemon starts during an evaluation is
+     outside the unit's time and memory limits.
+   - **A `path:` source under a home** (a development machine) is hidden from the checker (`ProtectHome`): the
+     evaluation works while the store holds that source under the lock's hash, and otherwise every proposal
+     there is "not checked". Not seen on such a machine.
+   - **The checker's errors are kept nowhere.** A proposal "not checked" says why in the broker's words (no
+     checker, not started, not in time, no answer, the configuration as it is fails too), not Nix's: to see
+     Nix's, an administrator runs `torq --check-tree <tree>` themselves (the tree is in the proposal's entry).
+   - **One check at a time for the whole machine.** A second agent's proposal waits 30 seconds for its turn
+     and is then told to try again. No test holds two at once.
+   - **A proposal applied on a moved configuration (ADR-053) was checked on the one it was prepared on.**
+   - **Each check leaves a copy of the config repo and the system's derivations in the store**, as a person's
+     commit does, until a garbage collection.
+   - **An agent's `request system update`** still runs `nix flake update` as the agent and says Nix's own
+     error (it is not one of torq-mcp's tools, and an update is not an agent's to propose).
+   - **torqcli's own word for a name that is no package** (`set … packages nosuch`: "is not a package in
+     this machine's nixpkgs (`show packages <word>` searches them)") is the same for an agent; its search
+     answers by name only (the names torqcli has, no descriptions).
+   - **The other agent VM tests still use stub repos**: the real checker runs there on every proposal and
+     finds the stub not valid as it is, so each is recorded "not checked", which those tests do not assert.
+   - **Where the store has less free room than `min-free`** (1 GiB by default) Nix collects garbage before it
+     adds anything, a check's copy of the config repo included: in a test VM that took half a minute for each
+     check, and the three agent VM tests set `nix.settings.min-free = 0` for it. On a real machine that
+     short of room a check is as slow as any other use of Nix there, and a slow check ends as "not checked".
+   - **In a VM the evaluation is slow**: 78 seconds for the first check in `tests/agent-check.nix` (29 of
+     CPU; the store is read over 9p), against about 16 on the check host. With `fsync-store-paths` on, as
+     TorqOS sets it, it took 4 minutes 10 there, near the unit's 300 seconds, so the test turns it off for
+     its VM. On a slow disk a real machine's first check after an update could come near the limit too: it
+     would be recorded "not checked", not refused.
+   - **Not seen on the laptop** with the real Claude Code, where the fault was found.

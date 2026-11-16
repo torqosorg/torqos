@@ -165,8 +165,19 @@ Hardware guidance: integrated-graphics machines are lowest risk for removing Mic
 - No display server in the base; the opt-in desktop (COSMIC) adds one.
 - Minimal enabled services. TorqOS's own services are not yet sandboxed beyond what systemd does by
   default (`torq-broker-init` only; audit N5).
-- `nix.settings.allowed-users` is root and wheel: the owner can build anything, and root can switch
-  by hand (drift, reported, not prevented). Only the broker *ledgers* a switch.
+- `nix.settings.allowed-users` is root, wheel and `torq-check`: the owner can build anything, and root can
+  switch by hand (drift, reported, not prevented). Only the broker *ledgers* a switch. An agent's account is
+  refused by the daemon, and so is a person who is no administrator (`tests/agent-check.nix`).
+- `torq-check` is the account an agent's proposal is evaluated as (ADR-056): the one account besides root and
+  the administrators that the Nix daemon answers, because an evaluation needs it. Allowed, never trusted
+  (asserted); no home, no shell, no password, no group but its own; nothing runs as it but the broker's
+  check, in a transient unit with no capabilities, no network, a read-only system, no home and bounded
+  memory, tasks and time. An allowed client can add files to the store and have the daemon build a
+  derivation it describes; what the checker is given is an agent's change, which the broker's policy admits
+  only as JSON data (package names for its person, values in the subtrees the owner listed), so the
+  agent describes no derivation. That bound is the policy's, not the daemon's: listing a subtree whose values
+  become scripts widens it. Not chosen: a private store for the checker with no daemon at all (491 MB a
+  machine, and a seeding step at every change of the lock).
 - The boot menu's entries cannot be edited (systemd-boot's editor off, `modules/security.nix`): a
   kernel command line typed at boot is a root shell. A system-tier commit can turn it on,
   ledgered. Checked on the disk the installer writes (`tests/installer.nix`) until the
