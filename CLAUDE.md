@@ -210,9 +210,10 @@ removed since phase 2; the agent as it is now (ADR-055) is unreleased.
   Each use of a secret by an agent asks its
   person, unless the secret's rule says `without-asking` or a grant of that one secret covers it (ADR-052,
   amended 2026-11-16: two words, one kind of grant; a person reads no word about taint or sessions for it).
-- **Tests.** Unit tests are `#[test]` functions: torqcli 506, broker 339 (across its test binaries), wire 24,
-  secrets 15, agent 59 (+2 ignored) (run 2026-11-16 on `work/harness-p2`, after phase 2 removed the old loop
-  and its tests, after secrets were reduced to what they do, and after ADR-056 and its fix round). The
+- **Tests.** Unit tests are `#[test]` functions: torqcli 506, broker 341 (across its test binaries), wire 28,
+  secrets 15, agent 60 (+2 ignored), torq-model-proxy 49 (+1 ignored, by hand) (broker, wire, secrets, agent and
+  the proxy run 2026-11-17 on `work/harness-p3`, after the security reader's round of ADR-057; torqcli as of
+  2026-11-16 on `work/harness-p2`). The
   `settings/` crate has no tests of its own; it is type-checked with `nix develop .#torq-settings`.
   VM tests are `checks` in `flake.nix`, one file each in `tests/`. CI's `test` workflow runs on pull
   requests, by hand and inside each release, **not on pushes to `main`**, and GitHub does not run the

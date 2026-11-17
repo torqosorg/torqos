@@ -176,11 +176,22 @@ pkgs.testers.runNixOSTest {
     machine.wait_until_succeeds(f"loginctl show-session {console} -p Active --value | grep -qx yes", timeout=30)
     assert machine.succeed(f"loginctl show-session {console} -p Remote --value").strip() == "no"
 
+    # polkit up before anything asks it (it is started on demand, and slowly in a test machine), and dev's shell
+    # ready for what is typed (a sum only her shell works out).
+    machine.succeed("systemctl start polkit.service")
+    machine.wait_for_unit("polkit.service")
+    machine.send_chars("echo ready-$((40 + 2))\n")
+    machine.wait_until_tty_matches("1", "ready-42", timeout=90)
+
     def at_console(line, done):
-        """`line` typed at dev's console; then waits for the file `done`."""
+        """`line` typed at dev's console; then waits for the file `done` (and shows the console if it never comes)."""
         machine.succeed(f"rm -f {done}")
         machine.send_chars(line + f"; touch {done}\n")
-        machine.wait_for_file(done, timeout=60)
+        try:
+            machine.wait_for_file(done, timeout=120)
+        except Exception:
+            print(machine.get_tty_text("1"))
+            raise
 
     logind = "busctl call org.freedesktop.login1 /org/freedesktop/login1 org.freedesktop.login1.Manager"
 
@@ -205,7 +216,7 @@ pkgs.testers.runNixOSTest {
         machine.send_chars(f"sudo setpriv --reuid=torq-agent-dev --regid=torq-agent-dev --clear-groups {logind} SetUserLinger ubb $(id -u torq-agent-dev) true false > /tmp/rule-linger 2>&1; echo exit $? >> /tmp/rule-linger; touch /tmp/rule-done\n")
         machine.wait_until_tty_matches("1", "password for dev")
         machine.send_chars("Torq-sock-2210\n")
-        machine.wait_for_file("/tmp/rule-done", timeout=60)
+        machine.wait_for_file("/tmp/rule-done", timeout=120)
         rule = machine.succeed("cat /tmp/rule-linger")
         assert "exit 0" not in rule and "Access denied" in rule, rule
         machine.fail("test -e /var/lib/systemd/linger/torq-agent-dev")
