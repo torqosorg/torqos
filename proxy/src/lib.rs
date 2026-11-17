@@ -66,6 +66,11 @@ pub const MAX_CONNECTIONS_EACH: usize = 2 * MAX_AT_ONCE;
 /// hold one more, out to the model or a site: twice this stays well under the unit's limit of open files
 /// (`LimitNOFILE`, 8192, modules/model-proxy.nix).
 pub const MAX_CONNECTIONS: usize = 2048;
+/// How much the record may hold at once, in bytes, every agent's requests under way together (`read::Budget`):
+/// what is kept of each request's body and of each answer to be read. A quarter of the unit's memory limit
+/// (`MemoryMax`, 2 GiB, modules/model-proxy.nix), leaving room for reading what is held (a request's parts are read
+/// at its end, one message at a time) and for everything else. Past it, what comes is passed on unread, and said.
+pub const RECORD_BUDGET: usize = 512 * 1024 * 1024;
 
 /// The bounds a caller's connections are held to: `HEAD_WAIT`, `MAX_CONNECTIONS_EACH`, `MAX_CONNECTIONS`
 /// (smaller in tests).
@@ -209,6 +214,10 @@ pub struct Proxy {
     pub limits: Limits,
     /// The connections open now.
     pub open: Mutex<Open>,
+    /// What the record holds at once, every request under way together (`RECORD_BUDGET`).
+    pub budget: read::Budget,
+    /// What each conversation sent before (a change of what came before, of the engine's instructions).
+    pub conversations: Mutex<read::Conversations>,
 }
 
 /// Words of the proxy's own, as an answer.
@@ -410,7 +419,7 @@ impl Proxy {
         if messages && packed {
             line.unread.push("the request was not read: its body was compressed".to_string());
         }
-        let asked = Arc::new(Mutex::new(read::Asked::new(messages && !packed)));
+        let asked = Arc::new(Mutex::new(read::Asked::new(messages && !packed, &self.budget)));
         for h in HOP {
             parts.headers.remove(h);
         }
@@ -425,7 +434,7 @@ impl Proxy {
                 let (mut parts, body) = answer.into_parts();
                 job.line.status = Some(parts.status.as_u16());
                 let said = |h| parts.headers.get(h).and_then(|v: &HeaderValue| v.to_str().ok());
-                let reading = read::Answer::new(messages, said(CONTENT_TYPE), said(CONTENT_ENCODING));
+                let reading = read::Answer::new(messages, said(CONTENT_TYPE), said(CONTENT_ENCODING), &self.budget);
                 for h in HOP {
                     parts.headers.remove(h);
                 }
@@ -454,14 +463,19 @@ impl Job {
     fn finish(mut self, outcome: Outcome, answer: Option<read::Answer>) {
         self.line.outcome = outcome;
         self.line.ms = self.started.elapsed().as_millis() as u64;
-        {
+        let shape = {
             let asked = self.asked.lock().unwrap_or_else(|e| e.into_inner());
             self.line.sent = asked.sent;
-            asked.read_into(&mut self.line);
-        }
+            asked.read_into(&mut self.line)
+        };
         if let Some(a) = answer {
             a.read_into(&mut self.line);
         }
+        // Set against what its conversation sent before: the instructions the same as last time (their text then
+        // left out), and for a turn of the conversation itself (not a count of its tokens, say), what came before
+        // changed.
+        let turn = self.line.method == "POST" && self.line.path == "/v1/messages";
+        self.proxy.conversations.lock().unwrap_or_else(|e| e.into_inner()).compare(&mut self.line, shape, turn);
         let person = self.line.person.clone();
         self.proxy.recorder.write(&person, Line::Request(self.line));
     }
@@ -595,6 +609,8 @@ fn start(settings: &Path) -> Result<(), String> {
         busy: Mutex::default(),
         limits: Limits::default(),
         open: Mutex::default(),
+        budget: read::Budget::new(RECORD_BUDGET),
+        conversations: Mutex::default(),
     });
     let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().map_err(|e| e.to_string())?;
     let listener = inherited(listenfd::ListenFd::from_env().take_tcp_listener(0), port)?;

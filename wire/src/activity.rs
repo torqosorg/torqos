@@ -105,6 +105,16 @@ pub struct Request {
     /// The service's own words for an error, where the answer was one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    /// The engine's instructions to its model (the request's `system` field, its "system prompt"), as sent: its
+    /// length and a fingerprint on every request, so that a change shows; its text (cut to `MAX_TEXT`) where it is
+    /// text and new, on a conversation's first request the proxy saw and whenever it changed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub system: Option<System>,
+    /// Whether this request changed what came before in its conversation: what it holds before the model's last
+    /// message is not what the same conversation (and helper) sent before. The engine keeps a conversation and
+    /// sends it whole each time; a part of it rewritten or put in is not in `new`, and this says that it happened.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub rewritten: bool,
     /// What was new in the conversation in this request: the parts of each message after the model's last one
     /// (the person's question, or each tool's result; a message of the engine's own by its kind only).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -118,6 +128,21 @@ pub struct Request {
     /// Each part that was passed on but not read for the record, and why, in plain words.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub unread: Vec<String>,
+}
+
+/// A request's `system` field, the engine's instructions to its model.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct System {
+    /// Its length in bytes: of its text where it is text, of the field as sent where it is not.
+    pub bytes: u64,
+    /// SHA-256 of the field as sent (its marks for the service's cache left out, which move from one request to
+    /// the next), in hex: the same instructions have the same fingerprint.
+    pub sha256: String,
+    /// Its text, where it is text and was not the same on the conversation's request before.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cut_from: Option<u64>,
 }
 
 /// How a request ended.
@@ -187,6 +212,15 @@ pub enum Item {
     ToolCall {
         tool: String,
         input: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cut_from: Option<u64>,
+    },
+    /// A document given to the model whose content is text (a `document` block whose source is plain text): its
+    /// title where it has one, and its text.
+    Document {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        title: Option<String>,
+        text: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         cut_from: Option<u64>,
     },
@@ -320,6 +354,32 @@ mod tests {
         let s = serde_json::to_string(&e).unwrap();
         assert_eq!(s, r#"{"v":1,"kind":"request","time":"2026-11-16T09:00:00Z","ms":1200,"agent":"torq-agent-alice","person":"alice","session":"s-1","method":"POST","path":"/v1/messages","model":"m","outcome":"complete","status":200,"sent":10,"received":20,"tokens":{"input":1,"cache_read":2,"cache_write":3,"output":4},"stop":"tool_use","new":[{"kind":"tool-result","tool":"Bash","text":"ok"}],"answer":[{"kind":"text","text":"hi","cut_from":9000},{"kind":"tool-call","tool":"Read","input":"{}"},{"kind":"other","what":"thinking"}]}"#);
         assert_eq!(serde_json::from_str::<Entry>(&s).unwrap(), e, "and read back the same");
+    }
+
+    /// What was added on 2026-11-17 (the engine's instructions, a conversation rewritten, a document's text): new
+    /// fields that a line without them still reads as before, so every line written earlier reads the same.
+    #[test]
+    fn the_instructions_a_rewrite_and_a_document_are_these_bytes_and_older_lines_still_read() {
+        let e = Entry {
+            v: VERSION,
+            line: Line::Request(Request {
+                time: "t".into(),
+                agent: "torq-agent-alice".into(),
+                person: "alice".into(),
+                method: "POST".into(),
+                path: "/v1/messages".into(),
+                system: Some(System { bytes: 5, sha256: "ab".into(), text: Some("be ok".into()), cut_from: None }),
+                rewritten: true,
+                new: vec![Item::Document { title: Some("notes".into()), text: "words".into(), cut_from: None }],
+                ..Default::default()
+            }),
+        };
+        let s = serde_json::to_string(&e).unwrap();
+        assert_eq!(s, r#"{"v":1,"kind":"request","time":"t","ms":0,"agent":"torq-agent-alice","person":"alice","method":"POST","path":"/v1/messages","outcome":"complete","sent":0,"received":0,"system":{"bytes":5,"sha256":"ab","text":"be ok"},"rewritten":true,"new":[{"kind":"document","title":"notes","text":"words"}]}"#);
+        assert_eq!(serde_json::from_str::<Entry>(&s).unwrap(), e);
+        let older = r#"{"v":1,"kind":"request","time":"t","ms":0,"agent":"a","person":"p","method":"POST","path":"/v1/messages","outcome":"complete","sent":0,"received":0}"#;
+        let Line::Request(r) = serde_json::from_str::<Entry>(older).unwrap().line else { panic!("a request") };
+        assert!(r.system.is_none() && !r.rewritten);
     }
 
     #[test]

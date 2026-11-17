@@ -32,6 +32,8 @@ flate2 = { version = "1", default-features = false, features = ["rust_backend"] 
 listenfd = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["raw_value"] }
+# The fingerprints of what a request held (the engine's instructions, the conversation before its new part): a change shows.
+sha2 = "0.10"
 # The record's words (ADR-044), shared with torqcli.
 torq-wire = { path = "../wire" }
 

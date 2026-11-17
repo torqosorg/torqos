@@ -154,6 +154,8 @@ async fn proxy_within(model: SocketAddr, an_agent: bool, policy: Policy, dial: D
         busy: Mutex::default(),
         limits,
         open: Mutex::default(),
+        budget: torq_model_proxy::read::Budget::new(torq_model_proxy::RECORD_BUDGET),
+        conversations: Mutex::default(),
     });
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let at = listener.local_addr().unwrap();
@@ -336,6 +338,8 @@ async fn a_service_whose_certificate_no_authority_signed_is_not_spoken_to() {
         busy: Mutex::default(),
         limits: Limits::default(),
         open: Mutex::default(),
+        budget: torq_model_proxy::read::Budget::new(torq_model_proxy::RECORD_BUDGET),
+        conversations: Mutex::default(),
     });
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     p.at = listener.local_addr().unwrap();
@@ -705,6 +709,8 @@ async fn by_hand() {
         busy: Mutex::default(),
         limits: Limits::default(),
         open: Mutex::default(),
+        budget: torq_model_proxy::read::Budget::new(torq_model_proxy::RECORD_BUDGET),
+        conversations: Mutex::default(),
     });
     proxy.serve(TcpListener::bind(("127.0.0.1", port)).await.unwrap()).await.unwrap();
 }
