@@ -199,7 +199,10 @@ let
       # Unix sockets (the broker), the network (the engine's own service), and netlink (a program reads the
       # machine's interfaces through it: torq-mcp's `ip` and `iw`, the engine's runtime).
       RestrictAddressFamilies = [ "AF_UNIX" "AF_INET" "AF_INET6" "AF_NETLINK" ];
-      SystemCallFilter = [ "@system-service" ];
+      # Not io_uring: a socket it makes is of any family (its own operation, not the `socket` call that
+      # RestrictAddressFamilies filters), a way past the fence (the controller's review, 2026-11-17). A program
+      # refused it does what it does where the kernel has none.
+      SystemCallFilter = [ "@system-service" "~io_uring_setup io_uring_enter io_uring_register" ];
       SystemCallErrorNumber = "EPERM";
       SystemCallArchitectures = "native";
       # Not PrivateUsers: in a user namespace of its own, SO_PEERCRED would name every caller nobody.

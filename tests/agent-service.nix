@@ -160,6 +160,8 @@ pkgs.testers.runNixOSTest {
         assert got == want, got
         text = machine.succeed(f"systemctl cat {unit}")
         assert "@system-service" in text, "its system calls filtered"
+        calls = prop("SystemCallFilter")
+        assert "socket" in calls.split() and not any(c.startswith("io_uring") for c in calls.split()), "no io_uring (a socket of any family past RestrictAddressFamilies)"
         assert f"ReadWritePaths={home}\n" in text and text.count("ReadWritePaths=") == 1, "its own home, and nothing else, to write"
         assert "InaccessiblePaths=-/run/credentials\n" in text and "Credential=" not in text, text
         assert re.search(r"^ExecStart=/nix/store/\S+/bin/torq-agent-service alice claude-code$", text, re.M), text

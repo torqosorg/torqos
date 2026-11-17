@@ -2078,7 +2078,9 @@ Its §5 lists claims without a test.
      turn on lingering for itself, power off, use NetworkManager); no agent account lingers; the proxy reads
      nothing from a caller that is not an agent, gives a request's head 30 seconds, and bounds connections
      (128 an agent, 2048 in all); the record's parts go on past 999 in a day, in order; `torq agent run`
-     allows the socket families the agent's service allows (unix, IPv4, IPv6, netlink); under the web
+     allows the socket families the agent's service allows (unix, IPv4, IPv6, netlink), and neither allows
+     io_uring (its own operation makes a socket of any family past both filters; found in the controller's
+     review of the fix round); under the web
      setting the machine's own addresses and networks, NAT64, 6to4 and IPv4-compatible forms, 198.18/15,
      fec0::/10 and 240/4 are refused; the `web` setting says the model can be reached by its address past the
      record, and the model's refusal does not tell the agent how it would be opened.

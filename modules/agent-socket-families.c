@@ -33,6 +33,12 @@ int main(void) {
         if (!is_allowed(family))
             rc |= seccomp_rule_add(ctx, SCMP_ACT_ERRNO(EAFNOSUPPORT), SCMP_SYS(socket), 1, SCMP_A0(SCMP_CMP_EQ, family));
     rc |= seccomp_rule_add(ctx, SCMP_ACT_ERRNO(EAFNOSUPPORT), SCMP_SYS(socket), 1, SCMP_A0(SCMP_CMP_GT, AF_NETLINK));
+    /* And no io_uring: it makes a socket of any family by an operation of its own, never through the `socket`
+     * call above (the controller's review, 2026-11-17). Refused as the agent's service refuses it (EPERM); a
+     * program then does what it does where the kernel has none. */
+    rc |= seccomp_rule_add(ctx, SCMP_ACT_ERRNO(EPERM), SCMP_SYS(io_uring_setup), 0);
+    rc |= seccomp_rule_add(ctx, SCMP_ACT_ERRNO(EPERM), SCMP_SYS(io_uring_enter), 0);
+    rc |= seccomp_rule_add(ctx, SCMP_ACT_ERRNO(EPERM), SCMP_SYS(io_uring_register), 0);
     if (rc != 0 || seccomp_export_bpf(ctx, STDOUT_FILENO) != 0) {
         fprintf(stderr, "agent-socket-families: the filter could not be made\n");
         return 1;

@@ -83,7 +83,8 @@ an agent account:
   an agent while that rule is not loaded: the agent's service and `torq agent run` look at the rule itself,
   not only at its unit, and stopping the fence ends every program running as an agent. Under `torq agent
   run` an agent may open only the kinds of socket the fence covers (unix, IPv4, IPv6, netlink), as in its
-  service: not one to the hypervisor (AF_VSOCK), Bluetooth or the like.
+  service: not one to the hypervisor (AF_VSOCK), Bluetooth or the like. Neither may use io_uring, which
+  makes sockets of any kind past that filter.
 - **An agent is never the person at the machine.** polkit refuses every agent account every action, and
   `torq agent run` runs outside the person's login session: an agent cannot power the machine off, change
   its network through NetworkManager, or turn on lingering for itself (which would give it a user manager

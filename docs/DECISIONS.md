@@ -3896,7 +3896,10 @@ content at the next), and a proposal must be judged on what it does, not on what
        `RestrictAddressFamilies` refuses them. The fence covers IPv4 and IPv6 only: a socket to the hypervisor
        (AF_VSOCK), Bluetooth, TIPC or RDS was a way out past it. A transient unit with the property was the
        alternative: it cannot keep the terminal and the shared directory's descriptor as `torq agent run`
-       does.
+       does. **Neither the filter nor the agent's service allows io_uring** (`io_uring_setup`, `_enter`,
+       `_register`, refused with `EPERM`): its own operation makes a socket of any family without the
+       `socket` call that both filters judge, and systemd's `@system-service` allows it (found in the
+       controller's review of the fix round).
      - **Under the web setting, more addresses are the machine's own network**: the machine's own addresses
        and every network it is on directly (read from the kernel's tables at each connection, so a public
        network a server sits on is not opened to the agents with the web), 198.18.0.0/15, fec0::/10,

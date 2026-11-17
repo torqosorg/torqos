@@ -163,6 +163,11 @@ pkgs.testers.runNixOSTest {
         assert "Address family not supported" in out, out
         for family in ["AF_UNIX", "AF_INET", "AF_INET6", "AF_NETLINK"]:
             assert "made" in agent(f"python3 -c {shlex.quote(made)} {family}"), family
+        # Nor io_uring, whose own operation makes a socket of any family past that filter (425: io_uring_setup).
+        ring = "import ctypes, os; c = ctypes.CDLL(None, use_errno=True); p = ctypes.create_string_buffer(120); fd = c.syscall(425, 1, p); print('ring' if fd >= 0 else 'refused ' + os.strerror(ctypes.get_errno()))"
+        assert "ring" in as_dev(f"python3 -c {shlex.quote(ring)}"), "the control: io_uring for dev"
+        out = agent(f"python3 -c {shlex.quote(ring)}")
+        assert "refused Operation not permitted" in out, out
 
     # dev at the machine's console: a real session of logind's, local and active, as at a desktop.
     # (The kernel writes to that console too, so its first prompt may have scrolled away: asked for again.)
