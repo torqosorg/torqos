@@ -15,7 +15,7 @@ use tokio_rustls::rustls::pki_types::pem::PemObject;
 use tokio_rustls::rustls::pki_types::{CertificateDer, PrivateKeyDer};
 use tokio_rustls::rustls::ServerConfig;
 use tokio_rustls::TlsAcceptor;
-use torq_model_proxy::{agents_by_uid, policy::Policy, record, tls, Agent, Dial, Proxy, Upstream};
+use torq_model_proxy::{agents_by_uid, policy::Policy, record, tls, Agent, Dial, Limits, Proxy, Upstream};
 use torq_wire::activity::{Entry, Item, Line, Outcome, Tokens, Why};
 
 fn fixture(name: &str) -> PathBuf {
@@ -135,6 +135,11 @@ struct Running {
 
 /// The proxy, with this test's account as alice's agent (or as no one's), the model at `model`.
 async fn proxy(model: SocketAddr, an_agent: bool, policy: Policy, dial: Dial) -> Running {
+    proxy_within(model, an_agent, policy, dial, Limits::default()).await
+}
+
+/// The same, within `limits`.
+async fn proxy_within(model: SocketAddr, an_agent: bool, policy: Policy, dial: Dial, limits: Limits) -> Running {
     let record = tempfile::tempdir().unwrap();
     for person in ["alice", "bob"] {
         std::fs::create_dir(record.path().join(person)).unwrap();
@@ -147,6 +152,8 @@ async fn proxy(model: SocketAddr, an_agent: bool, policy: Policy, dial: Dial) ->
         recorder: record::Recorder::new(record.path().into(), record::Bounds::default()),
         dial,
         busy: Mutex::default(),
+        limits,
+        open: Mutex::default(),
     });
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let at = listener.local_addr().unwrap();
@@ -327,6 +334,8 @@ async fn a_service_whose_certificate_no_authority_signed_is_not_spoken_to() {
         recorder: record::Recorder::new(p.record.path().into(), record::Bounds::default()),
         dial: dial_to(None),
         busy: Mutex::default(),
+        limits: Limits::default(),
+        open: Mutex::default(),
     });
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     p.at = listener.local_addr().unwrap();
@@ -543,6 +552,100 @@ async fn an_agent_has_only_so_much_under_way_at_once() {
     assert!(tokio::time::timeout(Duration::from_millis(300), got.recv()).await.is_err());
 }
 
+/// Everything that comes back on `c` until the proxy closes it, or None if it is still open after `wait`.
+async fn until_closed(c: &mut TcpStream, wait: Duration) -> Option<Vec<u8>> {
+    let mut back = Vec::new();
+    tokio::time::timeout(wait, async {
+        let mut piece = [0u8; 4096];
+        loop {
+            match c.read(&mut piece).await {
+                Ok(0) | Err(_) => return,
+                Ok(n) => back.extend_from_slice(&piece[..n]),
+            }
+        }
+    }).await.ok().map(|()| back)
+}
+
+/// Bounds small enough to reach in a test.
+fn small(head_wait: Duration, each: usize, all: usize) -> Limits {
+    Limits { head_wait, each, all }
+}
+
+/// A caller that is not an agent is answered and closed at once: nothing is read from it, nothing waited for
+/// (the security reader, 2026-11-17: it held a connection, and hyper's state, for as long as it liked).
+#[tokio::test]
+async fn a_caller_that_is_not_an_agent_is_closed_at_once_without_a_word_read() {
+    let (model, _got) = model("model.pem", "model.key", vec![]).await;
+    let p = proxy(model, false, closed(), dial_to(None)).await;
+    let mut c = TcpStream::connect(p.at).await.unwrap();
+    // Nothing sent: the answer comes all the same, and the connection ends.
+    let back = until_closed(&mut c, Duration::from_secs(5)).await.expect("closed at once, before anything was sent");
+    let (head, body) = parts(&back);
+    assert!(head.starts_with("HTTP/1.1 403 ") && String::from_utf8_lossy(&body).contains("the agents' accounts"), "{head}");
+}
+
+/// A request's head sent a byte at a time, never finished (slow loris): the connection is closed when the head
+/// has taken longer than its bound; and so is one kept open with nothing more asked on it.
+#[tokio::test]
+async fn a_head_that_never_ends_and_a_connection_left_idle_are_closed() {
+    let (model, _got) = model("model.pem", "model.key", vec![]).await;
+    let p = proxy_within(model, true, closed(), dial_to(None), small(Duration::from_millis(500), 8, 16)).await;
+    let mut c = TcpStream::connect(p.at).await.unwrap();
+    c.write_all(b"POST /v1/messages HTTP/1.1\r\nHost: x\r\n").await.unwrap();
+    let start = std::time::Instant::now();
+    let slow = async {
+        for _ in 0..50 {
+            if c.write_all(b"X").await.is_err() {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    };
+    tokio::time::timeout(Duration::from_secs(10), slow).await.unwrap();
+    assert!(until_closed(&mut c, Duration::from_secs(3)).await.is_some(), "closed");
+    assert!(start.elapsed() < Duration::from_secs(5), "within its bound, not when the caller stopped: {:?}", start.elapsed());
+    // A request answered, then nothing: the connection kept open is closed after the same bound.
+    let mut c = TcpStream::connect(p.at).await.unwrap();
+    c.write_all(b"CONNECT other.example:443 HTTP/1.1\r\nHost: other.example:443\r\n\r\n").await.unwrap();
+    let back = until_closed(&mut c, Duration::from_secs(5)).await.expect("closed once idle");
+    assert!(back.starts_with(b"HTTP/1.1 403 "), "{}", String::from_utf8_lossy(&back));
+}
+
+/// One agent has so many connections open at once, and all callers together so many: past either, a new one is
+/// refused and closed at once; within them, it is served.
+#[tokio::test]
+async fn connections_past_an_agents_bound_or_the_whole_bound_are_refused() {
+    let (model, _got) = model("model.pem", "model.key", vec![]).await;
+    let connect = b"CONNECT other.example:443 HTTP/1.1\r\nHost: other.example:443\r\nConnection: close\r\n\r\n";
+    for (each, all) in [(2, 16), (16, 2)] {
+        let p = proxy_within(model, true, closed(), dial_to(None), small(Duration::from_secs(30), each, all)).await;
+        let held: Vec<TcpStream> = held_open(p.at, 2).await;
+        let mut third = TcpStream::connect(p.at).await.unwrap();
+        let back = until_closed(&mut third, Duration::from_secs(5)).await.expect("refused at once");
+        let (head, body) = parts(&back);
+        assert!(head.starts_with("HTTP/1.1 503 ") && String::from_utf8_lossy(&body).contains("connections"), "({each}, {all}): {head}");
+        // One closed, and the next is served.
+        drop(held);
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        let (head, _) = ask(p.at, connect).await;
+        assert!(head.starts_with("HTTP/1.1 403 "), "served again ({each}, {all}): {head}");
+    }
+}
+
+/// `n` connections to `at`, held open, each seen by the proxy (it answered a request on it).
+async fn held_open(at: SocketAddr, n: usize) -> Vec<TcpStream> {
+    let mut held = Vec::new();
+    for _ in 0..n {
+        let mut c = TcpStream::connect(at).await.unwrap();
+        c.write_all(b"CONNECT other.example:443 HTTP/1.1\r\nHost: other.example:443\r\n\r\n").await.unwrap();
+        let mut piece = [0u8; 12];
+        tokio::time::timeout(Duration::from_secs(5), c.read_exact(&mut piece)).await.unwrap().unwrap();
+        assert_eq!(&piece, b"HTTP/1.1 403");
+        held.push(c);
+    }
+    held
+}
+
 #[tokio::test]
 async fn it_listens_on_this_machine_only() {
     let (model, _got) = model("model.pem", "model.key", vec![]).await;
@@ -599,6 +702,8 @@ async fn by_hand() {
         recorder: record::Recorder::new(record, record::Bounds::default()),
         dial: torq_model_proxy::outside(),
         busy: Mutex::default(),
+        limits: Limits::default(),
+        open: Mutex::default(),
     });
     proxy.serve(TcpListener::bind(("127.0.0.1", port)).await.unwrap()).await.unwrap();
 }

@@ -28,7 +28,7 @@ use http_body_util::{BodyExt, Empty, Full};
 use hyper::body::{Body, Frame, Incoming, SizeHint};
 use hyper::header::{HeaderValue, CONTENT_ENCODING, CONTENT_TYPE, HOST};
 use hyper::{Method, Request, Response, StatusCode, Version};
-use hyper_util::rt::TokioIo;
+use hyper_util::rt::{TokioIo, TokioTimer};
 use std::collections::{BTreeMap, HashMap};
 use std::future::Future;
 use std::io;
@@ -55,6 +55,40 @@ pub const AUTHORITIES: &str = "/etc/ssl/certs/ca-certificates.crt";
 pub const MAX_AT_ONCE: usize = 64;
 /// How long a connection out may take to be made.
 pub const CONNECT_WAIT: Duration = Duration::from_secs(30);
+/// How long a caller has to send a request's head (its first line and its headers), counted from when the
+/// proxy waits for one: on a new connection, and on one kept open after an answer. Past it, the connection is
+/// closed: a caller that sends nothing, or a byte at a time, holds nothing for longer (`Limits::head_wait`).
+pub const HEAD_WAIT: Duration = Duration::from_secs(30);
+/// How many connections one agent may have open to the proxy at once (`Limits::each`). Each request or site
+/// under way is one (`MAX_AT_ONCE`), with room for those being opened and closed.
+pub const MAX_CONNECTIONS_EACH: usize = 2 * MAX_AT_ONCE;
+/// How many connections may be open to the proxy at once, from every agent together (`Limits::all`). Each may
+/// hold one more, out to the model or a site: twice this stays well under the unit's limit of open files
+/// (`LimitNOFILE`, 8192, modules/model-proxy.nix).
+pub const MAX_CONNECTIONS: usize = 2048;
+
+/// The bounds a caller's connections are held to: `HEAD_WAIT`, `MAX_CONNECTIONS_EACH`, `MAX_CONNECTIONS`
+/// (smaller in tests).
+#[derive(Debug, Clone, Copy)]
+pub struct Limits {
+    pub head_wait: Duration,
+    pub each: usize,
+    pub all: usize,
+}
+
+impl Default for Limits {
+    fn default() -> Self {
+        Limits { head_wait: HEAD_WAIT, each: MAX_CONNECTIONS_EACH, all: MAX_CONNECTIONS }
+    }
+}
+
+/// The connections open now: in all, and each agent's.
+#[derive(Debug, Default)]
+pub struct Open {
+    all: usize,
+    each: HashMap<u32, usize>,
+}
+
 /// The headers HTTP says belong to one connection, not to the request: never passed on, either way
 /// (RFC 9110, 7.6.1). Everything else is passed as it came.
 pub const HOP: [&str; 9] = ["connection", "keep-alive", "proxy-authenticate", "proxy-authorization", "proxy-connection", "te", "trailer", "transfer-encoding", "upgrade"];
@@ -171,6 +205,10 @@ pub struct Proxy {
     pub dial: Dial,
     /// How much each agent has under way.
     pub busy: Mutex<HashMap<u32, Arc<Semaphore>>>,
+    /// The bounds of a caller's connections.
+    pub limits: Limits,
+    /// The connections open now.
+    pub open: Mutex<Open>,
 }
 
 /// Words of the proxy's own, as an answer.
@@ -179,6 +217,39 @@ fn words(status: StatusCode, text: String) -> Response<Passed> {
     *r.status_mut() = status;
     r.headers_mut().insert(CONTENT_TYPE, HeaderValue::from_static("text/plain; charset=utf-8"));
     r
+}
+
+/// What a caller that is not an agent's account is told.
+const NOT_AN_AGENT: &str = "TorqOS: this is the way out for the agents' accounts (torq-agent-<person>), and you are not one. Your own programs reach the network directly.\n";
+
+/// Words of the proxy's own, written to a connection once, without waiting, and the connection closed: nothing
+/// of what the caller sent is read. Its sending side is shut first, so that the words and their end reach the
+/// caller before the kernel answers anything it sent unread with a reset.
+fn turn_away(stream: TcpStream, status: StatusCode, text: &str) {
+    let answer = format!("HTTP/1.1 {} {}\r\ncontent-type: text/plain; charset=utf-8\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{text}", status.as_u16(), status.canonical_reason().unwrap_or(""), text.len());
+    let _ = stream.try_write(answer.as_bytes());
+    if let Ok(s) = stream.into_std() {
+        let _ = s.shutdown(std::net::Shutdown::Write);
+    }
+}
+
+/// A connection counted as open (`Open`) for as long as this is held.
+struct Held {
+    proxy: Arc<Proxy>,
+    uid: u32,
+}
+
+impl Drop for Held {
+    fn drop(&mut self) {
+        let mut open = self.proxy.open.lock().unwrap_or_else(|e| e.into_inner());
+        open.all = open.all.saturating_sub(1);
+        if let Some(n) = open.each.get_mut(&self.uid) {
+            *n = n.saturating_sub(1);
+            if *n == 0 {
+                open.each.remove(&self.uid);
+            }
+        }
+    }
 }
 
 impl Proxy {
@@ -200,16 +271,45 @@ impl Proxy {
             };
             let proxy = self.clone();
             tokio::spawn(async move {
-                // Who is connected, read once, while the connection is held: every request on it is theirs.
+                // Who is connected, read once, at once, while the connection is held: every request on it is
+                // theirs. Anyone else is answered and closed before a byte of theirs is read.
                 let who = stream.local_addr().ok().and_then(|local| who::caller(peer, local)).and_then(|uid| proxy.agents.get(&uid).map(|a| (uid, a.clone())));
+                let Some((uid, agent)) = who else {
+                    return turn_away(stream, StatusCode::FORBIDDEN, NOT_AN_AGENT);
+                };
+                let Some(held) = proxy.hold(uid) else {
+                    return turn_away(stream, StatusCode::SERVICE_UNAVAILABLE, &format!("TorqOS: your agent has as many connections open to the model proxy as it may ({}), or all the agents together have. Try again when some have closed.\n", proxy.limits.each));
+                };
+                let head_wait = proxy.limits.head_wait;
                 let service = hyper::service::service_fn(move |req| {
-                    let (proxy, who) = (proxy.clone(), who.clone());
-                    async move { Ok::<_, std::convert::Infallible>(proxy.answer(who, port.port(), req).await) }
+                    let (proxy, agent) = (proxy.clone(), agent.clone());
+                    async move { Ok::<_, std::convert::Infallible>(proxy.answer(uid, agent, port.port(), req).await) }
                 });
-                // A connection that ends badly is the caller's to notice; nothing of it is logged.
-                let _ = hyper::server::conn::http1::Builder::new().preserve_header_case(true).serve_connection(TokioIo::new(stream), service).with_upgrades().await;
+                // A connection that ends badly is the caller's to notice; nothing of it is logged. A head that takes
+                // longer than `head_wait`, on a new connection or one kept open, ends it (hyper's timer does that).
+                let _ = hyper::server::conn::http1::Builder::new()
+                    .timer(TokioTimer::new())
+                    .header_read_timeout(head_wait)
+                    .preserve_header_case(true)
+                    .serve_connection(TokioIo::new(stream), service)
+                    .with_upgrades()
+                    .await;
+                drop(held);
             });
         }
+    }
+
+    /// One more connection open for the agent with `uid`, counted until it is dropped; or none: the agent has as
+    /// many as it may, or all the agents together have.
+    fn hold(self: &Arc<Self>, uid: u32) -> Option<Held> {
+        let mut open = self.open.lock().unwrap_or_else(|e| e.into_inner());
+        let mine = open.each.get(&uid).copied().unwrap_or(0);
+        if open.all >= self.limits.all || mine >= self.limits.each {
+            return None;
+        }
+        open.all += 1;
+        *open.each.entry(uid).or_default() += 1;
+        Some(Held { proxy: self.clone(), uid })
     }
 
     /// One more thing under way for the agent with `uid`, or none: too many already.
@@ -218,10 +318,7 @@ impl Proxy {
         busy.entry(uid).or_insert_with(|| Arc::new(Semaphore::new(MAX_AT_ONCE))).clone().try_acquire_owned().ok()
     }
 
-    async fn answer(self: Arc<Self>, who: Option<(u32, Agent)>, port: u16, req: Request<Incoming>) -> Response<Passed> {
-        let Some((uid, agent)) = who else {
-            return words(StatusCode::FORBIDDEN, "TorqOS: this is the way out for the agents' accounts (torq-agent-<person>), and you are not one. Your own programs reach the network directly.\n".to_string());
-        };
+    async fn answer(self: Arc<Self>, uid: u32, agent: Agent, port: u16, req: Request<Incoming>) -> Response<Passed> {
         if !self.recorder.ready(&agent.person) {
             return words(StatusCode::SERVICE_UNAVAILABLE, format!("TorqOS: the record of what {}'s agent does cannot be written (is the disk full?), and nothing is passed on for it until it can be. An administrator can look: journalctl -u torq-model-proxy.\n", agent.person));
         }
@@ -496,6 +593,8 @@ fn start(settings: &Path) -> Result<(), String> {
         recorder: record::Recorder::new(activity::DIR.into(), record::Bounds::default()),
         dial: outside(),
         busy: Mutex::default(),
+        limits: Limits::default(),
+        open: Mutex::default(),
     });
     let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().map_err(|e| e.to_string())?;
     let listener = inherited(listenfd::ListenFd::from_env().take_tcp_listener(0), port)?;
