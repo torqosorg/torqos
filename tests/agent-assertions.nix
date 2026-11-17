@@ -117,8 +117,10 @@ let
     # and tests/agent-units.nix; this says the lines the fence is.)
     (let unit = (configOf (withEngine { })).systemd.services."torq-agent@dev"; sc = unit.serviceConfig; in
       if sc.User == "torq-agent-dev" && sc.Group == "torq-agent-dev" && lib.hasSuffix "/bin/torq-agent-service dev claude-code" sc.ExecStart
+        # Through torq-agent-scope: the socket families' filter and Landlock's scopes first (the security reader, 2026-11-17).
+        && builtins.match "/nix/store/[^ ]+/bin/torq-agent-scope --families /nix/store/[^ ]+-torq-agent-socket-families.bpf -- /nix/store/[^ ]+/bin/torq-agent-service dev claude-code" sc.ExecStart != null
         && sc.ProtectHome == true && sc.PrivateTmp && sc.NoNewPrivileges && sc.CapabilityBoundingSet == "" && sc.AmbientCapabilities == ""
-        && sc.ProtectSystem == "strict" && sc.ReadWritePaths == [ "/var/lib/torq-agent-dev" ] && sc.InaccessiblePaths == [ "-/run/credentials" "-/run/nscd" "-/run/systemd/resolve" ]
+        && sc.ProtectSystem == "strict" && sc.ReadWritePaths == [ "/var/lib/torq-agent-dev" ] && sc.InaccessiblePaths == [ "-/run/credentials" "-/run/nscd" "-/run/systemd/resolve" "-/run/avahi-daemon" ]
         # The model proxy and the fence (ADR-057): never started without the fence that closes the account's
         # network, told where its model is, Claude Code's own settings for it bound where Claude Code reads
         # them, and the services that look a name up for anyone hidden.
