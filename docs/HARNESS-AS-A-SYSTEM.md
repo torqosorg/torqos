@@ -605,11 +605,11 @@ Kimi); a person's own Claude Code outside the fence.
     record past part 999, the addresses, the model's refusal's words, a non-agent closed at once, a slow head
     and an idle connection, the connection bounds, a socket shown twice); the escaped-size test passed before
     any change (the size was already counted as written) and is kept as a guard.
-  - *VM tests, `--max-jobs 2`:* `agent-run` passed on its sixth run with the new subtests (socket families;
+  - *VM tests, `--max-jobs 2`:* `agent-run` passed on its ninth run with the new subtests (socket families;
     polkit from a real console session, the agent and polkit's rule alone; the fence by its table; the fence
     stopped ending a session). The runs before stopped at: shellcheck's words on the fence check (twice);
-    `systemd-run` expanding the launcher's variables; logind's JSON naming no session state; a long line typed
-    at the console losing keys; the console's first prompt scrolled away by kernel messages. `agent-service`
+    `systemd-run` expanding the launcher's variables; logind's JSON not naming a session's state or terminal (twice); a long line typed
+    at the console losing keys (twice); the console's first prompt scrolled away by kernel messages. `agent-service`
     passed on its second run (the first: `nft` not in the test machine). `secrets` passed. `model-proxy`
     passed on its second run: the first stopped because the test's "internet" site was on the network the
     machine itself sits on, which the web setting now refuses; the site is now past a router, and the test
