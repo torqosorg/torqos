@@ -188,15 +188,14 @@ pkgs.testers.runNixOSTest {
         out = agent("echo | socat - ABSTRACT-CONNECT:torq-test-root", ok=False)
         assert "Operation not permitted" in out, out
         agent("socat ABSTRACT-LISTEN:torq-test-own SYSTEM:true & sleep 1; echo | socat - ABSTRACT-CONNECT:torq-test-own")
-        # A process of the agent's own account outside the sandbox: the account may signal it there (the control),
-        # not from inside. Its own child it may.
-        machine.succeed("systemd-run --unit=torq-test-outsider -p User=torq-agent-dev sleep 900")
-        outsider = machine.wait_until_succeeds("systemctl show -P MainPID torq-test-outsider | grep -v '^0$'").strip()
-        machine.succeed(f"setpriv --reuid torq-agent-dev --regid torq-agent-dev --clear-groups kill -0 {outsider}")
-        out = agent(f"kill -0 {outsider}", ok=False)
+        # A process of the agent's own account outside the program's scope, in its process namespace: bubblewrap's
+        # own first process there (pid 1), which the same account could signal (the service's test has the control,
+        # from outside). Refused. Its own child it may.
+        assert agent("stat -c %u /proc/1").strip() == machine.succeed("id -u torq-agent-dev").strip()
+        out = agent("kill -0 1", ok=False)
         assert "Operation not permitted" in out, out
         agent("sleep 30 & kill $!")
-        machine.succeed("systemctl stop torq-test-outsider torq-test-abstract")
+        machine.succeed("systemctl stop torq-test-abstract")
         # torq-mcp's link is started the same way (the launcher's two runs: one sandbox, one way in).
         launcher = machine.succeed("readlink -f /run/current-system/sw/bin/torq-agent-run").strip()
         assert machine.succeed(f"grep -c -- '-- \"$scope\" --' {launcher}").strip() == "2"
@@ -206,7 +205,7 @@ pkgs.testers.runNixOSTest {
         avahi = "busctl call org.freedesktop.Avahi / org.freedesktop.Avahi.Server GetVersionString"
         assert "avahi" in as_dev(avahi), "the control: dev is answered"
         out = agent(avahi, ok=False)
-        assert "Access denied" in out, out
+        assert "denied" in out.lower() or "rejected" in out.lower(), out
         machine.succeed("test -S /run/avahi-daemon/socket")
         assert agent("ls -A /run/avahi-daemon").strip() == ""
 

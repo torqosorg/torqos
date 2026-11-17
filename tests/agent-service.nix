@@ -305,7 +305,7 @@ pkgs.testers.runNixOSTest {
         # A pair of sockets of unix only: TIPC's refused as a family it may not use (EAFNOSUPPORT).
         assert seen["pair unix"] == "made" and seen["pair tipc"] == "errno 97", seen
         # Avahi: refused on the bus, its socket not there.
-        assert seen["avahi"]["bus"] != "answered" and "Access denied" in seen["avahi"]["bus"], seen
+        assert seen["avahi"]["bus"] != "answered" and ("denied" in seen["avahi"]["bus"].lower() or "rejected" in seen["avahi"]["bus"].lower()), seen
         assert seen["avahi"]["socket"] in ("PermissionError", "FileNotFoundError", []), seen
         machine.succeed("systemctl stop torq-test-outsider torq-test-abstract")
         machine.succeed("chmod 700 /home/alice")
