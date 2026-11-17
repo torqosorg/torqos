@@ -183,12 +183,13 @@ pkgs.testers.runNixOSTest {
     machine.send_chars("echo ready-$((40 + 2))\n")
     machine.wait_until_tty_matches("1", "ready-42", timeout=90)
 
-    def at_console(line, done):
-        """`line` typed at dev's console; then waits for the file `done` (and shows the console if it never comes)."""
-        machine.succeed(f"rm -f {done}")
-        machine.send_chars(line + f"; touch {done}\n")
+    def at_console(name, script):
+        """`script` run by dev at her console: written to /tmp/<name>.sh first, and only `sh /tmp/<name>.sh` typed
+        (a long line typed at a console loses keys). Waits for it to end (and shows the console if it never does)."""
+        machine.succeed(f"rm -f /tmp/{name}.done && cat > /tmp/{name}.sh << 'TORQ_EOF'\n{script}\ntouch /tmp/{name}.done\nTORQ_EOF\nchmod 644 /tmp/{name}.sh")
+        machine.send_chars(f"sh /tmp/{name}.sh\n")
         try:
-            machine.wait_for_file(done, timeout=120)
+            machine.wait_for_file(f"/tmp/{name}.done", timeout=120)
         except Exception:
             print(machine.get_tty_text("1"))
             raise
@@ -197,12 +198,12 @@ pkgs.testers.runNixOSTest {
 
     with subtest("an agent is never the person at the machine: polkit refuses it lingering and power, in her session or out of it"):
         # The control: dev herself, in her session, may turn lingering on (polkit's default for the person at the machine).
-        at_console(f"{logind} SetUserLinger ubb $(id -u) true false > /tmp/dev-linger 2>&1; {logind} SetUserLinger ubb $(id -u) false false >> /tmp/dev-linger 2>&1", "/tmp/dev-linger-done")
+        at_console("dev-linger", f"{logind} SetUserLinger ubb $(id -u) true false > /tmp/dev-linger 2>&1\n{logind} SetUserLinger ubb $(id -u) false false >> /tmp/dev-linger 2>&1")
         assert machine.succeed("cat /tmp/dev-linger").strip() == "", machine.succeed("cat /tmp/dev-linger")
         # Her agent, under `torq agent run` from that console: in a scope of its own, out of her session, and refused.
         inner = (f"cat /proc/self/cgroup > ~/cgroup; {logind} SetUserLinger ubb $(id -u) true false > ~/linger 2>&1; echo exit $? >> ~/linger; "
                  f"{logind} CanPowerOff > ~/power 2>&1; grep -q no ~/power && {{ {logind} PowerOff b false >> ~/power 2>&1; echo exit $? >> ~/power; }}")
-        at_console(f"torq agent run -- sh -c {shlex.quote(inner)}", "/tmp/agent-polkit-done")
+        at_console("agent-polkit", f"torq agent run -- sh -c {shlex.quote(inner)}")
         home = "/var/lib/torq-agent-dev"
         cgroup = machine.succeed(f"cat {home}/cgroup")
         assert "session-" not in cgroup and "torq-agents.slice" in cgroup, cgroup
@@ -213,10 +214,11 @@ pkgs.testers.runNixOSTest {
         assert '"no"' in power and "exit 0" not in power and "Access denied" in power, power
         # And polkit's rule alone, with the agent's process left in her session as it was before (root puts it
         # there, through sudo, as dev): refused all the same.
-        machine.send_chars(f"sudo setpriv --reuid=torq-agent-dev --regid=torq-agent-dev --clear-groups {logind} SetUserLinger ubb $(id -u torq-agent-dev) true false > /tmp/rule-linger 2>&1; echo exit $? >> /tmp/rule-linger; touch /tmp/rule-done\n")
+        machine.succeed(f"rm -f /tmp/rule.done && printf '%s\\n' {shlex.quote(f'sudo setpriv --reuid=torq-agent-dev --regid=torq-agent-dev --clear-groups {logind} SetUserLinger ubb $(id -u torq-agent-dev) true false > /tmp/rule-linger 2>&1; echo exit $? >> /tmp/rule-linger; touch /tmp/rule.done')} > /tmp/rule.sh")
+        machine.send_chars("sh /tmp/rule.sh\n")
         machine.wait_until_tty_matches("1", "password for dev")
         machine.send_chars("Torq-sock-2210\n")
-        machine.wait_for_file("/tmp/rule-done", timeout=120)
+        machine.wait_for_file("/tmp/rule.done", timeout=120)
         rule = machine.succeed("cat /tmp/rule-linger")
         assert "exit 0" not in rule and "Access denied" in rule, rule
         machine.fail("test -e /var/lib/systemd/linger/torq-agent-dev")
