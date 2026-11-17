@@ -2120,8 +2120,8 @@ Its §5 lists claims without a test.
      guarded by their files' permissions, as for any account).
    - **A pair of sockets** (`socketpair`) of any family but unix is refused in both ways an agent runs, by the
      same filter (2026-11-17): systemd's `RestrictAddressFamilies` judges `socket` and not `socketpair` (its
-     source, `seccomp_restrict_address_families`, and the `agent-service` test, where a TIPC pair was refused
-     only once the filter was loaded too).
+     source, `seccomp_restrict_address_families`; and in the `agent-service` test, with the filter's `socketpair`
+     rule taken out, the service made a TIPC pair under `RestrictAddressFamilies` alone).
    - **No descriptor the person's terminal left open reaches the agent** (2026-11-17): sudo keeps every
      descriptor below the highest `torq agent run` hands it (`-C`), so the launcher closes every one but those it
      names before anything runs as the agent.

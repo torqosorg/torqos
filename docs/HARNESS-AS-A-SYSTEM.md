@@ -660,3 +660,41 @@ Kimi); a person's own Claude Code outside the fence.
     launcher's copy made with umask 022 (`agent-service`, its instructions subtest, failed on the file's mode).
   - *Not run:* `nix flake check`; `agent-run`, `desktop-agent` and the other VM tests; the Settings page on a
     desktop; the command against the real Claude Code's record.
+- 2026-11-17, **the security reader's second round** (of `0167349..be95753`), on `work/harness-p3` (ADR-057 amended
+  (5); KNOWN-GAPS 6zzx; no full check): the record keeps the engine's instructions, marks a rewritten
+  conversation, keeps a text document's words and says a message it cannot read; one 512 MiB budget for what it
+  holds; a caller named by `NETLINK_SOCK_DIAG` (`torq_wire::peer`, shared by the proxy and the broker);
+  `torq-agent-scope` (Landlock's abstract-socket and signal scopes, and the families' filter in the service);
+  `socketpair` of unix only; avahi refused; the launcher's leaked descriptors closed; a refusal that no longer
+  tells the agent the commands; `torq agent run` saying when the fence ended it; NAT64 under an operator's
+  prefix written down.
+- **What was run for it** (2026-11-17, the check host, on `work/harness-p3`; no full check).
+  - *Unit tests, each crate's whole suite, in the dev shell:* torqcli 518, broker 338 (three tests of the old
+    table lookup went with it), wire 33 (`peer`: crafted answers, and the real kernel: a connection, a listener
+    asked as one, the same ports from 127.0.0.2), secrets 15, agent 60 (+2 ignored), torq-model-proxy 53 (+1
+    ignored). `settings/` type-checked (`cargo check`): no errors, no warnings. The broker's timed tests did not
+    flake this time.
+  - *Each guard broken once, a test seen to fail, then put back:* in the crates, the rewrite mark set to never,
+    the budget never refusing, the instructions not recorded, a message that does not read not said (proxy);
+    the established-state check and the source address check in `peer::answer` (wire). In VM tests, each from a
+    commit in a worktree of its own (removed after): the launcher without `torq-agent-scope` (`agent-run`, the
+    abstract socket reached); the scope without the abstract-socket scope and the filter without its
+    `socketpair` rule (`agent-run`: a TIPC pair made; `agent-service`: root's abstract socket reached and a TIPC
+    pair made in the service, which shows systemd's `RestrictAddressFamilies` does not judge `socketpair`); the
+    launcher without its loop that closes descriptors (`agent-run`: the person's two leaked descriptors of
+    `/home/dev/secret` inside); avahi's bus name not denied (`agent-run`: answered); the fence's message taken
+    out (`agent-run`: not said). One mutation proved nothing: the service without `--families` failed at the
+    test's assertion on the unit's text, before it ran anything.
+  - *VM tests, `--max-jobs 2`:* `agent-service` passed on its second run (302c4aa; the first was stopped when
+    `agent-run` failed beside it, after its new subtest had passed). `agent-run` passed on its third run
+    (b3bfe0b): the first stopped at the signal check (a process outside its process namespace, not there for
+    it: the check is now to bubblewrap's first process, pid 1), the second at the descriptor check (a pipe of
+    bubblewrap's on 3: the check is now that no descriptor is a file of the person's). `model-proxy` passed on
+    its second run (b3bfe0b; the first: a later subtest counted alice's lines from the start of the test).
+    `secrets`, `agent-units` and `agent-assertions` passed at 60685bf (`agent-assertions` first failed on its
+    held text of the service's `ExecStart` and hidden paths, updated).
+  - *Not run:* `nix flake check`; a kernel without Landlock's sixth version (the refusal there is written, not
+    seen); `claude` typed plainly with a leaked descriptor (the same inner script as `torq agent run`, tested
+    there); a desktop's Xwayland socket, geoclue2 and NetworkManager; the real Claude Code's requests through the
+    rewrite mark (its own shortening of old tool output may mark requests: not measured); `desktop-agent` and the
+    other VM tests.
