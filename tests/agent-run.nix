@@ -169,8 +169,10 @@ pkgs.testers.runNixOSTest {
     machine.send_chars("dev\n")
     machine.wait_until_tty_matches("1", "Password: ")
     machine.send_chars("Torq-sock-2210\n")
-    machine.wait_until_succeeds("loginctl list-sessions -o json | jq -e '.[] | select(.user == \"dev\" and .tty == \"tty1\")'", timeout=60)
-    console = machine.succeed("loginctl list-sessions -o json | jq -r '.[] | select(.user == \"dev\" and .tty == \"tty1\") | .session'").strip()
+    # Her session at tty1, by logind's own words for each of hers.
+    on_tty1 = "for s in $(loginctl show-user dev -p Sessions --value 2>/dev/null); do [ \"$(loginctl show-session $s -p TTY --value)\" = tty1 ] && echo $s; done | grep ."
+    machine.wait_until_succeeds(on_tty1, timeout=60)
+    console = machine.succeed(on_tty1).split()[0]
     machine.wait_until_succeeds(f"loginctl show-session {console} -p Active --value | grep -qx yes", timeout=30)
     assert machine.succeed(f"loginctl show-session {console} -p Remote --value").strip() == "no"
 
