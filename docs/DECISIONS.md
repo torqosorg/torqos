@@ -3858,7 +3858,7 @@ content at the next), and a proposal must be judged on what it does, not on what
   after a sign-in, which are refused. A signed-in Claude Code answers with those refused (measured); a first
   sign-in could not be tried without the owner's own account. If it does not complete, rule 3 of the terms
   is touched, and the owner decides how it is opened (KNOWN-GAPS 6zzx).
-- **Amended 2026-11-17, after the controller's and an independent security reader's review.**
+- **Amended 2026-11-17, after the controller's and an independent security reader's review (1 and 2), and again the same day (3).**
   1. *The port is systemd's* (the controller's finding): see 1 above. Built: `torq-model-proxy.socket`.
   2. *A caller is named only from the one connection with its ports, from 127.0.0.1 exactly* (the reader's
      finding; it held for the secrets daemon on `main` too). Any account can bind another loopback address
@@ -3868,7 +3868,50 @@ content at the next), and a proposal must be judged on what it does, not on what
      exactly one established connection has those two ports, whatever its addresses, and it is 127.0.0.1 at
      both ends (two: no one; an agent whose port someone took at that moment is refused, not misnamed); and
      the agents' chain lets their packets out only from 127.0.0.1.
-  Not yet done of the reader's findings (in order): polkit under `torq agent run` and linger; hyper's
-  timeouts, a connection cap and one memory budget; the record's parts past 999 in a day; socket families
-  under `torq agent run`; more private addresses under the web setting; the model reachable by address with
-  the web on, and the wording of its refusal; the fence judged by its table, not its unit. (KNOWN-GAPS 6zzx.)
+  3. *The rest of the reader's findings* (2026-11-17, `work/harness-p3`; what was run is in
+     `docs/HARNESS-AS-A-SYSTEM.md`):
+     - **polkit refuses every agent account everything** (`/etc/polkit-1/rules.d/00-torq-agents.rules`,
+       modules/agent.nix, read before any other rule, asserted). Under `torq agent run` the agent's processes
+       were in the person's login session, so polkit took them for the person at the machine: an agent could
+       turn on lingering for itself (a user manager, running units of its own outside both sandboxes and the
+       fence check, at every boot), power off or reboot, and change the network through NetworkManager. And
+       `torq agent run` now runs its program in **a scope of its own** (`systemd-run --scope`), out of the
+       person's session, in `torq-agents.slice`, which **the fence binds**: the fence stopped, by an
+       administrator or by a reload that failed, ends every program running as an agent at a terminal, as it
+       stops the agents' services (before, those went on with the network open). No agent account lingers
+       (`users.users.<agent>.linger = false`, NixOS takes a linger file away at each start; asserted
+       whether an engine is chosen or not).
+     - **The proxy reads nothing from a caller that is not an agent**: it looks the caller up as the
+       connection is taken, and anyone else is answered in one write and closed. **A request's head has 30
+       seconds** (`HEAD_WAIT`, hyper's timer; it was silently off), on a new connection and on one kept open
+       after an answer. **Connections are bounded**: 128 open at once for one agent, 2048 in all
+       (`MAX_CONNECTIONS_EACH`, `MAX_CONNECTIONS`, under the unit's 8192 open files); past either, refused in
+       words and closed. One memory budget across everything buffered is not built (KNOWN-GAPS 6zzx).
+     - **The record's parts go on past 999 in a day** (`1000`, `1001`, …), ordered by their number, not their
+       name: before, part 1000 was left uncounted and the next line wrapped to part 000, so the person's bound
+       removed the newest lines. A line's size is counted as written, escaped.
+     - **`torq agent run` allows the socket families the agent's service allows** (unix, IPv4, IPv6,
+       netlink), by a seccomp filter given to bubblewrap (`--seccomp`), made at build time with libseccomp
+       (`modules/agent-socket-families.c`); others are refused with `EAFNOSUPPORT`, as systemd's
+       `RestrictAddressFamilies` refuses them. The fence covers IPv4 and IPv6 only: a socket to the hypervisor
+       (AF_VSOCK), Bluetooth, TIPC or RDS was a way out past it. A transient unit with the property was the
+       alternative: it cannot keep the terminal and the shared directory's descriptor as `torq agent run`
+       does.
+     - **Under the web setting, more addresses are the machine's own network**: the machine's own addresses
+       and every network it is on directly (read from the kernel's tables at each connection, so a public
+       network a server sits on is not opened to the agents with the web), 198.18.0.0/15, fec0::/10,
+       64:ff9b:1::/48; 240.0.0.0/4 never; and an IPv6 address carrying an IPv4 one (NAT64's 64:ff9b::/96,
+       6to4's 2002::/16, the old `::a.b.c.d`) is judged by the address it carries. A site the owner lists by
+       name still reaches any of them but this machine's loopback.
+     - **With the web on, the model's service can be reached by its address, past the record**: said in the
+       `web` setting's description. The refusal of the model's name no longer tells the agent how an
+       administrator would open it.
+     - **The fence is judged by its table, not its unit**: before anything starts as an agent, the agent's
+       service (`ExecStartPre`, as root) and `torq agent run` check that table `inet torq_agents` is loaded,
+       that its rule names the account and that its chain refuses (`torq-agent-fence-check`). A `nft flush
+       ruleset` left the unit active and the accounts open. A reload of the fence that fails stops it.
+     - Found while doing these: **the kernel's table of connections can show one socket twice** when it changes
+       while being read (one test run in about forty, with many connections opening), and since the
+       amendment above a socket shown twice was taken for two connections, so an agent's request was refused
+       as no one's. The proxy and the broker now count each socket once (its addresses, uid and inode) and
+       read the table again where a socket was not found.

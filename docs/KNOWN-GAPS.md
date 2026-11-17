@@ -2066,21 +2066,37 @@ Its §5 lists claims without a test.
      `networking` in `torq.agent.mayPropose.settings`, an agent could propose a packet filter that empties
      every table (`networking.nftables.flushRuleset`; the assertion refuses that one) or one that changes
      the rules another way. A person would have to approve it. Not reachable with the default list.
-   - **A program already running under `torq agent run` is not ended if an administrator takes the fence
-     down** (`systemctl stop torq-agent-network`): the agents' services stop with it and nothing new starts
-     as an agent, but a session at a terminal goes on, with the network. A reload that fails leaves the
-     rules that were there.
-   - **Open from the security reader's review (2026-11-17), not yet fixed:** under `torq agent run` the agent
-     stays in the person's login session, so polkit lets it ask what an active local user may (lingering, which
-     gives it a user manager outside both sandboxes and the fence check; power off; NetworkManager); hyper has
-     no header or idle timeout here, no cap on connections, and the per-agent limit applies only after the
-     headers; the record's parts past 999 in a day wrap to `.000` and lose lines (and an agent can flood its
-     own record to push older lines out: the bound is per person); `torq agent run` does not restrict socket
-     families (AF_VSOCK and others are outside the fence); under the web setting more private addresses pass
-     (IPv6 global addresses of the machine's own networks, the machine's own addresses, NAT64 and 6to4
-     forms, 198.18/15, 240/4, fec0::/10); with the web on the model can be reached past the record by its
-     address; the fence is judged by its unit's state, not by its table being loaded. Not checked by the
-     reader: CUPS, avahi, flatpak's helpers, geoclue on COSMIC, abstract unix sockets.
+   - **The fence stopped ends what runs as an agent; the fence is judged by its table** (fixed 2026-11-17).
+     `torq agent run` puts its program in a scope of its own in `torq-agents.slice`, which the fence's unit
+     binds: an administrator stopping the fence, or a reload of it that fails (which now stops it), ends
+     every such program as it stops the agents' services. Before anything starts as an agent, the agent's
+     service and `torq agent run` check the table itself (`torq-agent-fence-check`): loaded, its rule naming
+     the account, its chain refusing. What is not checked: a table changed by hand while an agent runs (a
+     rule added to it, the chain emptied after the check): root can do that, and is not fenced.
+   - **Fixed from the security reader's review (2026-11-17)** (ADR-057, amended): polkit refuses every
+     agent account everything, and `torq agent run` runs outside the person's login session (an agent could
+     turn on lingering for itself, power off, use NetworkManager); no agent account lingers; the proxy reads
+     nothing from a caller that is not an agent, gives a request's head 30 seconds, and bounds connections
+     (128 an agent, 2048 in all); the record's parts go on past 999 in a day, in order; `torq agent run`
+     allows the socket families the agent's service allows (unix, IPv4, IPv6, netlink); under the web
+     setting the machine's own addresses and networks, NAT64, 6to4 and IPv4-compatible forms, 198.18/15,
+     fec0::/10 and 240/4 are refused; the `web` setting says the model can be reached by its address past the
+     record, and the model's refusal does not tell the agent how it would be opened.
+   - **With the web on, a program run as an agent can reach the model's service by its address**, past the
+     record: the proxy refuses the model's name, not every address it has (said in the `web` setting).
+   - **An agent can flood its own record to push older lines out.** The bound is the person's (256 MiB):
+     an agent that makes many requests (refused sites cost one line each) has the oldest files removed, each
+     removal a line of its own. What it did before is then gone from the record, though the record says that
+     files were removed and when.
+   - **A person can make an agent's request no one's.** Someone who opens a connection from 127.0.0.2 with the
+     client port of a live connection of an agent's, to the proxy's or the secrets daemon's port, makes the
+     lookup ambiguous at that moment: the agent's request is refused, never taken as the person's. A nuisance,
+     not a leak.
+   - **Other services that act for whoever asks are not all surveyed.** Checked: the name services (closed,
+     above), polkit (refuses the agents), the abstract unix sockets of a test machine (ABSTRACT). Not
+     checked: CUPS (cupsd can be asked to add a printer at a host the caller names, and then connects there),
+     avahi, the Flatpak system helper, geoclue on COSMIC. Each, where it runs, may make a connection for an
+     agent past the fence.
    - **The secrets daemon's port (127.0.0.1:7800) can be taken by any account while the daemon is down**
      (ADR-052, from before; found with the model proxy's, 2026-11-17). The fence lets an agent's packets
      through to it, so whoever listens there is sent an agent's requests for a secret's use: never a secret

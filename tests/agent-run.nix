@@ -161,6 +161,8 @@ pkgs.testers.runNixOSTest {
         assert "made" in as_dev(f"python3 -c {shlex.quote(made)} AF_VSOCK")
         out = agent(f"python3 -c {shlex.quote(made)} AF_VSOCK", ok=False)
         assert "Address family not supported" in out, out
+        # What listens on an abstract unix socket here (no file, so no permission: anyone may connect), for the record.
+        print(machine.succeed("ss -xlp | grep -F ' @' || true"))
         for family in ["AF_UNIX", "AF_INET", "AF_INET6", "AF_NETLINK"]:
             assert "made" in agent(f"python3 -c {shlex.quote(made)} {family}"), family
 
