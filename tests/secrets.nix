@@ -509,7 +509,13 @@ pkgs.testers.runNixOSTest {
         sock = json.loads(out)["socket"]
         assert sock.startswith("/run/torq-secrets/ssh-"), out
         machine.succeed("cp /home/dev/.ssh/known_hosts /tmp/agent-known && chmod 644 /tmp/agent-known")
-        ssh = f"SSH_AUTH_SOCK={sock} ssh -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=/tmp/agent-known -o IdentitiesOnly=no"
+        # The agent's account reaches no SSH host itself: the fence closes its network but for the model proxy and
+        # this daemon (ADR-057; `ssh` as the agent is refused at once). What is tested here is the signature's wait
+        # for dev, so the connection is made for it by root, through a unix socket only this test opens.
+        machine.succeed("systemd-run --unit ssh-for-the-test $(command -v socat) UNIX-LISTEN:/run/ssh-for-the-test.sock,fork,mode=0666 TCP:git.example.test:22")
+        machine.wait_for_file("/run/ssh-for-the-test.sock")
+        machine.fail("su -s /bin/sh torq-agent-dev -c 'ssh -o BatchMode=yes -o ConnectTimeout=5 git@git.example.test true' 2>&1")
+        ssh = f"SSH_AUTH_SOCK={sock} ssh -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=/tmp/agent-known -o IdentitiesOnly=no -o ProxyCommand=\"socat - UNIX-CONNECT:/run/ssh-for-the-test.sock\""
         listed = machine.succeed(f"su -s /bin/sh torq-agent-dev -c 'SSH_AUTH_SOCK={sock} ssh-add -l'")
         assert "torq:dev/deploy" in listed, listed
         # Each signature of the agent's waits for dev, who says no here.
@@ -531,6 +537,7 @@ pkgs.testers.runNixOSTest {
         machine.succeed("su -s /bin/sh torq-agent-dev -c 'ssh-keygen -q -t ed25519 -N \"\" -f /tmp/agents-own'")
         machine.fail(f"su -s /bin/sh torq-agent-dev -c 'SSH_AUTH_SOCK={sock} ssh-add /tmp/agents-own'")
         assert "PRIVATE KEY" not in machine.succeed("journalctl -u torq-secrets --no-pager")
+        machine.succeed("systemctl stop ssh-for-the-test")
 
     with subtest("its owner signs in with it the same way"):
         out = machine.succeed("su - dev -c 'curl -s -X POST http://127.0.0.1:7800/ssh-agent'")
