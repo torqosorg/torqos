@@ -2093,7 +2093,7 @@ Its §5 lists claims without a test.
      lookup ambiguous at that moment: the agent's request is refused, never taken as the person's. A nuisance,
      not a leak.
    - **Other services that act for whoever asks are not all surveyed.** Checked: the name services (closed,
-     above), polkit (refuses the agents), the abstract unix sockets of a test machine (ABSTRACT). Not
+     above), polkit (refuses the agents), the abstract unix sockets of the `agent-run` test machine (one, systemd-udevd's datagram socket, which fetches nothing; an agent reaches every abstract socket of the machine, under `torq agent run` and in its service, since both share its network namespace; a desktop's were not listed). Not
      checked: CUPS (cupsd can be asked to add a printer at a host the caller names, and then connects there),
      avahi, the Flatpak system helper, geoclue on COSMIC. Each, where it runs, may make a connection for an
      agent past the fence.
