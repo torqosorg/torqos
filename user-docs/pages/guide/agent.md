@@ -88,7 +88,8 @@ A text of your own that your agent is always given: how you like answers, what t
 do. `torq agent instructions` shows it, `torq agent instructions edit` opens it in your editor, `torq
 agent instructions clear` removes it; the Agent page has **Edit…**. It lives in your home
 (`~/.config/torq/agent-instructions.md`, at most 16 KiB), where your agent cannot write, so nothing it
-reads can change what you told it.
+reads can change what you told it. Claude Code is handed them as a file only your agent can read, never on
+its command line (which every account of the machine can see).
 
 ## On the desktop: the panel, its window, and the Agent page
 
@@ -169,15 +170,30 @@ affected at all.
 
 **The record** is kept for you in `/var/lib/torq-model-proxy/<you>/`, a file for each day, one line for
 each request. You can read it; no one else can but an administrator acting as root, and no agent can read
-or change it. A command and a page that show it are not built yet. It holds what your agent read (the
-contents of files, the output of commands), so it is as private as your files. It is kept to a quarter of a
-gigabyte for each person: the oldest days go first.
+or change it. It holds what your agent read (the contents of files, the output of commands), so it is as
+private as your files. It is kept to a quarter of a gigabyte for each person: the oldest days go first.
+
+To read it:
+
+| Command | What it shows |
+|---|---|
+| `show system agent activity` | each day kept, newest first: each conversation on a line (when, its id, how many requests, the tokens, the question it began with), then the sites your agent asked for that day, reached or refused and why |
+| `show system agent activity day 2026-11-17` | one day |
+| `show system agent activity conversation 0fa37e66` | one conversation in order: each question, each tool's name and what it returned, each answer. The first characters of its id are enough |
+
+Times are in UTC, as the record keeps them. Where old entries were removed for space, or something could not
+be recorded (a full disk), it says so in those words. In TorqOS Settings, **Agent Activity** shows the same,
+with **Open** on each conversation (also from the Agent page's **Activity** button). What the agent read or
+the model wrote is shown under a `|`: it is their text, not TorqOS's.
 
 Two things to know about Claude Code:
 
-- Its **claude.ai connectors** (tools that run at Anthropic and act in your accounts, such as Gmail) do not
-  work for your agent unless the owner lists `api.anthropic.com` and `mcp-proxy.anthropic.com`. Listing the
-  first also lets a program run as your agent ask the model past the record.
+- Its **claude.ai connectors** (Gmail, Google Calendar, Google Docs and the like) run at Anthropic, not on
+  this machine: they act in your accounts there, and your agent only sees what they return. With your
+  agent's network as it is, they do not work for your agent. Opening them means the owner lists two sites:
+  `api.anthropic.com` and `mcp-proxy.anthropic.com` (`set torq agent network hosts …`). Listing
+  `api.anthropic.com` also lets a program run as your agent reach its model directly, past the record: what
+  it asks that way is not in `show system agent activity`. The Agent page says the same.
 - **Signing in** from inside the agent's account has not been tried since this was built. If `/login`
   does not finish, an administrator can allow `api.anthropic.com` while you sign in (`set torq agent network
   hosts api.anthropic.com`, `commit`) and take it off again after (`delete torq agent network hosts

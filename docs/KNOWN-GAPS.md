@@ -2030,6 +2030,12 @@ Its §5 lists claims without a test.
    - **The record is not tamper-evident.** It is not in the broker's ledger (it is far too large), nothing
      chains its lines, and root and the proxy's own account (`torq-model-proxy`) can change or remove any of
      it. A person can only read theirs. What it proves is what happened if no one with root altered it.
+   - **What shows the record** (`show system agent activity`, TorqOS Settings' Agent Activity; 2026-11-17)
+     **ties a site to a day, not to a conversation**: a site's line in the record names no session, and the
+     time would mislead where two conversations run at once. Times are shown in UTC, as kept, not in the
+     machine's own zone. The page in Settings lists the newest 14 days and draws the first 256 KiB of a
+     conversation; the command shows all of it. Neither has been seen on a real desktop or with the real
+     Claude Code's record (only the VM test's stand-in model's, and unit tests' fixtures).
    - **Whether a first sign-in completes inside the fence is not known.** `platform.claude.com`, where the
      sign-in is exchanged and renewed, is always allowed. Claude Code 2.1.316 also names addresses at
      `api.anthropic.com` that it asks after signing in, and a direct connection there is refused. A Claude

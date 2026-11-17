@@ -162,8 +162,9 @@ One consistent deletion, so nothing dead is left behind.
       the tokens in and out, and what was new in the conversation (the question, each tool's name and
       what it returned), kept where only root and the person read it, bounded in size. (Built with it;
       also the answer, the engine's helper ids, and each site asked for. Not tamper-evident: KNOWN-GAPS 6zzx.)
-- [ ] `show system agent activity` in torqcli, and the same in TorqOS Settings: what the agent did,
-      asked and read, by day and by conversation.
+- [x] `show system agent activity` in torqcli, and the same in TorqOS Settings: what the agent did,
+      asked and read, by day and by conversation. (Built 2026-11-17, ADR-057 amended (4): unit tests and the
+      VM test `model-proxy` for the command; the Settings page type-checked only, not seen on a desktop.)
 - [x] Claude Code is told to use the proxy by settings its account cannot change, seen only by the
       agent's account (a person's own Claude Code is not touched: later). (Built: the VM test has a
       stand-in read them in each of the three ways the engine starts; the real Claude Code was seen to
@@ -629,3 +630,33 @@ Kimi); a person's own Claude Code outside the fence.
   - *Not run:* `nix flake check`; every other VM test (`agent`, `agent-mcp`, `agent-proposals`,
     `agents-per-person`, `desktop-agent` only evaluate); a desktop's polkit and NetworkManager; a reload that
     fails for real; one memory budget for the proxy (not built).
+- 2026-11-17, **phase 3, its second half**, built on `work/harness-p3` (ADR-057 amended (4); KNOWN-GAPS 6zzx;
+  no full check): `show system agent activity` (by day, one day, one conversation), TorqOS Settings' Agent
+  Activity page, a person's standing instructions handed to Claude Code as a file, and the claude.ai connectors
+  said plainly on the Agent page and in the user guide.
+- **What was run for it** (2026-11-17, the check host, on `work/harness-p3`; no full check).
+  - *Claude Code 2.1.316, by hand, signed in to nothing:* `--help` names `--append-system-prompt[-file]`;
+    `--append-system-prompt-file /nonexistent` says "Append system prompt file not found", an unknown option
+    "unknown option". With `ANTHROPIC_BASE_URL` at a `socat` listener on 127.0.0.1 and a made-up key, the
+    request it sent held the file's words in its system prompt; with a person's own `--append-system-prompt`
+    after it, both, the file's first.
+  - *Unit tests, each crate's whole suite, in the dev shell:* torqcli 517, agent 60 (+2 ignored), wire 29,
+    torq-model-proxy 48 (+1 ignored; one test moved to wire with the names it tests). The broker's `secrets`
+    test binary, twice, 29 of 29 each (see below). `settings/` type-checked (`nix develop .#torq-settings`,
+    `cargo check`): no errors, no warnings; its first check found one (a widget's arguments).
+  - *VM tests, `--max-jobs 2`, at a478f0e (built from the commit, not the working tree):* `model-proxy` passed
+    on its first run, with its new subtest (the command as alice, bob, carol and alice's agent).
+    `agent-service` passed on its second run at that commit; the first never started: the broker's own unit
+    test `an_answer_in_the_last_moment_is_still_collected` failed inside its Nix build (rebuilt because
+    torq-wire changed). Earlier, at 6d12639, `an_agent_asks_at_most_thirty_times_an_hour_across_its_sessions`
+    failed the same way. Both are timed tests; the machine's load was about 7 then; neither failed in the dev
+    shell. Before those, two runs of `agent-service` stopped at the test itself (its dicts compared whole;
+    a new file not yet added to git).
+  - *Each guard broken once, a test seen to fail, then put back:* in the crates, the record's files ordered by
+    name (`parts_past_999_are_read_in_their_order`), the record's text not cleaned, and not under its `|`
+    (`the_records_texts_cannot_pass_for_torqos_lines`), an agent's account not refused, the service's
+    instructions file 0644, and the text on the engine's command line beside the file
+    (`standing_instructions_start_the_engine…`). In a VM test, from a throwaway commit (3ffc163, reset): the
+    launcher's copy made with umask 022 (`agent-service`, its instructions subtest, failed on the file's mode).
+  - *Not run:* `nix flake check`; `agent-run`, `desktop-agent` and the other VM tests; the Settings page on a
+    desktop; the command against the real Claude Code's record.

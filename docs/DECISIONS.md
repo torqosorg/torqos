@@ -3724,7 +3724,7 @@ content at the next), and a proposal must be judged on what it does, not on what
 ## ADR-057 — The model proxy, its record, and the agents' closed network
 - **Status:** accepted and built, 2026-11-16, on `work/harness-p3` (the first half of phase 3 of
   `docs/HARNESS-AS-A-SYSTEM.md`, which says what was run). Not built here: showing the record (`show system
-  agent activity`, the page in TorqOS Settings), which is the second half.
+  agent activity`, the page in TorqOS Settings), which is the second half: built since, amendment (4) below.
 - **Context:** The machine's agent is the person's coding tool (ADR-055). It runs fenced: its own account,
   a sandbox, proposals only. Two things the fence did not have. Nobody could see what an agent asked its
   model or what it had read when it asked, and the agent's account had the whole network: anything it could
@@ -3918,3 +3918,40 @@ content at the next), and a proposal must be judged on what it does, not on what
        amendment above a socket shown twice was taken for two connections, so an agent's request was refused
        as no one's. The proxy and the broker now count each socket once (its addresses, uid and inode) and
        read the table again where a socket was not found.
+- **Amended 2026-11-17 (4): the second half of phase 3**, on `work/harness-p3` (what was run is in
+  `docs/HARNESS-AS-A-SYSTEM.md`).
+  1. **`show system agent activity`** (`cli/src/agent/activity.rs`): the record read as the person, from their
+     own folder, with no service asked, through `torq_wire::activity`'s words. The files' names and their order
+     are torq-wire's too (`file_of`, `file_name`, `day_ok`; the proxy's own moved there), so the proxy and every
+     reader agree that part `1000` comes after `999`. Three views: **by day** (`show system agent activity`,
+     newest day first: each conversation a line, with when, its id's first eight characters, how many requests,
+     the tokens read, of them from the cache, and written, and the question it began with; then the sites asked
+     for that day, reached or refused, and why), **one day** (`… day <YYYY-MM-DD>`), and **one conversation in
+     order** (`… conversation <id, or its first characters>`: each question, each tool's name and what it
+     returned, each tool called and with what, each answer, what was cut or left out, how a request ended).
+     Times are UTC, as the record keeps them. Lines of kind `removed` and `lost`, and lines this TorqOS cannot
+     read, are said in plain words; a person with no record is told so in a sentence; an agent's account is
+     refused. **What the record holds is the agent's and its model's text, not TorqOS's**: it is cleaned of
+     terminal sequences and every line of it is shown under a `|`, so none of it passes for a line of torqcli's.
+     **A site is not tied to a conversation**: a `connect` line names no session, and a guess by the time would
+     be wrong where two conversations run at once (the service's and a terminal's); the day lists them.
+  2. **TorqOS Settings: Agent Activity**, a page of its own, also reached from the Agent page's **Activity**
+     button: the same reading from torqcli's library, no second parser. The newest 14 days, each conversation a
+     row with **Open**, which shows it as the command line prints it (its first 256 KiB; the rest is the
+     terminal's). And the Agent page says, in plain words, where Claude Code's claude.ai connectors run (at
+     Anthropic), that the agents' closed network closes them, that opening them means listing
+     `api.anthropic.com` and `mcp-proxy.anthropic.com`, and that the first also opens the model past the record
+     (`app::AGENT_CONNECTORS`; `user-docs/pages/guide/agent.md` says the same).
+  3. **A person's standing instructions reach Claude Code as a file** (ADR-055's bridge, and `claude` typed
+     plainly), no longer as `--append-system-prompt <text>`: every account of the machine reads a process's
+     command line, and sudo writes the whole command, instructions included, to the journal at each start.
+     Claude Code 2.1.316 takes `--append-system-prompt-file` (tried on the check host, 2026-11-17, with a
+     listener standing in for the model's service: the file's words were in the system prompt it sent; with a
+     person's own `--append-system-prompt` later on the line both are sent, the file's first). The service writes
+     them, under the line that says whose they are, to `instructions.md` in the agent's own state directory
+     (0600, never through a link, written anew before each start, removed where there are none). For `claude`
+     typed plainly, torqcli holds them in a file in memory (`memfd_create`) and hands its descriptor through sudo
+     (`-C`, as the shared folder's); the launcher checks it is a file of the person's, copies at most 32 KiB as
+     root into a tmpfs of the sandbox's own mount namespace (`/run/torq-agent-instructions/standing.md`, the
+     agent's, 0600, seen by no other process and gone when the program ends), and closes the descriptor before
+     anything runs as the agent. Claude Code is given that path.

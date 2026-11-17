@@ -22,6 +22,7 @@ command can be abbreviated to a unique beginning, and `?` or `help` works anywhe
 | `show system backups` | the declared backups: their snapshots and how each last ran |
 | `show system snapshots` | the snapshots of your data that this machine still has, each from before a change |
 | `show system proposals` | changes proposed and waiting for a person (the agent's) |
+| `show system agent activity [day <day> \| conversation <id>]` | what your agent asked its model, what it read and the sites it asked for, by day or one conversation in order (see [The agent](../guide/agent.md)) |
 | `show system remote` | where the configuration and ledger are pushed, and how the last push went (see [The remote](../guide/remote.md)) |
 | `show system desktop` | which of COSMIC's settings are saved in your configuration, and which are not yet (see [The desktop](../guide/desktop.md)) |
 | `show system secrets` | the secrets: whose they are, whether each has a value, and what each may be used for (never a value) |
