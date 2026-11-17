@@ -232,6 +232,11 @@ pkgs.testers.runNixOSTest {
             status, body, _ = use(user, path, *flags)
             assert status == 403 and "dev-token-1" not in body, (user, path, status, body)
         assert len(requests()) == n, "a refused use sends nothing"
+        # From another loopback address (127.0.0.2: any account may bind it, with any port, so the daemon could not
+        # tell its caller by the ports): refused, even for dev's own secret, and nothing sent.
+        status, body, _ = use("dev", "/user/dev/gh/api.example.test/echo", "--interface", "127.0.0.2")
+        assert status == 403 and "127.0.0.1 only" in body and "dev-token-1" not in body, (status, body)
+        assert len(requests()) == n, "nothing sent from 127.0.0.2"
         # Bad requests are refused before anything is asked.
         status, _, _ = use("torq-agent-dev", "/user/dev/gh/10.0.0.1/echo")
         assert status == 400, status
