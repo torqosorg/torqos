@@ -252,6 +252,47 @@ pub fn glance(session: Option<&std::path::Path>, draft: bool) -> Result<Glance> 
 }
 
 
+/// What moves on disk when the configuration or a person's draft changes, looked at cheaply (a `stat` each,
+/// no broker): the config repository's log of where its branch has been, which a commit, an undo and a pull
+/// each add a line to, and the person's own draft. The panel asks the broker as soon as one moves, not only
+/// once a minute: what it shows after a commit is the commit's, within seconds.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Marks(Vec<Option<(std::time::SystemTime, u64)>>);
+
+/// The marks as they are now.
+pub fn marks() -> Marks {
+    let mut at = vec![std::path::Path::new(REPO).join(".git/logs/HEAD")];
+    at.extend(crate::candidate::Candidate::default_path().ok());
+    marks_of(&at)
+}
+
+/// The marks of `paths`: each one's time of change and size, or none where there is no such file.
+fn marks_of(paths: &[PathBuf]) -> Marks {
+    Marks(paths.iter().map(|p| std::fs::metadata(p).ok().and_then(|m| Some((m.modified().ok()?, m.len())))).collect())
+}
+
+#[cfg(test)]
+mod marks_tests {
+    use super::marks_of;
+
+    #[test]
+    fn a_mark_moves_when_its_file_is_written_made_or_taken_away() {
+        let dir = tempfile::tempdir().unwrap();
+        let (log, draft) = (dir.path().join("HEAD"), dir.path().join("candidate.json"));
+        std::fs::write(&log, "one\n").unwrap();
+        let paths = [log.clone(), draft.clone()];
+        let before = marks_of(&paths);
+        assert_eq!(marks_of(&paths), before, "nothing written, nothing moved");
+        std::fs::write(&log, "one\ntwo\n").unwrap();
+        let committed = marks_of(&paths);
+        assert_ne!(committed, before, "a line added to the log");
+        std::fs::write(&draft, "{}").unwrap();
+        let drafted = marks_of(&paths);
+        assert_ne!(drafted, committed, "a draft begun");
+        std::fs::remove_file(&draft).unwrap();
+        assert_eq!(marks_of(&paths), committed, "the draft gone again: as before it was begun");
+    }
+}
 
 // ── What a session started on ────────────────────────────────────────────────────────────────────
 

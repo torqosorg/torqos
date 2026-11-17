@@ -62,6 +62,14 @@ struct Applet {
     running: Option<PathBuf>,
     /// The system a switch has just left: once it has settled, what it changed is started again.
     switched_from: Option<PathBuf>,
+    /// The configuration's and the draft's marks when last looked at (`app::marks`): a move is a commit, an undo,
+    /// a pull or a draft begun or committed, and the broker is asked then.
+    marks: Option<app::Marks>,
+    /// Ask once more at the next look: the broker writes a change into its record just after the switch, and a
+    /// draft committed at a terminal is cleared after that, so the first ask may come a moment too soon.
+    again: bool,
+    /// The ask just made was for a move or a switch: when it is answered, `again`.
+    moved: bool,
     /// The start of a polkit COSMIC's approval dialog was older than, seen at the last look, and the one acted on
     /// (the dialog started again): once per polkit, one look after it is seen, so the new one is on the bus. Lost
     /// with the applet, harmlessly: what is looked at is the processes themselves, never a remembered pid.
@@ -448,7 +456,7 @@ impl cosmic::Application for Applet {
     }
 
     fn init(core: cosmic::Core, _flags: ()) -> (Self, Task<cosmic::Action<Message>>) {
-        let mut app = Applet { core, console: Some(Console::watcher()), session: app::session_system(), running: running(), now: app::now(), me: app::who().ok(), ..Default::default() };
+        let mut app = Applet { core, console: Some(Console::watcher()), session: app::session_system(), running: running(), marks: Some(app::marks()), now: app::now(), me: app::who().ok(), ..Default::default() };
         // A rebuilt machine's apps and desktop come back at the first login.
         let ask = app.update(Message::Ask);
         // A use that already waits is shown without waiting for the first beat.
@@ -507,6 +515,14 @@ impl cosmic::Application for Applet {
                     self.switched_from = self.switched_from.take().or_else(|| self.running.clone());
                     self.running = now;
                     refresh_menu();
+                    self.moved = true;
+                    return self.update(Message::Ask);
+                }
+                let marks = Some(app::marks());
+                if marks != self.marks || std::mem::take(&mut self.again) {
+                    // A first ask for a move, and one more after it is answered; the second is the last.
+                    self.moved = marks != self.marks;
+                    self.marks = marks;
                     return self.update(Message::Ask);
                 }
                 // Settled: the panel and the rest, where they changed, without a new login. Open windows stay.
@@ -550,6 +566,7 @@ impl cosmic::Application for Applet {
                 }
             }
             Message::Answer(g) => {
+                self.again |= std::mem::take(&mut self.moved);
                 let first = self.glance.is_none();
                 let failed = g.is_err();
                 let mut then = Task::none();
