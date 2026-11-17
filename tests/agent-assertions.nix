@@ -127,7 +127,7 @@ let
         && unit.environment.ANTHROPIC_BASE_URL == "http://127.0.0.1:7801" && unit.environment.HTTPS_PROXY == "http://127.0.0.1:7801"
         && sc.BindReadOnlyPaths == [ "/etc/torq/claude-code:/etc/claude-code" ]
         && sc.StateDirectory == "torq-agent-memory/dev" && sc.RestrictNamespaces && sc.ProtectControlGroups
-        && !(sc ? LoadCredential) && !(sc ? ExecStartPre) && !(sc ? Delegate) && !(sc ? RemoveIPC)
+        && !(sc ? LoadCredential) && lib.hasPrefix "+/nix/store/" sc.ExecStartPre && lib.hasSuffix "/bin/torq-agent-fence-check torq-agent-dev" sc.ExecStartPre && !(sc ? Delegate) && !(sc ? RemoveIPC)
         # Decided, not forgotten (2026-11-15): no MemoryDenyWriteExecute. Claude Code 2.1.316 itself runs with it,
         # Node 24 crashes with it; the engine runs a developer's programs (node and the like), as `torq agent run`
         # does, so it stays off. And a /dev/shm of the unit's own.
