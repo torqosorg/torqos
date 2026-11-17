@@ -277,6 +277,11 @@ impl std::io::Read for Deadline<'_> {
 fn one(stream: &TcpStream) -> Vec<u8> {
     let _ = stream.set_write_timeout(Some(std::time::Duration::from_secs(upstream::SECONDS as u64)));
     let Ok(peer) = stream.peer_addr() else { return http::refusal(400, "no peer") };
+    // From 127.0.0.1 exactly: any other loopback address (127.0.0.2, …) is anyone's to bind, with any port, and
+    // the broker names the caller by the ports (the security reader's finding, 2026-11-17).
+    if peer.ip().to_canonical() != std::net::IpAddr::from([127, 0, 0, 1]) {
+        return http::refusal(403, "the secrets daemon answers connections from 127.0.0.1 only");
+    }
     let until = std::time::Instant::now() + std::time::Duration::from_secs(REQUEST_SECONDS);
     let req = match http::read(&mut BufReader::new(Deadline { stream, until })) {
         Ok(r) => r,

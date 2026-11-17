@@ -2070,6 +2070,17 @@ Its §5 lists claims without a test.
      down** (`systemctl stop torq-agent-network`): the agents' services stop with it and nothing new starts
      as an agent, but a session at a terminal goes on, with the network. A reload that fails leaves the
      rules that were there.
+   - **Open from the security reader's review (2026-11-17), not yet fixed:** under `torq agent run` the agent
+     stays in the person's login session, so polkit lets it ask what an active local user may (lingering, which
+     gives it a user manager outside both sandboxes and the fence check; power off; NetworkManager); hyper has
+     no header or idle timeout here, no cap on connections, and the per-agent limit applies only after the
+     headers; the record's parts past 999 in a day wrap to `.000` and lose lines (and an agent can flood its
+     own record to push older lines out: the bound is per person); `torq agent run` does not restrict socket
+     families (AF_VSOCK and others are outside the fence); under the web setting more private addresses pass
+     (IPv6 global addresses of the machine's own networks, the machine's own addresses, NAT64 and 6to4
+     forms, 198.18/15, 240/4, fec0::/10); with the web on the model can be reached past the record by its
+     address; the fence is judged by its unit's state, not by its table being loaded. Not checked by the
+     reader: CUPS, avahi, flatpak's helpers, geoclue on COSMIC, abstract unix sockets.
    - **The secrets daemon's port (127.0.0.1:7800) can be taken by any account while the daemon is down**
      (ADR-052, from before; found with the model proxy's, 2026-11-17). The fence lets an agent's packets
      through to it, so whoever listens there is sent an agent's requests for a secret's use: never a secret

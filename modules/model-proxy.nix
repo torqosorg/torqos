@@ -46,7 +46,8 @@ let
   # The fence, as the kernel's packet filter takes it. A table of its own, replaced whole in one step (the
   # first two lines make "delete" safe where there is none yet). Only packets that belong to a socket of an
   # agent's account are judged; every other packet leaves the chain untouched (policy accept). An agent's
-  # packet is let through to the proxy's port on 127.0.0.1 (and the secrets daemon's, where there is one)
+  # packet is let through to the proxy's port on 127.0.0.1, from 127.0.0.1 exactly (the daemons name their caller
+  # by its ports, which on another loopback address anyone could take), and the secrets daemon's, where there is one,
   # and refused otherwise, at once, so a program fails quickly and says "connection refused".
   rules = pkgs.writeText "torq-agents.nft" ''
     table inet torq_agents
@@ -57,7 +58,7 @@ let
         meta skuid { ${quoted (lib.attrNames agents)} } jump agent
       }
       chain agent {
-        oifname "lo" ip daddr 127.0.0.1 tcp dport { ${lib.concatMapStringsSep ", " toString ([ cfg.port ] ++ lib.optional config.torq.secrets.enable secretsPort)} } accept
+        oifname "lo" ip saddr 127.0.0.1 ip daddr 127.0.0.1 tcp dport { ${lib.concatMapStringsSep ", " toString ([ cfg.port ] ++ lib.optional config.torq.secrets.enable secretsPort)} } accept
         meta l4proto tcp reject with tcp reset
         reject with icmpx admin-prohibited
       }

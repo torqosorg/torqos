@@ -3858,3 +3858,17 @@ content at the next), and a proposal must be judged on what it does, not on what
   after a sign-in, which are refused. A signed-in Claude Code answers with those refused (measured); a first
   sign-in could not be tried without the owner's own account. If it does not complete, rule 3 of the terms
   is touched, and the owner decides how it is opened (KNOWN-GAPS 6zzx).
+- **Amended 2026-11-17, after the controller's and an independent security reader's review.**
+  1. *The port is systemd's* (the controller's finding): see 1 above. Built: `torq-model-proxy.socket`.
+  2. *A caller is named only from the one connection with its ports, from 127.0.0.1 exactly* (the reader's
+     finding; it held for the secrets daemon on `main` too). Any account can bind another loopback address
+     (127.0.0.2) with the client port of a live connection of an agent's and connect to the same daemon: the
+     lookup went by the ports and found the agent's line. Now the proxy and the secrets daemon refuse a peer
+     that is not exactly 127.0.0.1; the proxy and the broker take a caller from the kernel's table only when
+     exactly one established connection has those two ports, whatever its addresses, and it is 127.0.0.1 at
+     both ends (two: no one; an agent whose port someone took at that moment is refused, not misnamed); and
+     the agents' chain lets their packets out only from 127.0.0.1.
+  Not yet done of the reader's findings (in order): polkit under `torq agent run` and linger; hyper's
+  timeouts, a connection cap and one memory budget; the record's parts past 999 in a day; socket families
+  under `torq agent run`; more private addresses under the web setting; the model reachable by address with
+  the web on, and the wording of its refusal; the fence judged by its table, not its unit. (KNOWN-GAPS 6zzx.)

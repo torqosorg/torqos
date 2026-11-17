@@ -311,18 +311,25 @@ fn said(s: &str) -> String {
 /// table of them (`/proc/net/tcp` or `tcp6`'s text): the uid of the socket whose local end is 127.0.0.1:`client`
 /// and whose remote end is 127.0.0.1:`server`, established. The daemon is not taken at its word for who asks:
 /// the broker reads it here itself, so even a daemon that lied could use a secret only for someone connected to it.
+/// Only if it is the one established connection with those two ports, whatever its addresses: a second one
+/// (another account on 127.0.0.2 that took the same client port, 2026-11-17) makes the answer no one's.
 pub fn uid_of_connection(table: &str, client: u16, server: u16) -> Option<u32> {
     // 127.0.0.1 as the table writes it: in IPv4's, and as IPv6's maps it.
     const LOOPBACK: [&str; 2] = ["0100007F", "0000000000000000FFFF00000100007F"];
-    let at = |field: &str| -> Option<u16> {
+    let split = |field: &str| -> Option<(bool, u16)> {
         let (addr, port) = field.split_once(':')?;
-        LOOPBACK.contains(&addr).then(|| u16::from_str_radix(port, 16).ok()).flatten()
+        Some((LOOPBACK.contains(&addr), u16::from_str_radix(port, 16).ok()?))
     };
-    table.lines().skip(1).find_map(|l| {
+    let mut found = table.lines().filter_map(|l| {
         let f: Vec<&str> = l.split_whitespace().collect();
         // sl local remote st tx:rx tr:tm retrnsmt uid …; 01 is ESTABLISHED.
-        (f.len() > 7 && at(f[1]) == Some(client) && at(f[2]) == Some(server) && f[3] == "01").then(|| f[7].parse().ok()).flatten()
-    })
+        let ((here, local), (there, remote)) = (split(f.get(1)?)?, split(f.get(2)?)?);
+        (f.len() > 7 && local == client && remote == server && f[3] == "01").then(|| (here && there, f[7].parse::<u32>().ok()))
+    });
+    match (found.next(), found.next()) {
+        (Some((true, uid)), None) => uid,
+        _ => None,
+    }
 }
 
 /// What a use of a secret is for: one HTTPS request to `host`.
@@ -651,6 +658,16 @@ mod tests {
         assert_eq!(uid_of_connection(six, 0xC350, 0x1E78), Some(4343));
         let listening = TABLE.replace(" 01 00000000:00000000 00:00000000 00000000  4343", " 06 00000000:00000000 00:00000000 00000000  4343");
         assert_eq!(uid_of_connection(&listening, 0xC350, 0x1E78), None, "established only");
+    }
+
+    /// Another account on 127.0.0.2, with the client port of a live connection of the agent's, to the daemon:
+    /// the lookup is no one's, never the agent's, so no secret is used under the agent's rule or grant (the
+    /// security reader's finding, 2026-11-17).
+    #[test]
+    fn a_second_connection_with_the_same_ports_is_no_ones() {
+        let spoof = TABLE.to_string() + "   4: 0200007F:C350 0100007F:1E78 01 00000000:00000000 00:00000000 00000000  1000        0 5 1 0000000000000000 20 4 30 10 -1\n";
+        assert_eq!(uid_of_connection(&spoof, 0xC350, 0x1E78), None);
+        assert_eq!(uid_of_connection(&spoof, 0x1E78, 0xC350), Some(990), "the daemon's own end is still one");
     }
 
     /// Sam's own rules: `torq-agent` there is sam's own agent.

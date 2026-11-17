@@ -290,6 +290,14 @@ pkgs.testers.runNixOSTest {
             out = person(who, "curl -s --max-time 5 http://127.0.0.1:7801/v1/messages -d '{}'")
             assert "the agents' accounts" in out, out
         assert "the agents' accounts" in machine.succeed("curl -s --max-time 5 http://127.0.0.1:7801/v1/messages -d '{}'"), "root too"
+        # From another loopback address (127.0.0.2, anyone's to bind with any port): the proxy and the secrets
+        # daemon both refuse a person there, and an agent's packets from there do not leave its account at all.
+        assert "the agents' accounts" in person("carol", "curl -s --max-time 5 --interface 127.0.0.2 http://127.0.0.1:7801/v1/messages -d '{}'")
+        assert "127.0.0.1 only" in person("carol", "curl -s --max-time 5 --interface 127.0.0.2 http://127.0.0.1:7800/system/x/example.org/")
+        assert "127.0.0.1 only" not in person("carol", "curl -s --max-time 5 http://127.0.0.1:7800/system/x/example.org/"), "(the control: from 127.0.0.1 it is not that refusal)"
+        for port in ["7801", "7800"]:
+            out = agent("alice", f"curl -sS --noproxy '*' --max-time 5 --interface 127.0.0.2 http://127.0.0.1:{port}/", ok=False)
+            assert "TorqOS" not in out and "127.0.0.1 only" not in out, out
         internet.fail("curl -s --max-time 3 -o /dev/null http://192.168.1.2:7801/")
         assert len(lines("alice")) == 1 and len([json.loads(l) for l in internet.succeed("cat /tmp/model-requests").splitlines()]) == 2, "nothing passed on, nothing recorded"
 
