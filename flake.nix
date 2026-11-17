@@ -62,6 +62,10 @@
         # above on a real machine's disk, with that machine's hardware.
         iso = let iso = self.nixosConfigurations."installer-${pkgs.stdenv.hostPlatform.system}".config.system.build.isoImage; in
           pkgs.runCommand "torqos-iso-${pkgs.stdenv.hostPlatform.system}" { } "mkdir $out; ln -s ${iso}/iso/*.iso $out/";
+      } // lib.optionalAttrs (pkgs.stdenv.hostPlatform.system == "x86_64-linux") {
+        # opencode for the agents (`torq agent tools opencode`, ADR-058): upstream's release, pinned; why not
+        # nixpkgs' is in the file. x86_64 only, as upstream's baseline build is.
+        opencode = pkgs.callPackage ./opencode/package.nix { };
       }));
 
       # ── The distribution, as one NixOS module ────────────────────────────────
@@ -265,13 +269,14 @@
             # No second nixpkgs in TorqOS's own Nix (modules, hosts, its three packages): one imported
             # has settings of its own, out of the check above. So nixpkgs' tree is not reached at all
             # (`pkgs.path`, `<nixpkgs>`, NixOS's modules' parent), however it is spelled. And no
-            # licence set but TorqOS's own packages': a package relabelled free passes nixpkgs' check.
-            src="${./modules} ${./hosts} ${./broker/package.nix} ${./cli/package.nix} ${./agent/package.nix} ${./proxy/package.nix}"
+            # licence set but TorqOS's own packages' (and opencode's, MIT as upstream says, ADR-058): a package
+            # relabelled free passes nixpkgs' check.
+            src="${./modules} ${./hosts} ${./broker/package.nix} ${./cli/package.nix} ${./agent/package.nix} ${./proxy/package.nix} ${./opencode}"
             if grep -rnE 'pkgs\.path|<nixpkgs>|import[[:space:]]*\(?[[:space:]]*(inputs\.)?nixpkgs([[:space:]]|\))|modulesPath[[:space:]]*\+[[:space:]]*"/\.\.|NIXPKGS_ALLOW' $src; then
               echo "nixpkgs' tree is reached above: a nixpkgs of its own would be out of the check (ADR-039)."
               exit 1
             fi
-            if grep -rnE '(^|[^.[:alnum:]])license[[:space:]]*=' $src | grep -vE 'package\.nix:[0-9]+:[[:space:]]*license = lib\.licenses\.asl20;$'; then
+            if grep -rnE '(^|[^.[:alnum:]])license[[:space:]]*=' $src | grep -vE 'package\.nix:[0-9]+:[[:space:]]*license = lib\.licenses\.asl20;$' | grep -vE -- '-opencode/package\.nix:[0-9]+:[[:space:]]*license = lib\.licenses\.mit;$'; then
               echo "A licence is set above: a package relabelled is out of nixpkgs' check (ADR-039)."
               exit 1
             fi
