@@ -181,7 +181,8 @@ fi
 # person's login session, so that nothing run as the agent is taken for the person at the machine by what
 # decides by the session (polkit, logind; modules/agent.nix refuses the agents everything at polkit besides).
 # In the agents' slice, which the fence binds: the fence stopped ends this too (modules/model-proxy.nix).
-exec systemd-run --scope --slice=torq-agents.slice --quiet --collect --description="$person's agent, run at a terminal (torq agent run)" -- \
+# (--expand-environment=no: systemd-run would otherwise read the inner script's ${…} as its own variables.)
+exec systemd-run --scope --slice=torq-agents.slice --expand-environment=no --quiet --collect --description="$person's agent, run at a terminal (torq agent run)" -- \
   unshare --mount --propagation private -- bash -euo pipefail -c '
   share=$1 fd=$2 agent=$3 home=$4
   shift 4
