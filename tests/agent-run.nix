@@ -161,8 +161,6 @@ pkgs.testers.runNixOSTest {
         assert "made" in as_dev(f"python3 -c {shlex.quote(made)} AF_VSOCK")
         out = agent(f"python3 -c {shlex.quote(made)} AF_VSOCK", ok=False)
         assert "Address family not supported" in out, out
-        # What listens on an abstract unix socket here (no file, so no permission: anyone may connect), for the record.
-        print(machine.succeed("ss -xlp | grep -F ' @' || true"))
         for family in ["AF_UNIX", "AF_INET", "AF_INET6", "AF_NETLINK"]:
             assert "made" in agent(f"python3 -c {shlex.quote(made)} {family}"), family
 
@@ -171,7 +169,10 @@ pkgs.testers.runNixOSTest {
     machine.send_chars("dev\n")
     machine.wait_until_tty_matches("1", "Password: ")
     machine.send_chars("Torq-sock-2210\n")
-    machine.wait_until_succeeds("loginctl list-sessions -o json | jq -e '.[] | select(.user == \"dev\" and .tty == \"tty1\" and .state == \"active\")'", timeout=60)
+    machine.wait_until_succeeds("loginctl list-sessions -o json | jq -e '.[] | select(.user == \"dev\" and .tty == \"tty1\")'", timeout=60)
+    console = machine.succeed("loginctl list-sessions -o json | jq -r '.[] | select(.user == \"dev\" and .tty == \"tty1\") | .session'").strip()
+    machine.wait_until_succeeds(f"loginctl show-session {console} -p Active --value | grep -qx yes", timeout=30)
+    assert machine.succeed(f"loginctl show-session {console} -p Remote --value").strip() == "no"
 
     def at_console(line, done):
         """`line` typed at dev's console; then waits for the file `done`."""
