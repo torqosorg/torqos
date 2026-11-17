@@ -380,7 +380,13 @@ pub fn site_line(s: &Site) -> String {
     if s.refused > 0 {
         said.push(format!("refused {}", times(s.refused)));
     }
-    format!("{host}: {} ({})", said.join(", "), why(s.why))
+    let mut line = format!("{host}: {} ({})", said.join(", "), why(s.why));
+    // How it would be allowed: the person's to read here, never the agent's (the proxy tells it only that it was
+    // refused and that its person decides).
+    if s.refused > 0 && s.why == Why::NotListed && s.port == 443 {
+        line.push_str(&format!(" — an administrator allows it with `set torq agent network hosts {}`, then `commit`", clean(&s.host)));
+    }
+    line
 }
 
 /// What could not be read, in plain words (nothing, where all of it was).
@@ -635,7 +641,7 @@ mod tests {
         ]);
         let out = shown_in(d.path(), "alice", &View::Days).unwrap();
         let want = "What your agent asked its model, and the sites it asked for, by day (times in UTC):\n\
-\n2026-11-17\n  09:00–09:42  a1b2c3d4  2 requests, 2,030 tokens read (2,000 of them from the cache), 40 written: \"Fix the build, please\"\n  Sites asked for:\n    platform.claude.com: reached once (signing in to its model's service)\n    statsig.anthropic.com: refused 2 times (not on the agents' list of sites)\n\
+\n2026-11-17\n  09:00–09:42  a1b2c3d4  2 requests, 2,030 tokens read (2,000 of them from the cache), 40 written: \"Fix the build, please\"\n  Sites asked for:\n    platform.claude.com: reached once (signing in to its model's service)\n    statsig.anthropic.com: refused 2 times (not on the agents' list of sites) — an administrator allows it with `set torq agent network hosts statsig.anthropic.com`, then `commit`\n\
 \n2026-11-16\n  22:00        0fa37e66  1 request, 1,015 tokens read (1,000 of them from the cache), 20 written: \"What is 17 times 3?\"\n\
 \nOne conversation in order (what was asked, what each tool returned, what was answered): show system agent activity conversation <id>\n";
         assert_eq!(out, want, "newest day first; the engine's own notes are not the question");

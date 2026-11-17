@@ -4,7 +4,7 @@
 #   DNS by any of the machine's ways to look a name up), and a person's own account is not touched;
 # - it reaches its model only through the proxy, and each request is recorded as that person's agent's, named
 #   by the kernel, whatever the request says of itself; a credential passes and is never in the record;
-# - a site not listed is refused, in words that name the setting, and recorded; a listed one works; the web
+# - a site not listed is refused, in words that say its person decides (never how to open it), and recorded; a listed one works; the web
 #   setting opens every site but neither this machine, nor its own network, nor the model past the record;
 # - the record is read by its person and by no one else, and written by no one but the proxy;
 # - Claude Code is told of the proxy by settings only an agent's account sees, in each of the three ways the
@@ -311,12 +311,12 @@ pkgs.testers.runNixOSTest {
     def connects(who):
         return [(l["host"], l["allowed"], l["why"]) for l in lines(who) if l["kind"] == "connect"]
 
-    with subtest("a listed site works, an unlisted one is refused in words that name the setting, each recorded"):
+    with subtest("a listed site works, an unlisted one is refused in words that say its person decides, each recorded"):
         assert agent("alice", "curl -sS --max-time 20 https://listed.example/").strip() == "hello from listed.example"
         out = agent("alice", "curl -sS --max-time 20 https://unlisted.example/", ok=False)
         assert "403" in out, out
         said = refused("unlisted.example")
-        assert said.startswith("HTTP/1.1 403") and "set torq agent network hosts unlisted.example" in said and "set torq agent network web true" in said, said
+        assert said.startswith("HTTP/1.1 403") and "unlisted.example" in said and "your person's to decide" in said and "set torq" not in said, said
         said = refused("api.anthropic.com")
         assert said.startswith("HTTP/1.1 403") and "only through TorqOS's model proxy" in said and "http://127.0.0.1:7801" in said, said
         assert connects("alice") == [("listed.example", True, "listed"), ("unlisted.example", False, "not-listed"), ("unlisted.example", False, "not-listed"), ("api.anthropic.com", False, "the-model")], connects("alice")
@@ -368,7 +368,7 @@ pkgs.testers.runNixOSTest {
         out = activity("alice")
         # Her conversation on a line (its id's first characters, the question it began with), then her sites.
         assert f"\n{today}\n" in out and "  session-  " in out and '"a question from alice"' in out, out
-        assert "listed.example: reached" in out and "unlisted.example: refused" in out and "(not on the agents' list of sites)" in out, out
+        assert "listed.example: reached" in out and "unlisted.example: refused" in out and "(not on the agents' list of sites)" in out and "set torq agent network hosts unlisted.example" in out, out
         assert "a question from bob" not in out, out
         assert activity("alice", f"day {today}") == out
         one = activity("alice", "conversation session-1")

@@ -207,14 +207,17 @@ pub fn address_ok(ip: IpAddr, listed: bool, local: &Local) -> bool {
     }
 }
 
-/// What a refused agent is told, in plain words, naming the setting that would allow it.
+/// What a refused agent is told, in plain words: that it is refused and that its person decides. Never how the
+/// fence would be opened (the setting's name, a command): that is for its person, who reads it with each refused
+/// site in `show system agent activity` (the security reader, 2026-11-17: an agent told the command asks for it,
+/// or writes it into a proposal).
 pub fn refusal(why: Why, host: &str, port: u16, proxy_port: u16) -> String {
     match why {
-        Why::NotListed => format!("TorqOS: your agent may not reach {host}. It is not one of the sites this machine's agents may reach. An administrator can allow it in torqcli: `set torq agent network hosts {host}`, then `commit`. (`set torq agent network web true` lets the agents reach every site.)\n"),
+        Why::NotListed => format!("TorqOS: your agent may not reach {host}: it is not one of the sites this machine's agents may reach, and the sites they reach are your person's to decide. This refusal is in your person's record of what you did.\n"),
         // Not how it could be opened: that is the owner's to know, not the agent's to ask for.
         Why::TheModel => format!("TorqOS: your agent reaches its model ({host}) only through TorqOS's model proxy, which keeps a record of each request: http://127.0.0.1:{proxy_port}, set as ANTHROPIC_BASE_URL. A connection past it is refused.\n"),
         Why::NotHttps => format!("TorqOS: your agent reaches sites as HTTPS only (port {HTTPS}). {host} on port {port} is refused.\n"),
-        Why::Address => format!("TorqOS: {host} is an address of this machine itself, or of the network it sits on. The agents do not reach those through the proxy (one on the network, only where an administrator lists the site by name: `set torq agent network hosts {host}`).\n"),
+        Why::Address => format!("TorqOS: {host} is an address of this machine itself, or of the network it sits on, and the agents do not reach those through the proxy. Whether they may is your person's to decide. This refusal is in your person's record of what you did.\n"),
         Why::NotAName => "TorqOS: that is not a site's name.\n".to_string(),
         Why::Listed | Why::SignIn | Why::Web => String::new(),
     }
@@ -321,9 +324,12 @@ eth0\t08080808\t017100CB\t0007\t0\t0\t1024\tFFFFFFFF\t0\t0\t0\n";
     }
 
     #[test]
-    fn a_refusal_names_the_setting() {
-        assert!(refusal(Why::NotListed, "example.org", 443, 7801).contains("set torq agent network hosts example.org"));
-        assert!(refusal(Why::NotListed, "example.org", 443, 7801).contains("set torq agent network web true"));
+    fn a_refusal_says_the_person_decides_and_never_how_to_open_the_fence() {
+        for why in [Why::NotListed, Why::Address] {
+            let said = refusal(why, "example.org", 443, 7801);
+            assert!(said.contains("example.org") && said.contains("your person's to decide") && said.contains("record"), "{said}");
+            assert!(!said.contains("set torq") && !said.contains("torqcli") && !said.contains("commit") && !said.contains("administrator") && !said.contains("web true"), "{said}");
+        }
         assert!(refusal(Why::TheModel, "api.anthropic.com", 443, 7801).contains("http://127.0.0.1:7801"));
         // The model past the record: refused, and the agent is not told how it could be opened.
         let past = refusal(Why::TheModel, "api.anthropic.com", 443, 7801);

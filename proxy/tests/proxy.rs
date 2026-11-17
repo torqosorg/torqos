@@ -456,10 +456,11 @@ async fn a_site_is_refused_or_carried_and_recorded_either_way() {
     let p = proxy(model, true, policy, dial_to(Some(site))).await;
     let connect = |host: &str| format!("CONNECT {host} HTTP/1.1\r\nHost: {host}\r\nProxy-Authorization: Basic SECRET-PROXY\r\nConnection: close\r\n\r\n").into_bytes();
 
-    // Not on the list: refused in words that name the setting.
+    // Not on the list: refused in words that say its person decides, never how the fence would be opened.
     let (head, body) = ask(p.at, &connect("other.example:443")).await;
     assert!(head.starts_with("HTTP/1.1 403 "), "{head}");
-    assert!(String::from_utf8_lossy(&body).contains("set torq agent network hosts other.example"), "{}", String::from_utf8_lossy(&body));
+    let said = String::from_utf8_lossy(&body);
+    assert!(said.contains("other.example") && said.contains("your person's to decide") && !said.contains("set torq"), "{said}");
     // The model's own service, past the record: refused, and told where the record's way is.
     let (head, body) = ask(p.at, &connect("model.test:443")).await;
     assert!(head.starts_with("HTTP/1.1 403 ") && String::from_utf8_lossy(&body).contains(&format!("http://127.0.0.1:{}", p.at.port())), "{head}{}", String::from_utf8_lossy(&body));
