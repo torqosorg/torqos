@@ -127,7 +127,9 @@ in
         Whether the whole web is open to the agents. Off by default. On, a program run as an agent can read
         any website, and can send anything it can read (its own files, the folders you share with it, what
         its tools return) to any website. The record then shows only which sites it reached and when, not
-        what was sent or read. Off, the agents reach only the sites in `torq agent network hosts`. Claude
+        what was sent or read. On, a program run as an agent can also reach the model's service by its address
+        in numbers (the proxy refuses its name, not every address it has), past the record: what it asks the
+        model that way is not recorded. Off, the agents reach only the sites in `torq agent network hosts`. Claude
         Code's own web search still works when this is off (it runs at Anthropic); its fetching of a page
         you name does not.
       '';

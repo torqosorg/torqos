@@ -140,7 +140,9 @@ pub fn outside() -> Dial {
     Arc::new(|host, port, listed| {
         Box::pin(async move {
             let found: Vec<SocketAddr> = tokio::net::lookup_host((host.as_str(), port)).await?.collect();
-            let allowed: Vec<SocketAddr> = found.iter().copied().filter(|a| policy::address_ok(a.ip(), listed)).collect();
+            // The machine as the network sees it now: its addresses and networks change (a laptop moves).
+            let local = policy::Local::read();
+            let allowed: Vec<SocketAddr> = found.iter().copied().filter(|a| policy::address_ok(a.ip(), listed, &local)).collect();
             if allowed.is_empty() && !found.is_empty() {
                 return Err(io::ErrorKind::PermissionDenied.into());
             }
