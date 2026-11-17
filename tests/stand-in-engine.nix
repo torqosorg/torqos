@@ -39,14 +39,24 @@ pkgs.writeScriptBin "claude" ''
       print("signed in")
       sys.exit(0)
 
+  # `--append-system-prompt-file <file>`, as the real one takes it: what the file held, and how it is kept (its
+  # mode, its owner), noted with the start.
+  told = None
+  if "--append-system-prompt-file" in args:
+      given = args[args.index("--append-system-prompt-file") + 1]
+      st = os.stat(given)
+      told = {"text": open(given).read(), "mode": oct(st.st_mode & 0o777), "uid": st.st_uid}
+
   with open(os.path.join(state, "starts"), "a") as f:
-      f.write(json.dumps({"args": args, "user": os.environ.get("USER"), "cwd": os.getcwd(), "env": sorted(os.environ)}) + "\n")
+      f.write(json.dumps({"args": args, "user": os.environ.get("USER"), "cwd": os.getcwd(), "env": sorted(os.environ), "told": told}) + "\n")
 
   if "-p" not in args:
       # At a terminal (`torq agent run -- claude …`, or `claude` typed plainly): it says how it was started —
       # with `--stand-in-stdin`, what its input held too — and ends (after `--stand-in-sleep <seconds>`, if
       # given: a session left open), with the status after `--stand-in-exit`.
       said = {"args": args, "user": os.environ.get("USER"), "cwd": os.getcwd()}
+      if told is not None:
+          said["told"] = told
       if "--stand-in-stdin" in args:
           said["stdin"] = sys.stdin.read()
       print(json.dumps(said))

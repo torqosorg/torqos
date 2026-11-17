@@ -106,6 +106,21 @@ impl Kept {
         read_own(&self.generation_file()).ok().flatten().and_then(|t| t.trim().parse::<u64>().ok()).filter(|&g| g > 0).unwrap_or(1)
     }
 
+    /// The file the engine is given the person's standing instructions in (`torq_wire::agent::standing`), written
+    /// anew before each start: the engine reads it as it starts. Its own (0600, this account's), in this state
+    /// directory, which no other account reads: their text is never on a command line, where every account of the
+    /// machine can read it. None, and the file is removed, where there are no instructions.
+    pub fn instructions(&self, text: Option<&str>) -> Result<Option<PathBuf>> {
+        let file = self.dir.join("instructions.md");
+        match text {
+            Some(t) => write_whole(&file, torq_wire::agent::standing(t).as_bytes()).map(|()| Some(file)),
+            None => match std::fs::remove_file(&file) {
+                Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e).with_context(|| format!("removing {}", file.display())),
+                _ => Ok(None),
+            },
+        }
+    }
+
     /// Forget the conversation: the next question starts a new one, under a new number.
     pub fn forget(&self) -> Result<()> {
         // The new number first: a failure leaves the conversation in place, and a window told "another

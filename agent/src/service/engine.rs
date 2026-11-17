@@ -120,18 +120,21 @@ impl Engine {
     }
 
     /// The command that starts `program` for a conversation: a new one, or `resume`, an earlier one, continued.
-    /// `instructions`: the person's standing instructions, given to it as part of what it is always told.
-    /// `changed`: the conversation continued began with other instructions than these (or with none, or these
-    /// are none).
+    /// `instructions`: the file that holds the person's standing instructions (`torq_wire::agent::standing`),
+    /// given to it as part of what it is always told. `changed`: the conversation continued began with other
+    /// instructions than these (or with none, or these are none).
     ///
     /// Claude Code (tried with 2.1.316, 2026-11-15): `--append-system-prompt <text>` adds the text to its
-    /// system prompt. It records the prompt at a conversation's first question and, continuing the conversation
+    /// system prompt; `--append-system-prompt-file <file>` adds the file's text (tried 2026-11-17: the file's
+    /// words were in the request it sent). The file, not the text: what is on a command line every account of
+    /// the machine can read (`/proc/<pid>/cmdline`), and the person's instructions are theirs.
+    /// It records the prompt at a conversation's first question and, continuing the conversation
     /// with `--resume`, sends that record as it is, whatever text a later start passes: a conversation begun
     /// with "end with TORQ" and continued with "end with OTHER" still said it saw TORQ. With
     /// `--system-prompt-snapshot off` it makes the prompt anew from what this start passes: the same
     /// conversation then said OTHER. So that option is given exactly when the instructions are not the ones the
     /// conversation began with, and not otherwise (the record is what keeps a long conversation cheap to ask).
-    pub fn command(self, program: &Path, resume: Option<&str>, instructions: Option<&str>, changed: bool) -> Command {
+    pub fn command(self, program: &Path, resume: Option<&str>, instructions: Option<&Path>, changed: bool) -> Command {
         match self {
             Engine::ClaudeCode => {
                 let mut c = Command::new(program);
@@ -142,8 +145,8 @@ impl Engine {
                 if let Some(session) = resume {
                     c.args(["--resume", session]);
                 }
-                if let Some(text) = instructions {
-                    c.arg("--append-system-prompt").arg(torq_wire::agent::standing(text));
+                if let Some(file) = instructions {
+                    c.arg("--append-system-prompt-file").arg(file);
                 }
                 if resume.is_some() && changed {
                     c.args(["--system-prompt-snapshot", "off"]);
@@ -570,15 +573,15 @@ mod tests {
         const STARTED: &str = "-p --input-format stream-json --output-format stream-json --verbose --permission-mode bypassPermissions";
         assert_eq!(args(e.command(Path::new("/x/claude"), None, None, false)), STARTED);
         assert_eq!(args(e.command(Path::new("/x/claude"), Some("abc-1"), None, false)), format!("{STARTED} --resume abc-1"));
-        // The person's standing instructions: one argument, under a line that says whose they are.
-        let given = "--append-system-prompt [Standing instructions from the person this agent works for]\nAlways answer in German.";
-        assert_eq!(args(e.command(Path::new("/x/claude"), None, Some("Always answer in German.\n"), false)), format!("{STARTED} {given}"));
-        assert_eq!(e.command(Path::new("/x/claude"), None, Some("-x --resume other"), false).get_args().count(), 10, "one argument, whatever the text holds");
-        assert_eq!(args(e.command(Path::new("/x/claude"), Some("abc-1"), Some("Always answer in German."), false)), format!("{STARTED} --resume abc-1 {given}"), "continued with the instructions it began with: its own record of them stands");
+        // The person's standing instructions: the file that holds them, never their text.
+        let file = Path::new("/var/lib/torq-agent-memory/alice/instructions.md");
+        let given = "--append-system-prompt-file /var/lib/torq-agent-memory/alice/instructions.md";
+        assert_eq!(args(e.command(Path::new("/x/claude"), None, Some(file), false)), format!("{STARTED} {given}"));
+        assert_eq!(args(e.command(Path::new("/x/claude"), Some("abc-1"), Some(file), false)), format!("{STARTED} --resume abc-1 {given}"), "continued with the instructions it began with: its own record of them stands");
         // Other instructions than the conversation began with: the engine is told to make its prompt anew.
-        assert_eq!(args(e.command(Path::new("/x/claude"), Some("abc-1"), Some("Always answer in German."), true)), format!("{STARTED} --resume abc-1 {given} --system-prompt-snapshot off"));
+        assert_eq!(args(e.command(Path::new("/x/claude"), Some("abc-1"), Some(file), true)), format!("{STARTED} --resume abc-1 {given} --system-prompt-snapshot off"));
         assert_eq!(args(e.command(Path::new("/x/claude"), Some("abc-1"), None, true)), format!("{STARTED} --resume abc-1 --system-prompt-snapshot off"), "instructions taken away: its record of the old ones is not sent");
-        assert_eq!(args(e.command(Path::new("/x/claude"), None, Some("Always answer in German."), true)), format!("{STARTED} {given}"), "a new conversation has no record to set aside");
+        assert_eq!(args(e.command(Path::new("/x/claude"), None, Some(file), true)), format!("{STARTED} {given}"), "a new conversation has no record to set aside");
         assert_eq!(e.question("why?\n\"x\"", None), r#"{"message":{"content":"why?\n\"x\"","role":"user"},"parent_tool_use_id":null,"type":"user"}"#);
         let with: Value = serde_json::from_str(&e.question("this", Some("an alarm"))).unwrap();
         let content = with["message"]["content"].as_str().unwrap();

@@ -548,13 +548,25 @@ pkgs.testers.runNixOSTest {
     with subtest("instructions for your agent: her own file, given to the engine; a changed text restarts it in the same conversation"):
         instr = "/home/alice/.config/torq/agent-instructions.md"
         want = "[Standing instructions from the person this agent works for]\nAlways answer in German."
+        agent_uid = int(machine.succeed("id -u torq-agent-alice"))
+        # Given as a file the agent alone reads, never as words of a command line (every account reads those, and
+        # sudo writes them to the journal): in the service, a file of the agent's own in its state; under `claude`,
+        # one the launcher writes inside the sandbox.
+        in_service = ["--append-system-prompt-file", f"{mem}/instructions.md"]
+        in_sandbox = ["--append-system-prompt-file", "/run/torq-agent-instructions/standing.md"]
+        told = {"text": want, "mode": "0o600", "uid": agent_uid}
+        def no_text_anywhere():
+            # Not on the command line of any process of the machine, nor in the journal (sudo's lines included).
+            lines = machine.succeed("for p in /proc/[0-9]*; do tr '\\0' ' ' < $p/cmdline 2>/dev/null; echo; done")
+            assert "answer in German" not in lines, [l for l in lines.splitlines() if "German" in l]
+            assert "answer in German" not in machine.succeed("journalctl --no-pager -o cat"), "in the journal"
         out = as_user("alice", "torq agent instructions")
         assert f"Instructions for your agent: {instr}" in out and "None yet. `torq agent instructions edit`" in out, out
         # With none written, the engine is given none.
         as_user("alice", "torq ask hello")
         before = raw("alice", {"type": "status"})[0]
         epid = machine.succeed(engine).strip()
-        assert "--append-system-prompt" not in starts()[-1]["args"], starts()[-1]
+        assert not [a for a in starts()[-1]["args"] if a.startswith("--append-system-prompt")], starts()[-1]
         session = json.loads(machine.succeed(f"cat {mem}/conversation.json"))["session"]
         # She writes some. The file is hers, in a hidden folder of her home: her agent cannot write it, from its
         # account or from inside its sandbox.
@@ -567,9 +579,13 @@ pkgs.testers.runNixOSTest {
         # conversation, and told to set aside its record of what the conversation began with (nothing).
         assert as_user("alice", "torq ask 'remember?'").strip() == "You said hello."
         last = starts()[-1]["args"]
-        assert last[-6:] == ["--resume", session, "--append-system-prompt", want, "--system-prompt-snapshot", "off"], last
+        assert last[-6:] == ["--resume", session] + in_service + ["--system-prompt-snapshot", "off"], last
+        assert starts()[-1]["told"] == told, starts()[-1]
         german = machine.succeed(engine).strip()
         assert german != epid, "another process"
+        # The engine runs with them: their text is on no command line and in no journal.
+        no_text_anywhere()
+        machine.fail(f"su - bob -c 'cat {mem}/instructions.md'")
         assert raw("alice", {"type": "status"}) == status(False, before["turns"] + 1, before["conversation"])
         # The same instructions again: the same process.
         as_user("alice", "torq ask hello")
@@ -580,25 +596,35 @@ pkgs.testers.runNixOSTest {
         assert code == 0 and "Hello alice." in out and "agent: Your instructions for your agent are not used: they are longer than 16 KiB: make them shorter" in out, out
         last = starts()[-1]["args"]
         # (The conversation began with none, so its own record is right again: continued, and nothing to set aside.)
-        assert "--append-system-prompt" not in last and last[-2:] == ["--resume", session], last
+        assert not [a for a in last if a.startswith("--append-system-prompt")] and last[-2:] == ["--resume", session], last
         assert "are not used: they are longer than 16 KiB" in as_user("alice", "torq agent instructions")
         # `claude`, typed plainly, gives them to Claude Code before her own words; `torq agent run -- claude` does not.
         as_user("alice", f"printf 'Always answer in German.\\n' > {instr}")
         out = json.loads(as_user("alice", "cd ~/work && claude --model x 2>/dev/null").strip().splitlines()[-1])
-        assert out["args"] == ["--append-system-prompt", want, "--model", "x"] and out["cwd"] == "/home/alice/work", out
+        assert out["args"] == in_sandbox + ["--model", "x"] and out["cwd"] == "/home/alice/work" and out["told"] == told, out
         out = json.loads(as_user("alice", "cd ~ && claude --version 2>/dev/null").strip().splitlines()[-1])
-        assert out["args"] == ["--append-system-prompt", want, "--version"], out
+        assert out["args"] == in_sandbox + ["--version"] and out["told"] == told, out
         out = json.loads(as_user("alice", "torq agent run -- claude --version").strip().splitlines()[-1])
-        assert out["args"] == ["--version"], out
+        assert out == {"args": ["--version"], "user": "torq-agent-alice", "cwd": home}, out
+        # Inside the sandbox only, and gone after: nothing of it is left on the machine.
+        machine.fail("test -e /run/torq-agent-instructions/standing.md")
+        # Seen while `claude` runs: on no command line (sudo's, the launcher's, Claude Code's), in no journal.
+        machine.succeed("su - alice -c \"tmux new-session -d -s t 'cd ~/work && claude --stand-in-sleep 30'\"")
+        machine.wait_until_succeeds("pgrep -u torq-agent-alice -f 'stand-in-sleep'", timeout=30)
+        no_text_anywhere()
+        machine.succeed("su - alice -c 'tmux kill-session -t t'")
+        machine.wait_until_fails("pgrep -u torq-agent-alice -f 'stand-in-sleep'", timeout=30)
         # Put back, the service's engine is given them again; removed, the conversation is continued as it began.
         as_user("alice", "torq ask hello")
-        assert starts()[-1]["args"][-6:] == ["--resume", session, "--append-system-prompt", want, "--system-prompt-snapshot", "off"], starts()[-1]
+        assert starts()[-1]["args"][-6:] == ["--resume", session] + in_service + ["--system-prompt-snapshot", "off"], starts()[-1]
+        assert starts()[-1]["told"] == told, starts()[-1]
         assert "are removed" in as_user("alice", "torq agent instructions clear")
         machine.fail(f"test -e {instr}")
         assert "None yet" in as_user("alice", "torq agent instructions")
         as_user("alice", "torq ask hello")
         last = starts()[-1]["args"]
-        assert last[-2:] == ["--resume", session] and "--append-system-prompt" not in last, last
+        assert last[-2:] == ["--resume", session] and not [a for a in last if a.startswith("--append-system-prompt")], last
+        machine.fail(f"test -e {mem}/instructions.md")
         # An agent's own account has none to write.
         out = machine.fail("su -s /bin/sh torq-agent-alice -c 'cd /var/lib/torq-agent-alice && /run/current-system/sw/bin/torq agent instructions' 2>&1")
         assert "this is an agent's account" in out, out

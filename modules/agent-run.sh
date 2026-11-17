@@ -146,10 +146,26 @@ if ! why=$(torq-agent-fence-check "$agent" 2>&1); then
   echo "torq agent run: $why" >&2
   exit 2
 fi
-share="" fd=""
+share="" fd="" ifd=""
 if [ "${1-}" = --share-fd ]; then
   fd=${2-} share=${3-}
   shift 3
+fi
+# `--instructions-fd <n>` (`claude` typed plainly): the person's standing instructions, as a file torqcli holds
+# open, never as words of a command line (every account reads those, and sudo writes them to the journal). Copied
+# below, as root, into a file the agent alone reads inside its sandbox (/run/torq-agent-instructions/standing.md),
+# gone when the program ends.
+if [ "${1-}" = --instructions-fd ]; then
+  ifd=${2-}
+  shift 2
+  case "$ifd" in
+    '' | *[!0-9]*) echo "torq-agent-run: --instructions-fd needs a descriptor number" >&2; exit 2 ;;
+  esac
+  # A file (not a pipe or a device, which could hold this forever), the person's own.
+  if [ ! -f "/proc/self/fd/$ifd" ] || [ "$(stat -L -c %u "/proc/self/fd/$ifd")" != "$SUDO_UID" ]; then
+    echo "torq-agent-run: descriptor $ifd is not a file of yours" >&2
+    exit 2
+  fi
 fi
 if [ "${1-}" = -- ]; then
   shift
@@ -184,8 +200,8 @@ fi
 # (--expand-environment=no: systemd-run would otherwise read the inner script's ${…} as its own variables.)
 exec systemd-run --scope --slice=torq-agents.slice --expand-environment=no --quiet --collect --description="$person's agent, run at a terminal (torq agent run)" -- \
   unshare --mount --propagation private -- bash -euo pipefail -c '
-  share=$1 fd=$2 agent=$3 home=$4
-  shift 4
+  share=$1 fd=$2 agent=$3 home=$4 ifd=$5
+  shift 5
   if [ -n "$share" ]; then
     # Bound by its name, on a staging point only root reaches; then checked to be the very directory
     # that was opened (device and inode): if a link on the way led elsewhere, nothing runs.
@@ -216,6 +232,21 @@ exec systemd-run --scope --slice=torq-agents.slice --expand-environment=no --qui
   # The services that look a name up for anyone who asks (nscd, systemd-resolved): hidden too. A name
   # looked up is a message sent, and the network of the agent is closed, DNS included (ADR-057).
   mkdir -p -m 0755 /run/nscd /run/systemd/resolve
+  # The standing instructions of the person (`claude` typed plainly): copied from the file torqcli holds open into
+  # a place of this namespace alone (a tmpfs no other process of the machine sees, gone when this ends), as a file
+  # of the agent, 0600. At most 32 KiB (torqcli sends at most 16 KiB and a line before them).
+  if [ -n "$ifd" ]; then
+    mkdir -p -m 0755 /run/torq-agent-instructions
+    mount -t tmpfs -o mode=0755,size=1m,nosuid,nodev,noexec torq-agent-instructions /run/torq-agent-instructions
+    given=/run/torq-agent-instructions/standing.md
+    (umask 077 && head -c 32769 <&"$ifd" > "$given")
+    eval "exec $ifd<&-"
+    if [ "$(stat -c %s "$given")" -gt 32768 ]; then
+      echo "torq agent run: your instructions for your agent are longer than 32 KiB: nothing run" >&2
+      exit 2
+    fi
+    chown -- "$agent:$agent" "$given"
+  fi
   # The sandbox, as the agent: every program the launcher runs as the agent runs in it (the link below too).
   # Its socket families too (unix, IPv4, IPv6, netlink, as the agent service allows): the filter is read from
   # descriptor 9, which each run below opens on it (/etc/torq/agent-socket-families.bpf, modules/agent.nix);
@@ -261,4 +292,4 @@ exec systemd-run --scope --slice=torq-agents.slice --expand-environment=no --qui
     [ -z "$found" ] || echo "torq agent run: set-id bits taken off what the agent left: $found" >&2
   fi
   exit "$rc"
-' torq-agent-run "$share" "$fd" "$agent" "$home" "$@"
+' torq-agent-run "$share" "$fd" "$agent" "$home" "$ifd" "$@"

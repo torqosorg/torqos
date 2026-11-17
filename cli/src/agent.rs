@@ -55,11 +55,19 @@ const LAUNCHER: &str = "/run/current-system/sw/bin/torq-agent-run";
 const SETFACL: &str = "/run/current-system/sw/bin/setfacl";
 const GETFACL: &str = "/run/current-system/sw/bin/getfacl";
 
-/// What `torq agent run` was asked: the directory to share, and the program (none: a shell).
+/// Where, inside the agent's sandbox at a terminal, the person's standing instructions are (`claude` typed
+/// plainly): a file the launcher writes there as root, the agent's alone, gone when the program ends
+/// (modules/agent-run.sh). Never the text on the command line, which every account can read, and which sudo writes
+/// to the journal.
+pub const INSTRUCTIONS_IN_SANDBOX: &str = "/run/torq-agent-instructions/standing.md";
+
+/// What `torq agent run` was asked: the directory to share, and the program (none: a shell). And, for `claude`
+/// typed plainly, the person's standing instructions to hand it (`INSTRUCTIONS_IN_SANDBOX`).
 #[derive(Debug, PartialEq)]
 pub(crate) struct Run {
     pub share: Option<PathBuf>,
     pub command: Vec<String>,
+    pub instructions: Option<String>,
 }
 
 /// `run [--share <dir>] [--] [<command> …]`, after `agent`.
@@ -82,7 +90,7 @@ pub(crate) fn parse(args: &[String]) -> Result<Run> {
     if !dashes && rest.first().is_some_and(|a| a.starts_with('-')) {
         bail!("unknown option {}\n{usage}", rest[0]);
     }
-    Ok(Run { share, command: rest.iter().map(|s| s.to_string()).collect() })
+    Ok(Run { share, command: rest.iter().map(|s| s.to_string()).collect(), instructions: None })
 }
 
 /// Why a folder is not one to share with the agent.
@@ -326,20 +334,33 @@ pub(crate) fn plain(args: &[String]) -> Result<i32> {
     if let Some(why) = standing.unusable() {
         eprintln!("{why}");
     }
-    launch(&who, Run { share, command: plain_command(standing.text(), args) })
+    let instructions = standing.text().map(torq_wire::agent::standing);
+    launch(&who, Run { share, command: plain_command(instructions.is_some(), args), instructions })
 }
 
-/// What `claude`, typed plainly, runs as the agent: Claude Code, given the person's standing instructions
-/// (`--append-system-prompt`, under a line that says whose words they are) before the person's own words, which
-/// follow unchanged. Before them, so that an `--append-system-prompt` of the person's own, later on the line,
-/// is the one Claude Code takes. (`torq agent run -- claude` gives no instructions: it runs what it is told.)
-pub(crate) fn plain_command(instructions: Option<&str>, args: &[String]) -> Vec<String> {
+/// What `claude`, typed plainly, runs as the agent: Claude Code, given the person's standing instructions where
+/// they have some (`--append-system-prompt-file`, the file the launcher writes in the sandbox:
+/// `INSTRUCTIONS_IN_SANDBOX`), before the person's own words, which follow unchanged. An `--append-system-prompt`
+/// of the person's own, later on the line, is added after them (Claude Code 2.1.316 sends both, the file's
+/// first: tried 2026-11-17). (`torq agent run -- claude` gives no instructions: it runs what it is told.)
+pub(crate) fn plain_command(instructions: bool, args: &[String]) -> Vec<String> {
     let mut command = vec!["claude".to_string()];
-    if let Some(text) = instructions {
-        command.extend(["--append-system-prompt".to_string(), torq_wire::agent::standing(text)]);
+    if instructions {
+        command.extend(["--append-system-prompt-file".to_string(), INSTRUCTIONS_IN_SANDBOX.to_string()]);
     }
     command.extend(args.iter().cloned());
     command
+}
+
+/// `text` in a file of this process's memory alone (no name anywhere, `memfd_create`), read from its start, kept
+/// open across exec: what hands the person's instructions to the launcher, which copies them into the sandbox.
+fn in_memory(text: &str) -> Result<std::fs::File> {
+    use std::io::Write;
+    let fd = rustix::fs::memfd_create("torq-agent-instructions", rustix::fs::MemfdFlags::empty()).context("holding your instructions for your agent")?;
+    let mut f = std::fs::File::from(fd);
+    f.write_all(text.as_bytes()).context("holding your instructions for your agent")?;
+    rustix::fs::seek(&f, rustix::fs::SeekFrom::Start(0)).context("holding your instructions for your agent")?;
+    Ok(f)
 }
 
 /// `torq agent instructions [edit | clear]`: the person's standing instructions for their agent
@@ -390,6 +411,8 @@ fn launch(who: &Caller, r: Run) -> Result<i32> {
     let mut launch = vec![launcher.clone()];
     // Held open until the program has taken this process's place: the launcher binds it.
     let mut _shared: Option<std::fs::File> = None;
+    // The highest descriptor handed to the launcher (sudo keeps those below `-C`'s number; none: -1).
+    let mut kept: i32 = -1;
     if let Some(share) = &r.share {
         let home = PathBuf::from(std::env::var_os("HOME").context("HOME is not set: no home to share from")?);
         let uid = rustix::process::getuid().as_raw();
@@ -417,12 +440,25 @@ fn launch(who: &Caller, r: Run) -> Result<i32> {
         let f = std::fs::File::open(&dir).with_context(|| format!("opening {}", dir.display()))?;
         rustix::io::fcntl_setfd(&f, rustix::io::FdFlags::empty()).context("keeping the shared directory open")?;
         let fd = f.as_raw_fd();
-        sudo.extend(["-C".into(), (fd + 1).to_string()]);
+        kept = kept.max(fd);
         launch.extend(["--share-fd".into(), fd.to_string(), dir.to_string_lossy().into_owned()]);
         _shared = Some(f);
         if !before {
             eprintln!("{}", shared_line(&dir, agent));
         }
+    }
+    // The person's standing instructions, handed over as an open file of this process's memory: their text is on
+    // no command line (sudo's, which sudo writes to the journal, or the agent's, which every account reads).
+    let mut _instructions: Option<std::fs::File> = None;
+    if let Some(text) = &r.instructions {
+        let f = in_memory(text)?;
+        let fd = f.as_raw_fd();
+        kept = kept.max(fd);
+        launch.extend(["--instructions-fd".into(), fd.to_string()]);
+        _instructions = Some(f);
+    }
+    if kept >= 0 {
+        sudo.extend(["-C".into(), (kept + 1).to_string()]);
     }
     launch.push("--".into());
     launch.extend(r.command);
@@ -795,9 +831,9 @@ mod tests {
 
     #[test]
     fn what_it_is_asked() {
-        assert_eq!(parse(&a("run")).unwrap(), Run { share: None, command: vec![] });
-        assert_eq!(parse(&a("run claude")).unwrap(), Run { share: None, command: a("claude") });
-        assert_eq!(parse(&a("run --share /home/v/p -- claude --resume")).unwrap(), Run { share: Some("/home/v/p".into()), command: a("claude --resume") });
+        assert_eq!(parse(&a("run")).unwrap(), Run { share: None, command: vec![], instructions: None });
+        assert_eq!(parse(&a("run claude")).unwrap(), Run { share: None, command: a("claude"), instructions: None });
+        assert_eq!(parse(&a("run --share /home/v/p -- claude --resume")).unwrap(), Run { share: Some("/home/v/p".into()), command: a("claude --resume"), instructions: None });
         assert_eq!(parse(&a("run -- -x")).unwrap().command, a("-x"), "after --, anything");
         assert!(parse(&a("run --share")).is_err());
         assert!(parse(&a("run --shar /x")).is_err(), "no other option");
@@ -879,15 +915,26 @@ mod tests {
     #[test]
     fn the_plain_command_gives_the_instructions_before_the_persons_words() {
         let words = a("--model opus -p hi");
-        assert_eq!(plain_command(None, &words), a("claude --model opus -p hi"), "none written: Claude Code and the person's words");
-        let with = plain_command(Some("Always answer in German.\n"), &words);
-        assert_eq!(with[..3], ["claude".to_string(), "--append-system-prompt".into(), "[Standing instructions from the person this agent works for]\nAlways answer in German.".into()]);
+        assert_eq!(plain_command(false, &words), a("claude --model opus -p hi"), "none written: Claude Code and the person's words");
+        let with = plain_command(true, &words);
+        assert_eq!(with[..3], ["claude".to_string(), "--append-system-prompt-file".into(), "/run/torq-agent-instructions/standing.md".into()], "the file in the sandbox, never the text");
         assert_eq!(with[3..], words[..], "then every word as typed");
         // The person's own, later on the line, stays after TorqOS's.
-        let own = plain_command(Some("x"), &a("--append-system-prompt mine"));
-        assert_eq!(own.iter().filter(|w| *w == "--append-system-prompt").count(), 2);
+        let own = plain_command(true, &a("--append-system-prompt mine"));
         assert_eq!(own.last().map(String::as_str), Some("mine"));
-        assert_eq!(plain_command(Some("x"), &[]).len(), 3);
+        assert_eq!(plain_command(true, &[]).len(), 3);
+    }
+
+    /// What hands the instructions to the launcher: a file in memory, read from its start, open across exec.
+    #[test]
+    fn the_instructions_are_handed_over_in_memory_from_their_start() {
+        use std::io::Read;
+        let mut f = in_memory("[Standing instructions]\nAlways answer in German.").unwrap();
+        let flags = rustix::io::fcntl_getfd(&f).unwrap();
+        assert!(!flags.contains(rustix::io::FdFlags::CLOEXEC), "kept open across exec");
+        let mut text = String::new();
+        f.read_to_string(&mut text).unwrap();
+        assert_eq!(text, "[Standing instructions]\nAlways answer in German.");
     }
 
     /// Who is an administrator, as sudo's rule for the launcher sees it: a member of wheel, listed or by

@@ -363,7 +363,8 @@ impl Agent {
             now.conversation.began = mark.clone();
         }
         let changed = now.conversation.began != mark;
-        let mut cmd = self.engine.command(&self.program, now.conversation.session.as_deref(), instructions, changed);
+        let file = self.kept.instructions(instructions).context("your instructions for your agent could not be handed to it. Nothing was asked")?;
+        let mut cmd = self.engine.command(&self.program, now.conversation.session.as_deref(), file.as_deref(), changed);
         cmd.env_clear()
             .env("HOME", &self.home)
             .env("USER", &self.account)
@@ -753,6 +754,11 @@ printf '%s\n' "$PATH" >> "$HOME/path"
 printf '%s\n' "$ANTHROPIC_BASE_URL $HTTPS_PROXY ${{SERVICE_ONLY-unset}}" >> "$HOME/proxy"
 PATH={}
 echo "$* $(test -f "$HOME/.claude.json" && echo linked)" >> "$HOME/starts"
+prev=
+for a in "$@"; do
+  [ "$prev" != --append-system-prompt-file ] || printf '%s %s\n' "$(stat -c %a "$a")" "$(tr '\n' '|' < "$a")" >> "$HOME/told"
+  prev=$a
+done
 say() {{ printf '{{"type":"assistant","message":{{"content":[{{"type":"text","text":"%s"}}]}},"parent_tool_use_id":null}}\n' "$1"; }}
 use() {{ printf '{{"type":"assistant","message":{{"content":[{{"type":"tool_use","id":"%s","name":"%s","input":{{}}}}]}},"parent_tool_use_id":null}}\n' "$1" "$2"; }}
 ok() {{ printf '%s\n' '{{"type":"result","subtype":"success","is_error":false,"session_id":"s-1"}}'; }}
@@ -1154,11 +1160,16 @@ echo $$ $(cat "$HOME/own-group") $(cat "$HOME/undumpable") > "$HOME/procs""#,
         let (a, sock, d) = agent(r#"echo $$ >> "$HOME/pids"; say hello; ok"#, me());
         let with = |text: &str, instructions: Option<&str>| Request::Ask { text: text.into(), context: None, instructions: instructions.map(String::from) };
         let started = || std::fs::read_to_string(d.path().join("starts")).unwrap_or_default().replace(" linked\n", "\n");
-        let german = "--append-system-prompt [Standing instructions from the person this agent works for]\nAlways answer in German.";
-        let french = "--append-system-prompt [Standing instructions from the person this agent works for]\nAlways answer in French.";
+        // Given as a file of the agent's own, 0600, in its state: the text is on no command line.
+        let given = format!("--append-system-prompt-file {}", d.path().join("state/instructions.md").display());
+        let (german, french) = (given.as_str(), given.as_str());
+        let told = || lines(&d, "told");
+        let (in_german, in_french) = ("600 [Standing instructions from the person this agent works for]|Always answer in German.", "600 [Standing instructions from the person this agent works for]|Always answer in French.");
         let ok = |seen: Vec<Event>| assert_eq!(seen, [Event::Say { text: "hello".into() }, Event::Done { exit: 0 }]);
         ok(talk(&sock, &[with("one", Some("Always answer in German.\n"))], done));
         assert_eq!(started(), format!("{STARTED} {german}\n"), "started with them, a new conversation");
+        assert_eq!(told(), [in_german], "the file held them, under the line that says whose they are");
+        assert!(!started().contains("German"), "never their text on the command line");
         ok(talk(&sock, &[with("two", Some("Always answer in German.\n"))], done));
         assert_eq!(started(), format!("{STARTED} {german}\n"), "the same instructions: the same process");
         assert_eq!(a.now().conversation.began, Some(kept::mark("Always answer in German.\n")));
@@ -1166,6 +1177,7 @@ echo $$ $(cat "$HOME/own-group") $(cat "$HOME/undumpable") > "$HOME/procs""#,
         ok(talk(&sock, &[with("three", Some("Always answer in French."))], done));
         let second = format!("{STARTED} --resume s-1 {french} --system-prompt-snapshot off\n");
         assert_eq!(started(), format!("{STARTED} {german}\n{second}"));
+        assert_eq!(told(), [in_german, in_french], "the file written anew with the new ones");
         assert_eq!(status(&sock), standing(false, 3, 1), "the same conversation: its number, and its count going on");
         let pids = lines(&d, "pids");
         assert!(pids.len() == 3 && pids[0] == pids[1] && pids[1] != pids[2] && gone(pids[0].parse().unwrap()), "another process, the first one gone: {pids:?}");
@@ -1173,6 +1185,7 @@ echo $$ $(cat "$HOME/own-group") $(cat "$HOME/undumpable") > "$HOME/procs""#,
         ok(talk(&sock, &[with("four", None)], done));
         let third = format!("{STARTED} --resume s-1 --system-prompt-snapshot off\n");
         assert_eq!(started(), format!("{STARTED} {german}\n{second}{third}"));
+        assert!(!d.path().join("state/instructions.md").exists(), "and the file gone with them");
         // Put back as the conversation began: its own record is right again, and stands.
         ok(talk(&sock, &[with("five", Some("Always answer in German.\n"))], done));
         let fourth = format!("{STARTED} --resume s-1 {german}\n");
