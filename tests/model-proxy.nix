@@ -126,7 +126,9 @@ pkgs.testers.runNixOSTest {
 
   nodes.internet = { pkgs, ... }: {
     virtualisation.vlans = [ 1 ];
-    networking.interfaces.eth1.ipv4.addresses = [ { address = "203.0.113.10"; prefixLength = 24; } ];
+    # And a public address past a router (itself), as a site on the internet is: 203.0.113.0/24 is the network
+    # the machine sits on, which the web setting does not open.
+    networking.interfaces.eth1.ipv4.addresses = [ { address = "203.0.113.10"; prefixLength = 24; } { address = "198.51.100.10"; prefixLength = 24; } ];
     networking.interfaces.eth1.ipv6.addresses = [ { address = "fd00::10"; prefixLength = 64; } ];
     networking.firewall.allowedTCPPorts = [ 443 8080 ];
     networking.firewall.allowedUDPPorts = [ 53 ];
@@ -160,11 +162,12 @@ pkgs.testers.runNixOSTest {
     security.pki.certificateFiles = [ "${pki}/ca.pem" ];
     networking.hosts = {
       "192.168.1.1" = [ "api.anthropic.com" "listed.example" "unlisted.example" ];
-      "203.0.113.10" = [ "web.example" ];
+      "198.51.100.10" = [ "web.example" ];
       "127.0.0.1" = [ "local.example" ];
     };
     networking.nameservers = [ "192.168.1.1" ];
     networking.interfaces.eth1.ipv4.addresses = [ { address = "203.0.113.11"; prefixLength = 24; } ];
+    networking.interfaces.eth1.ipv4.routes = [ { address = "198.51.100.0"; prefixLength = 24; via = "203.0.113.10"; } ];
     networking.interfaces.eth1.ipv6.addresses = [ { address = "fd00::11"; prefixLength = 64; } ];
     environment.systemPackages = [ pkgs.curl pkgs.jq pkgs.python3 pkgs.getent pkgs.acl ];
     # Open in the machine's own firewall, so that what refuses a connection to an agent's program is the fence.
@@ -184,7 +187,7 @@ pkgs.testers.runNixOSTest {
     machine.wait_for_unit("torq-agent-network.service")
     machine.wait_for_open_port(7801)
     machine.wait_for_open_port(8081)
-    machine.wait_until_succeeds("ping -c1 -W2 192.168.1.1 && ping -c1 -W2 203.0.113.10 && ping -c1 -W2 fd00::10")
+    machine.wait_until_succeeds("ping -c1 -W2 192.168.1.1 && ping -c1 -W2 203.0.113.10 && ping -c1 -W2 198.51.100.10 && ping -c1 -W2 fd00::10")
     record = "/var/lib/torq-model-proxy"
 
     def person(who, cmd, ok=True):
@@ -391,11 +394,13 @@ pkgs.testers.runNixOSTest {
         assert said.startswith("HTTP/1.1 403") and "the network it sits on" in said, said
         assert refused("local.example").startswith("HTTP/1.1 403")
         assert refused("127.0.0.1").startswith("HTTP/1.1 403")
+        # The network the machine is on, though its addresses are public ones: refused under the web setting too.
+        assert refused("203.0.113.10").startswith("HTTP/1.1 403")
         assert refused("api.anthropic.com").startswith("HTTP/1.1 403")
-        tail = connects("alice")[-6:]
-        assert tail == [("web.example", True, "web"), ("listed.example", True, "listed"), ("unlisted.example", False, "address"), ("local.example", False, "address"), ("127.0.0.1", False, "address"), ("api.anthropic.com", False, "the-model")], tail
+        tail = connects("alice")[-7:]
+        assert tail == [("web.example", True, "web"), ("listed.example", True, "listed"), ("unlisted.example", False, "address"), ("local.example", False, "address"), ("127.0.0.1", False, "address"), ("203.0.113.10", False, "address"), ("api.anthropic.com", False, "the-model")], tail
         # The fence itself is as closed as before: the web is reached through the proxy, which records each site.
-        agent("alice", f"{direct} http://203.0.113.10:8080/", ok=False)
+        agent("alice", f"{direct} http://198.51.100.10:8080/", ok=False)
         agent("alice", f"{direct} https://web.example/", ok=False)
 
     with subtest("the proxy's unit has little, and its account less"):
