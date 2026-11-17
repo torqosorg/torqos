@@ -307,34 +307,6 @@ fn said(s: &str) -> String {
     s.chars().filter(|c| !c.is_control()).take(300).collect()
 }
 
-/// Who holds the client end of the loopback connection from `client` to `server` (ports), by the kernel's own
-/// table of them (`/proc/net/tcp` or `tcp6`'s text): the uid of the socket whose local end is 127.0.0.1:`client`
-/// and whose remote end is 127.0.0.1:`server`, established. The daemon is not taken at its word for who asks:
-/// the broker reads it here itself, so even a daemon that lied could use a secret only for someone connected to it.
-/// Only if it is the one established connection with those two ports, whatever its addresses: a second one
-/// (another account on 127.0.0.2 that took the same client port, 2026-11-17) makes the answer no one's.
-pub fn uid_of_connection(table: &str, client: u16, server: u16) -> Option<u32> {
-    // 127.0.0.1 as the table writes it: in IPv4's, and as IPv6's maps it.
-    const LOOPBACK: [&str; 2] = ["0100007F", "0000000000000000FFFF00000100007F"];
-    let split = |field: &str| -> Option<(bool, u16)> {
-        let (addr, port) = field.split_once(':')?;
-        Some((LOOPBACK.contains(&addr), u16::from_str_radix(port, 16).ok()?))
-    };
-    // Each socket once: the kernel writes the table a page at a time, and one that changes between two pages can
-    // show a socket twice. A socket is its two ends' addresses, its uid and its inode together.
-    let found: std::collections::BTreeSet<(bool, &str, &str, Option<u32>, &str)> = table.lines().filter_map(|l| {
-        let f: Vec<&str> = l.split_whitespace().collect();
-        // sl local remote st tx:rx tr:tm retrnsmt uid timeout inode …; 01 is ESTABLISHED.
-        let ((here, local), (there, remote)) = (split(f.get(1)?)?, split(f.get(2)?)?);
-        (f.len() > 9 && local == client && remote == server && f[3] == "01").then(|| (here && there, f[1], f[2], f[7].parse::<u32>().ok(), f[9]))
-    }).collect();
-    let mut found = found.into_iter();
-    match (found.next(), found.next()) {
-        (Some((true, _, _, uid, _)), None) => uid,
-        _ => None,
-    }
-}
-
 /// What a use of a secret is for: one HTTPS request to `host`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Use {
@@ -643,44 +615,6 @@ mod tests {
     use super::*;
     use torq_wire::secrets::parse;
 
-    /// `/proc/net/tcp` as the kernel writes it, the two ends of one loopback connection and one other.
-    const TABLE: &str = "  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode
-   0: 0100007F:1E78 00000000:0000 0A 00000000:00000000 00:00000000 00000000   990        0 1 1 0000000000000000 100 0 0 10 0
-   1: 0100007F:C350 0100007F:1E78 01 00000000:00000000 00:00000000 00000000  4343        0 2 1 0000000000000000 20 4 30 10 -1
-   2: 0100007F:1E78 0100007F:C350 01 00000000:00000000 00:00000000 00000000   990        0 3 1 0000000000000000 20 4 30 10 -1
-   3: 0A00000F:C351 0100007F:1E78 01 00000000:00000000 00:00000000 00000000  1000        0 4 1 0000000000000000 20 4 30 10 -1
-";
-
-    #[test]
-    fn the_caller_is_the_kernels_answer() {
-        assert_eq!(uid_of_connection(TABLE, 0xC350, 0x1E78), Some(4343), "the client's end, not the daemon's");
-        assert_eq!(uid_of_connection(TABLE, 0x1E78, 0xC350), Some(990), "read the other way, the daemon's own");
-        assert_eq!(uid_of_connection(TABLE, 0xC351, 0x1E78), None, "not from loopback");
-        assert_eq!(uid_of_connection(TABLE, 0xC352, 0x1E78), None, "no such connection");
-        let six = "  sl  local_address                         remote_address                        st\n   0: 0000000000000000FFFF00000100007F:C350 0000000000000000FFFF00000100007F:1E78 01 00000000:00000000 00:00000000 00000000  4343 0 9\n";
-        assert_eq!(uid_of_connection(six, 0xC350, 0x1E78), Some(4343));
-        let listening = TABLE.replace(" 01 00000000:00000000 00:00000000 00000000  4343", " 06 00000000:00000000 00:00000000 00000000  4343");
-        assert_eq!(uid_of_connection(&listening, 0xC350, 0x1E78), None, "established only");
-    }
-
-    /// Another account on 127.0.0.2, with the client port of a live connection of the agent's, to the daemon:
-    /// the lookup is no one's, never the agent's, so no secret is used under the agent's rule or grant (the
-    /// security reader's finding, 2026-11-17).
-    #[test]
-    fn a_second_connection_with_the_same_ports_is_no_ones() {
-        let spoof = TABLE.to_string() + "   4: 0200007F:C350 0100007F:1E78 01 00000000:00000000 00:00000000 00000000  1000        0 5 1 0000000000000000 20 4 30 10 -1\n";
-        assert_eq!(uid_of_connection(&spoof, 0xC350, 0x1E78), None);
-        assert_eq!(uid_of_connection(&spoof, 0x1E78, 0xC350), Some(990), "the daemon's own end is still one");
-    }
-
-    /// The kernel writes its table a page at a time, and a table that changes between two pages can show one
-    /// socket twice (seen with the model proxy's same lookup, 2026-11-17): still one connection.
-    #[test]
-    fn one_socket_shown_twice_is_one_connection() {
-        let twice = TABLE.to_string() + "   4: 0100007F:C350 0100007F:1E78 01 00000000:00000000 00:00000000 00000000  4343        0 2 1 0000000000000000 20 4 30 10 -1\n";
-        assert_eq!(uid_of_connection(&twice, 0xC350, 0x1E78), Some(4343));
-    }
-
     /// Sam's own rules: `torq-agent` there is sam's own agent.
     fn rules() -> torq_wire::secrets::Rules {
         torq_wire::secrets::parse_person(br#"{"gh":{"kind":"token","https":{"hosts":["api.github.com"]},"actors":["torq-agent"],"approve":"never"},
@@ -737,7 +671,7 @@ pub const GRANTS_EACH: usize = 8;
 
 /// A program's SSH agent socket, granted: who it is for, read from the kernel when it asked (over a loopback
 /// connection, as an HTTPS use is), and the session it named. The daemon names it in each use of a key through that
-/// socket: a Unix socket's caller is not in the kernel's table of TCP connections, so this is how the broker still
+/// socket: a Unix socket's caller is not a TCP connection the kernel can be asked about, so this is how the broker still
 /// knows who, and not by the daemon's word.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, serde::Deserialize)]
 pub struct Grant {

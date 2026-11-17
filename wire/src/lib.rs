@@ -10,6 +10,7 @@
 pub mod activity;
 pub mod agent;
 pub mod clean;
+pub mod peer;
 pub mod desktop;
 pub mod releases;
 pub mod secrets;

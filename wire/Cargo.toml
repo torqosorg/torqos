@@ -9,3 +9,5 @@ publish = false
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# Who holds a loopback connection, asked of the kernel (peer.rs: NETLINK_SOCK_DIAG), with no unsafe code here.
+rustix = { version = "1.1.6", features = ["net"] }

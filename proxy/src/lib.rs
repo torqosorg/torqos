@@ -263,7 +263,7 @@ impl Drop for Held {
 
 impl Proxy {
     /// Serves `listener`, for ever. Only on this machine's own address: anything else is refused before a
-    /// connection is taken, since the kernel's table names a caller only there.
+    /// connection is taken, since the kernel names a caller (`who`) only there.
     pub async fn serve(self: Arc<Self>, listener: TcpListener) -> io::Result<()> {
         let port = listener.local_addr()?;
         if !port.ip().is_loopback() {

@@ -6,7 +6,7 @@
 #    (127.0.0.1, port 7801). An agent's engine asks its model there (Claude Code's ANTHROPIC_BASE_URL), and the
 #    proxy passes each request to the model's service as it came and writes a line to that person's record
 #    (/var/lib/torq-model-proxy/<person>/, which the person reads and no agent does). It names the caller from
-#    the kernel's table of connections, never from what the caller says. It is also the agents' way to the
+#    the kernel's word (its socket diagnostics), never from what the caller says. It is also the agents' way to the
 #    sites they may reach (HTTPS_PROXY): sign-in, the owner's list (`torq.agent.network.hosts`), every site
 #    where the owner opens the web (`torq.agent.network.web`). Each site asked for is recorded, allowed or not.
 #
@@ -262,11 +262,12 @@ in
         ProtectControlGroups = true;
         ProtectClock = true;
         ProtectHostname = true;
-        # Not a /proc of its own kind (ProcSubset) and not a user namespace (PrivateUsers): it reads the
-        # kernel's table of connections there (/proc/net/tcp), with the accounts' real numbers.
+        # Not a /proc of its own kind (ProcSubset): it reads the machine's routes and addresses there (/proc/net), at
+        # each connection out. Not a user namespace (PrivateUsers): the kernel names its callers by their real numbers.
         ProtectProc = "invisible";
-        # The network, and unix sockets for the machine's own name lookups.
-        RestrictAddressFamilies = [ "AF_INET" "AF_INET6" "AF_UNIX" ];
+        # The network, unix sockets for the machine's own name lookups, and netlink: the kernel's socket diagnostics,
+        # which name each caller (torq_wire::peer).
+        RestrictAddressFamilies = [ "AF_INET" "AF_INET6" "AF_UNIX" "AF_NETLINK" ];
         RestrictNamespaces = true;
         RestrictRealtime = true;
         RestrictSUIDSGID = true;

@@ -572,6 +572,7 @@ dependencies = [
 name = "torq-wire"
 version = "0.4.0"
 dependencies = [
+ "rustix",
  "serde",
  "serde_json",
 ]

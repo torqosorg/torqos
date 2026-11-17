@@ -238,7 +238,7 @@ fn command_line() -> clap::Command {
         .subcommand(Command::new("backups").about("The backups the configuration declares (ADR-038): whether each has its key, the snapshots its repository holds, and how it last ran. Read only."))
         .subcommand(Command::new("backup-key").about("Keep a declared backup's key (its passphrase, read from a file) root's alone, outside the config repo, where its passwordFile points; ledgered without the key.").arg(Arg::new("name").long("name").required(true)).arg(Arg::new("key-file").long("key-file").required(true).value_parser(value_parser!(PathBuf))).arg(by()))
         .subcommand(Command::new("backup-restore").about("Put a path back from a declared backup (ADR-038): restic restores it where only root can reach it, then its owner writes it, what is there set aside; ledgered.").arg(Arg::new("name").long("name").required(true)).arg(Arg::new("snapshot").long("snapshot").help("A snapshot's id [default: latest].")).arg(Arg::new("path").long("path").required(true)).arg(by()))
-        .subcommand(Command::new("secret-use").about("For the secrets daemon alone (ADR-052): one use of a secret, judged by its rule, the caller read from the kernel's table of the loopback connection (or from the grant of its agent socket); its value printed, or {\"waiting\": N} for a use that waits for its person, which is asked about again with --waiting N.").arg(Arg::new("name").long("name").required(true)).arg(Arg::new("user").long("user")).arg(Arg::new("host").long("host").required(true)).arg(Arg::new("client-port").long("client-port").value_parser(value_parser!(u16))).arg(Arg::new("server-port").long("server-port").value_parser(value_parser!(u16))).arg(Arg::new("session").long("session")).arg(Arg::new("grant").long("grant").conflicts_with_all(["client-port", "server-port", "session"])).arg(Arg::new("ssh").long("ssh").action(ArgAction::SetTrue).help("A signature for SSH to the host, not an HTTPS request")).arg(Arg::new("reason").long("reason").help("The agent's own words for what the use is for: shown to the person asked as the agent's, one cleaned line")).arg(Arg::new("waiting").long("waiting").value_parser(value_parser!(u64)).help("The number this very use was told it waits under: how it stands now")))
+        .subcommand(Command::new("secret-use").about("For the secrets daemon alone (ADR-052): one use of a secret, judged by its rule, the caller read from the kernel's word of the loopback connection (or from the grant of its agent socket); its value printed, or {\"waiting\": N} for a use that waits for its person, which is asked about again with --waiting N.").arg(Arg::new("name").long("name").required(true)).arg(Arg::new("user").long("user")).arg(Arg::new("host").long("host").required(true)).arg(Arg::new("client-port").long("client-port").value_parser(value_parser!(u16))).arg(Arg::new("server-port").long("server-port").value_parser(value_parser!(u16))).arg(Arg::new("session").long("session")).arg(Arg::new("grant").long("grant").conflicts_with_all(["client-port", "server-port", "session"])).arg(Arg::new("ssh").long("ssh").action(ArgAction::SetTrue).help("A signature for SSH to the host, not an HTTPS request")).arg(Arg::new("reason").long("reason").help("The agent's own words for what the use is for: shown to the person asked as the agent's, one cleaned line")).arg(Arg::new("waiting").long("waiting").value_parser(value_parser!(u64)).help("The number this very use was told it waits under: how it stands now")))
         .subcommand(
             Command::new("secret-grant")
                 .about("The approver lets their own agent use one secret without asking, whatever it reads meanwhile (ADR-051, ADR-052 4): the secret (--name; --user: their own, else the system's) for MINUTES (1 to 480); ledgered.")
@@ -970,32 +970,26 @@ fn no_core() -> Result<()> {
 }
 
 /// Who holds the client end of the loopback connection from `client` to the secrets daemon at `server`, by the
-/// kernel's own table (ADR-052): that account and its uid. Both ends are read: the other must be the daemon's.
+/// kernel's own word (ADR-052): that account and its uid. Both ends are asked for: the other must be the daemon's.
+/// Each is the one socket with exactly those two ends, 127.0.0.1 at both (`torq_wire::peer`, as the model proxy
+/// names its caller: one question of the kernel, whatever else is open). The daemon is not taken at its word for
+/// who asks: even a daemon that lied could use a secret only for someone connected to it.
 fn connected(client: u16, server: u16) -> Result<(String, u32)> {
-    use torq_broker::secrets::uid_of_connection;
+    use torq_wire::peer::uid_of_loopback;
     use torq_wire::secrets::{DAEMON, PORT};
     if server != PORT {
         anyhow::bail!("refused: a use is of a connection to the secrets daemon's port ({PORT})");
     }
     let read = |p: &str| std::fs::read_to_string(p).unwrap_or_default();
-    // Read again where the two ends are not both found: a table that changed while it was written can leave a
-    // socket out. (Two connections with the same ports are found again each time, and are no one's each time.)
-    let found = |t: &str| uid_of_connection(t, server, client).is_some() && uid_of_connection(t, client, server).is_some();
-    let mut tables = String::new();
-    for _ in 0..3 {
-        tables = format!("{}{}", read("/proc/net/tcp"), read("/proc/net/tcp6"));
-        if found(&tables) {
-            break;
-        }
-    }
     let (passwd, group) = (read("/etc/passwd"), read("/etc/group"));
     // Only the account's name is wanted: whom an agent serves is not read here (no agent map is passed).
     let account = |uid: u32| torq_broker::socket::caller(uid, &passwd, &group, &Default::default()).map(|c| c.name);
-    let daemon = uid_of_connection(&tables, server, client).map(account).transpose()?;
+    let asked = |local: u16, remote: u16| uid_of_loopback(local, remote).context("asking the kernel who holds the connection");
+    let daemon = asked(server, client)?.map(account).transpose()?;
     if daemon.as_deref() != Some(DAEMON) {
         anyhow::bail!("refused: no connection from 127.0.0.1:{client} to the secrets daemon");
     }
-    let uid = uid_of_connection(&tables, client, server).context("refused: the connection has gone")?;
+    let uid = asked(client, server)?.context("refused: the connection has gone")?;
     Ok((account(uid)?, uid))
 }
 
