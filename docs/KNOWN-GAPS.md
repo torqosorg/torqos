@@ -2096,15 +2096,35 @@ Its §5 lists claims without a test.
      an agent that makes many requests (refused sites cost one line each) has the oldest files removed, each
      removal a line of its own. What it did before is then gone from the record, though the record says that
      files were removed and when.
-   - **A person can make an agent's request no one's.** Someone who opens a connection from 127.0.0.2 with the
-     client port of a live connection of an agent's, to the proxy's or the secrets daemon's port, makes the
-     lookup ambiguous at that moment: the agent's request is refused, never taken as the person's. A nuisance,
-     not a leak.
+   - **A caller is named by one question of the kernel** (fixed 2026-11-17, the security reader's second round):
+     the proxy and the broker ask the kernel's socket diagnostics (`NETLINK_SOCK_DIAG`) for the one socket with
+     exactly a connection's two ends, at a constant cost (`torq_wire::peer`). Before, each connection read the
+     whole table of TCP connections, up to three times, on the proxy's one thread: an account that opened many
+     connections stalled every caller; and the lookup went by the ports, so someone on 127.0.0.2 with an agent's
+     client port made that agent's request no one's. Neither is so now.
    - **Other services that act for whoever asks are not all surveyed.** Checked: the name services (closed,
-     above), polkit (refuses the agents), the abstract unix sockets of the `agent-run` test machine (one, systemd-udevd's datagram socket, which fetches nothing; an agent reaches every abstract socket of the machine, under `torq agent run` and in its service, since both share its network namespace; a desktop's were not listed). Not
-     checked: CUPS (cupsd can be asked to add a printer at a host the caller names, and then connects there),
-     avahi, the Flatpak system helper, geoclue on COSMIC. Each, where it runs, may make a connection for an
-     agent past the fence.
+     above), polkit (refuses the agents), avahi (its bus name refused to the agents and its socket hidden where
+     they run, since 2026-11-17; a desktop turns it on), the abstract unix sockets (closed since 2026-11-17: below).
+     Not checked: CUPS (cupsd can be asked to add a printer at a host the caller names, and then connects there),
+     the Flatpak system helper, geoclue2 on COSMIC (it asks a location service on the network for whoever the
+     bus lets ask), NetworkManager's methods that only read (an agent is refused everything at polkit, but what
+     NetworkManager answers without asking polkit, the networks around, is not listed). Each, where it runs, may
+     make a connection for an agent past the fence, or tell it something of the network around.
+   - **Abstract unix sockets and signals are closed by Landlock** (2026-11-17, the security reader's second
+     round). An agent shares the machine's network namespace, and every unix socket with an abstract name
+     (Xwayland's `@/tmp/.X11-unix/X0` on a desktop) was in its reach. Now everything run as an agent, in its
+     service and under `torq agent run`, starts through `torq-agent-scope`, which asks the kernel for Landlock's
+     scopes: it reaches only abstract sockets that it or what it started made, and signals only those. **This
+     needs Linux 6.12 or later** (Landlock's sixth version): on an older kernel nothing runs as an agent, and it
+     says so; TorqOS's kernel is newer. Not closed by it: a unix socket with a path in the file system (those are
+     guarded by their files' permissions, as for any account).
+   - **A pair of sockets** (`socketpair`) of any family but unix is refused in both ways an agent runs, by the
+     same filter (2026-11-17): systemd's `RestrictAddressFamilies` judges `socket` and not `socketpair` (its
+     source, `seccomp_restrict_address_families`, and the `agent-service` test, where a TIPC pair was refused
+     only once the filter was loaded too).
+   - **No descriptor the person's terminal left open reaches the agent** (2026-11-17): sudo keeps every
+     descriptor below the highest `torq agent run` hands it (`-C`), so the launcher closes every one but those it
+     names before anything runs as the agent.
    - **The secrets daemon's port (127.0.0.1:7800) can be taken by any account while the daemon is down**
      (ADR-052, from before; found with the model proxy's, 2026-11-17). The fence lets an agent's packets
      through to it, so whoever listens there is sent an agent's requests for a secret's use: never a secret
@@ -2113,17 +2133,49 @@ Its §5 lists claims without a test.
      same fix (systemd holding the port) makes the daemon's end of each connection root's, and the broker
      names the daemon by that end (`broker/src/main.rs`, `connected`), so it needs a change at the broker
      of its own.
-   - **The proxy's memory is bounded only by its unit.** An agent may have 64 requests under way, and up to
-     16 MiB of each is held to be read until its answer ends: a gigabyte for one agent that tries. Two
-     agents doing so reach the unit's limit (2 GiB); the proxy is then restarted, and the requests under
-     way are lost unrecorded. Not built: one budget for everything held at once.
+   - **The proxy's memory has one budget for what the record holds** (2026-11-17): every request's body and every
+     answer's unfinished part kept to be read, all agents together, within 512 MiB (a quarter of the unit's
+     2 GiB). Past it, what comes is passed on unread and its line says so in plain words. What is not counted:
+     the moment a request's held body is read at its end (one message at a time), and what hyper and rustls hold
+     for each connection (bounded by the number of connections).
    - **Lines can be lost when the record cannot be written.** The proxy refuses everything for a person
      whose record it cannot write, but the requests under way at that moment have passed: they are counted
      in a line when writing works again, not recovered. A proxy that is killed loses the lines of the
      requests under way.
-   - **What the record leaves out by design:** the conversation before the new part (it is in earlier
-     lines), the model's private reasoning, pictures, anything past the bounds (each said in the line), and
-     the content of anything asked of the service that is not a request for messages.
+   - **The record shows what the engine sent, not what the person typed or what the engine was told.** The
+     engine (Claude Code, or any program run as the agent) writes every request, so it chooses what is in it. Since
+     2026-11-17 (the security reader's second round) the record keeps, against an engine that would hide a part:
+     the engine's instructions to its model (the request's `system` field and the engine's own messages: their
+     length and SHA-256 on every request, their words where first sent and wherever they change, cut to 8 KiB),
+     a document's words where it is text, a message that does not read (said, and the reading goes on past it),
+     and a mark on a request that changed what came before in its conversation. That mark compares fingerprints
+     of each request's messages before the model's last one with the last 32 requests of the same conversation
+     and helper (the service's cache marks left out, which move each time); it is kept in the proxy's memory
+     only, so the first request after the proxy starts again, and the next after one too large to read (it is
+     marked, since it cannot be told from a rewrite; the line before says why), are judged without it. An engine
+     that shortens old tool output on its own, as Claude Code may, is marked too: the mark says it happened, not
+     that it was harm. Requests that name no conversation are not compared, and their instructions' words are
+     kept each time.
+   - **A conversation's id, its helpers' ids, and the question on a day's line are the engine's own labels**
+     (`x-claude-code-session-id`, `x-claude-code-agent-id`, the first words of its first request), as it sent
+     them: an engine could give a conversation any id, reuse another's, or begin it with any words. The record
+     names the agent's account by the kernel's word; everything inside a request is the engine's.
+   - **A refusal tells the agent only that it was refused, and that its person decides** (2026-11-17): before,
+     it named the torqcli commands that would open the site or the web, an invitation to ask for them or to
+     write them into a proposal. How to allow a site is in the person's view of the record and the guide.
+   - **NAT64 with a prefix of the operator's own.** Under the web setting, an IPv6 address that carries an IPv4
+     one is judged by the IPv4 address where the prefix is a well-known one (64:ff9b::/96, 64:ff9b:1::/48 is
+     refused whole, 6to4's 2002::/16, `::a.b.c.d`). A network that runs NAT64 under a prefix of its own (RFC 6052
+     lets an operator choose any) is not known to the proxy: an address under it that carries a private IPv4
+     address (the network's own router, say) is judged as the public IPv6 address it looks like, and reached. Not
+     built: reading the network's prefix (RFC 7050's `ipv4only.arpa`, or the router's PREF64 option).
+   - **`torq agent run` says when the fence ended it** (2026-11-17): the launcher waits outside the program's
+     scope, and when the program ended while the fence is down, prints that this is why.
+   - **What the record leaves out by design:** the conversation before the new part (it is in earlier lines, and
+     a request that changed it is marked), the tools the engine offers its model (their names and descriptions,
+     which are words the model reads too: not recorded, nor fingerprinted), the model's private reasoning,
+     pictures and documents that are not text, anything past the bounds (each said in the line), and the content
+     of anything asked of the service that is not a request for messages.
    - **Noise.** Claude Code makes about a dozen direct connections to `api.anthropic.com` and one to its
      usage reports' host for each question; each is refused and is a line. A setting of Claude Code's
      (`CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC`) cut them to two when tried, and also stopped it loading

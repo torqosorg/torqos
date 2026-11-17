@@ -143,8 +143,10 @@ holds no secret.
 ## What your agent can reach, and the record of what it asked
 
 Your agent's account reaches one thing on the network: a TorqOS service on your own machine, the **model
-proxy**. Nothing else: no website, no other machine, no other program on this one. Your own account is not
-affected at all.
+proxy**. Nothing else: no website, no other machine, no other program on this one (not by the network, nor by
+the sockets programs on one machine use among themselves, nor by a signal). Your own account is not affected
+at all. This needs Linux 6.12 or later, which TorqOS has; on an older kernel nothing runs as your agent, and it
+says so.
 
 - **Its model.** When your agent asks its model (Claude, for Claude Code), the request goes through the
   proxy, which passes it on unchanged, your sign-in included, and keeps none of your sign-in. It writes
@@ -185,6 +187,24 @@ Times are in UTC, as the record keeps them. Where old entries were removed for s
 be recorded (a full disk), it says so in those words. In TorqOS Settings, **Agent Activity** shows the same,
 with **Open** on each conversation (also from the Agent page's **Activity** button). What the agent read or
 the model wrote is shown under a `|`: it is their text, not TorqOS's.
+
+What the record shows is **what your agent's program sent to its model**, not what you typed: the two are the
+same only if the program is honest. Also kept, so that you can tell:
+
+- **The program's instructions to its model** (its "system prompt"): their words where they are first sent in a
+  conversation and wherever they change, and a fingerprint on every request.
+- **A conversation rewritten.** The program sends the whole conversation each time; TorqOS records only what is
+  new, and compares the rest with what the same conversation sent before. A request that changed what came
+  before (an earlier question replaced, something put in) is marked: "this request changed what came before in
+  the conversation". Some programs do this on their own (shortening an old tool's output to save room), so the
+  mark is a reason to look, not proof of harm.
+- **Documents** your agent gave its model, where they are text.
+
+A conversation's **id**, its helpers' ids and the **question shown on a day's line** are the program's own labels,
+as it sent them: a program could give a conversation any id and begin it with any words.
+
+When a site is refused, your agent is told only that it was refused and that you decide. How to allow a site is
+for you: each refused site is listed in `show system agent activity` with the command that allows it.
 
 Two things to know about Claude Code:
 

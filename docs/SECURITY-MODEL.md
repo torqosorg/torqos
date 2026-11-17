@@ -85,6 +85,12 @@ an agent account:
   run` an agent may open only the kinds of socket the fence covers (unix, IPv4, IPv6, netlink), as in its
   service: not one to the hypervisor (AF_VSOCK), Bluetooth or the like. Neither may use io_uring, which
   makes sockets of any kind past that filter.
+- **Nor does it reach the other programs of this machine by the ways they talk among themselves** (since
+  2026-11-17): everything run as an agent, in its service and under `torq agent run`, starts under the kernel's
+  Landlock scopes, so it connects to no unix socket with an abstract name but its own (Xwayland's on a desktop,
+  say) and signals no process but its own; it makes no pair of sockets but unix ones; avahi refuses it on the
+  system bus and its socket is hidden. This needs Linux 6.12 or later: on an older kernel nothing runs as an
+  agent. And no descriptor of the person's terminal reaches it but the ones the launcher names.
 - **An agent is never the person at the machine.** polkit refuses every agent account every action, and
   `torq agent run` runs outside the person's login session: an agent cannot power the machine off, change
   its network through NetworkManager, or turn on lingering for itself (which would give it a user manager
@@ -92,14 +98,18 @@ an agent account:
 - **Every request to the model passes through the proxy and is recorded**: whose agent (named by the
   kernel, never by the request), when, which model, how many tokens, what was new in the conversation (the
   question, each tool's result) and what the model answered (its text, each tool it called and with what).
-  The proxy passes the request on as it came, the person's sign-in included, and keeps no credential: the
-  record, the journal and its error messages hold none. **Its port is held by systemd** from early boot and
+  It also keeps the engine's instructions to its model (their words where they first come and change, a
+  fingerprint every time), and marks a request that changed what came before in its conversation. The record
+  shows what the engine sent: its ids and its words are its own. The proxy names each caller by one question of
+  the kernel for that connection's two ends. The proxy passes the request on as it came, the person's sign-in
+  included, and keeps no credential: the record, the journal and its error messages hold none. **Its port is held by systemd** from early boot and
   handed to the proxy, never left free between restarts, so no other account can listen there and be sent
   the agents' requests; without that socket, nothing runs as an agent.
 - **A site is reached only through the proxy, as HTTPS, and only if it is allowed**: signing in to the
   engine's service; the sites the owner lists (`torq agent network hosts`); every site if the owner turns
   the web on (`torq agent network web`, off by default). Each site asked for is recorded, allowed or
-  refused. What passes to an allowed site is encrypted and is not seen.
+  refused; the agent is told it was refused and that its person decides, never how to open it. What passes to an
+  allowed site is encrypted and is not seen.
 - **The record is the person's to read and no one else's** (`/var/lib/torq-model-proxy/<person>/`): not
   another person's, not any agent's account, to read or to write. It is kept within a bound, and says where
   something was cut.
@@ -117,6 +127,9 @@ What this does not do, said plainly (KNOWN-GAPS 6zzx):
   another account's key: the record shows the request, not whose key it carried.
 - **The record holds what the agent read**, cut to 8 KiB a text: file contents, command output. It is as
   private as the person's own files, and is kept as such.
+- **The record is what the engine sent.** The engine writes each request: a conversation's id, the question a
+  day begins with, the words in it are its own. What it could hide is narrowed (its instructions recorded, a
+  rewritten past marked), not closed: the tools it offers its model are not recorded.
 
 ## Accounts and passwords (agreed for M2, 2026-11-01; built: INSTALL.md)
 

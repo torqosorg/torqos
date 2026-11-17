@@ -3955,3 +3955,56 @@ content at the next), and a proposal must be judged on what it does, not on what
      root into a tmpfs of the sandbox's own mount namespace (`/run/torq-agent-instructions/standing.md`, the
      agent's, 0600, seen by no other process and gone when the program ends), and closes the descriptor before
      anything runs as the agent. Claude Code is given that path.
+- **Amended 2026-11-17 (5): the security reader's second round** (of `0167349..be95753`, on `work/harness-p3`;
+  what was run is in `docs/HARNESS-AS-A-SYSTEM.md`).
+  1. **The record could be defeated by the engine that writes the requests.** It recorded only what came after
+     the model's last message, never the `system` field, other blocks by their kind, and it stopped silently at
+     a message that did not read. Now (`proxy/src/read.rs`, `torq_wire::activity`): the engine's instructions
+     (the `system` field and the engine's own messages) as `system` on every request, their length and SHA-256,
+     their words (8 KiB, like any text) where first sent in a conversation and wherever they change; a
+     `document` block's words where its source is text; a message that does not read said in `unread`, the
+     reading going on past it; and `rewritten` on a request whose messages before the model's last one are none
+     of the last 32 requests of the same conversation and helper, by fingerprints of each message (cache marks
+     left out), in the proxy's memory only. `show system agent activity` says it: "This request changed what came
+     before in the conversation", the instructions where they first appear and change, a document's words; a
+     day's line counts the requests that changed what came before. The line's format grows by optional fields and
+     one kind of item (`document`), so every earlier line reads as before; `VERSION` stays 1 (an older reader
+     counts a line with the new kind as unread). And it is said, in KNOWN-GAPS 6zzx and the guide, that the record
+     shows what the engine sent, and that a conversation's id, its helpers' and a day's question are the engine's
+     own labels. Not recorded: the tools the engine offers (KNOWN-GAPS 6zzx).
+  2. **A caller is named by one question of the kernel** (`torq_wire::peer`): `NETLINK_SOCK_DIAG` (inet_diag) asked
+     for the one socket with exactly a connection's two ends, 127.0.0.1 at both, established (the kernel's
+     lookup falls back to a listener, which is no one), through rustix with no unsafe code here; the proxy (its
+     unit allows `AF_NETLINK` for it) and the broker, for the secrets daemon, use the one implementation. Reading
+     `/proc/net/tcp` and `tcp6` cost as much as the table, up to three times, on the proxy's one thread: any
+     account could stall every caller by opening connections. And since the lookup is by both ends, a socket on
+     127.0.0.2 with an agent's ports no longer makes that agent's request no one's.
+  3. **One budget for what the record holds at once**: 512 MiB (`RECORD_BUDGET`, a quarter of the unit's
+     `MemoryMax`), counted in bytes by a semaphore, across every request body and every answer's unfinished part
+     of every agent. Past it, what comes is passed on unread, and the line says so in plain words.
+  4. **Abstract unix sockets and signals: Landlock's scopes** (`torq-agent-scope`, agent/src/scope, the `landlock`
+     crate). An agent shares the machine's network namespace, where every abstract socket is (Xwayland's on a
+     desktop). Everything run as an agent starts through it, in its service (before the bridge) and under `torq
+     agent run` (inside bubblewrap, before each program): `LANDLOCK_SCOPE_ABSTRACT_UNIX_SOCKET` and
+     `LANDLOCK_SCOPE_SIGNAL`, a hard requirement, so on a kernel before Linux 6.12 (Landlock's sixth version)
+     nothing runs, and it says so. The service's `SystemCallFilter` allows the three calls it makes (`seccomp`,
+     `landlock_create_ruleset`, `landlock_restrict_self`), each of which only takes away from its caller. A small
+     program of our own was chosen over a systemd property (systemd has none for Landlock's scopes) and over
+     setting them in the bridge (the launcher's way needs the same program, so both ways are one).
+  5. **Avahi refused**: its bus name (`org.freedesktop.Avahi`) is denied to every agent account beside
+     systemd-resolved's, and `/run/avahi-daemon` hidden in both sandboxes. geoclue2 and NetworkManager's methods
+     that only read are named among the services not surveyed.
+  6. **No descriptor leaks into the sandbox**: the launcher's inner script closes every descriptor from 3 but the
+     shared folder's and the instructions' (which it closes itself after using them) before anything runs as the
+     agent: sudo keeps every descriptor below the `-C` torqcli gives it.
+  7. **`socketpair` of any family but unix is refused**, in the filter bubblewrap loads and, through
+     `torq-agent-scope --families`, the same filter in the agent's service: systemd's `RestrictAddressFamilies`
+     judges `socket()` only (its source, `seccomp_restrict_address_families`, adds rules for `SCMP_SYS(socket)`
+     alone).
+  8. **A refusal no longer tells the agent how to open the fence**: a site not listed, or an address of the
+     machine's own network, is answered that it is refused, that its person decides, and that the refusal is in
+     the person's record. The commands are in the person's view (a refused site's line in `show system agent
+     activity` names the one that allows it) and the guide.
+  9. **NAT64 under an operator's own prefix** is not known to the proxy (KNOWN-GAPS 6zzx); no code.
+  10. **`torq agent run` says when the fence ended it**: the launcher no longer `exec`s systemd-run; it waits
+      outside the program's scope, and where the program ended while the fence is down, it says that this is why.
