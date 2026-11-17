@@ -3722,7 +3722,7 @@ content at the next), and a proposal must be judged on what it does, not on what
   same reason (their torqcli's `nix eval` is refused): not changed here, on the open list (KNOWN-GAPS 6zzv).
 
 ## ADR-057 — The model proxy, its record, and the agents' closed network
-- **Status:** accepted and built, 2026-11-16, on `work/harness-p3` (the first half of phase 3 of
+- **Status:** accepted and built, 2026-11-16 (on `main` since its full check passed at ac18d2b, 2026-11-17; the first half of phase 3 of
   `docs/HARNESS-AS-A-SYSTEM.md`, which says what was run). Not built here: showing the record (`show system
   agent activity`, the page in TorqOS Settings), which is the second half: built since, amendment (4) below.
 - **Context:** The machine's agent is the person's coding tool (ADR-055). It runs fenced: its own account,
