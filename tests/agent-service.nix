@@ -89,7 +89,7 @@ pkgs.testers.runNixOSTest {
     torq.agent.tools = [ "claude-code" ];
     torq.agent.engine = "claude-code";
     torq.agent.claudeCode = claude;
-    environment.systemPackages = [ pkgs.socat pkgs.jq pkgs.tmux pkgs.procps pkgs.strace (lib.hiPrio torqcli) (lib.hiPrio setfacl) ];
+    environment.systemPackages = [ pkgs.socat pkgs.jq pkgs.tmux pkgs.procps pkgs.strace (lib.hiPrio torqcli) (lib.hiPrio setfacl) pkgs.nftables ];
   };
 
   testScript = ''

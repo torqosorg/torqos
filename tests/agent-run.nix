@@ -23,7 +23,7 @@ pkgs.testers.runNixOSTest {
     # each copy and never get there: 40 seconds a time (measured), longer than this test waits for an answer.
     nix.settings.min-free = 0;
     # python3: a socket of any family, made as a program would.
-    environment.systemPackages = [ pkgs.socat pkgs.jq pkgs.bubblewrap pkgs.python3 ];
+    environment.systemPackages = [ pkgs.socat pkgs.jq pkgs.bubblewrap pkgs.python3 pkgs.nftables ];
     # polkit, as a desktop has it: what it allows a person at the machine, it must never allow an agent.
     security.polkit.enable = true;
     # Room for the many files the sweep race below walks (the default disk runs out of inodes at ~75k).
