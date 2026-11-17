@@ -173,7 +173,7 @@ One consistent deletion, so nothing dead is left behind.
       the web (WebFetch) is a setting, said plainly, with what it costs the audit. (Built: `torq agent
       network hosts`, `torq agent network web`. Whether a first sign-in completes inside the fence has not
       been tried: KNOWN-GAPS 6zzx.)
-- [ ] One full check.
+- [x] One full check (2026-11-17, at ac18d2b; what it failed for first is below, "Phase 3's full checks").
 
 ### Phase 4: opencode, API keys and local models
 - [ ] `torq agent engine opencode`, driven through the Agent Client Protocol on its standard streams.
@@ -698,3 +698,11 @@ Kimi); a person's own Claude Code outside the fence.
     there); a desktop's Xwayland socket, geoclue2 and NetworkManager; the real Claude Code's requests through the
     rewrite mark (its own shortening of old tool output may mark requests: not measured); `desktop-agent` and the
     other VM tests.
+- **Phase 3's full checks** (2026-11-17, the check host, `nix flake check --keep-going --max-jobs 2`). Two runs,
+    and one test alone. At 8e63749: failed in `torq-settings` only, its vendored crates' hash out of date after
+    `torq-wire` took `rustix` for the caller's lookup, and in the five checks that need it (`desktop`,
+    `desktop-agent`, `desktop-defaults`, `tunnels`, `agent-units-its-own`); every other check passed, `installer`
+    among them. The hash was set (ac18d2b, the only change after 8e63749). At ac18d2b: every check passed but
+    `desktop-agent`, whose owner was still at the greeter after the password was typed twice (no panel within 30
+    seconds; the greeter came up about four minutes after boot, under the run's load). Run alone at the same
+    commit it passed (278 seconds). Merged to `main` after that.

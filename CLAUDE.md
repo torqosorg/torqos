@@ -141,6 +141,12 @@ removed TorqOS's own loop: `torq-doctor`, `torq doctor`, `torq agent propose`,
 the settings under `torq agent doctor` and `torq agent model` with the local model's unit, the
 `torq-resident-<person>` accounts, the broker's resident rule and session trust. Every proposal of an agent's
 waits for its person. Do not bring any of it back as a stub: a local model returns with opencode (phase 4).
+Phase 3 (on `main` since its full check passed at ac18d2b, 2026-11-17) is the model proxy and its record (ADR-057):
+`torq-model-proxy` on 127.0.0.1:7801 records each agent's conversations with its model, the agents' network is
+closed by nft (`inet torq_agents`): an agent reaches the proxy, which passes on its requests to the model and to
+the sites its person allowed, and nothing else on the network; a person reads the
+record with `show system agent activity` or the Agent Activity page in TorqOS Settings. Phase 4 (opencode, API keys
+as secrets, local models) is next.
 
 Being built on `work/harness-p3` (ADR-057, 2026-11-16; not merged, no full check): the first half of phase 3.
 The model proxy (`torq-model-proxy`: every request an agent makes of its model passes through it and is
@@ -212,16 +218,15 @@ removed since phase 2; the agent as it is now (ADR-055) is unreleased.
   amended 2026-11-16: two words, one kind of grant; a person reads no word about taint or sessions for it).
 - **Tests.** Unit tests are `#[test]` functions: torqcli 518, broker 338 (across its test binaries), wire 33,
   secrets 15, agent 60 (+2 ignored), torq-model-proxy 53 (+1 ignored, by hand) (each run 2026-11-17 on
-  `work/harness-p3`, after the security reader's second round of ADR-057). The
+  `work/harness-p3`, after the security reader's second round of ADR-057, now on `main`). The
   `settings/` crate has no tests of its own; it is type-checked with `nix develop .#torq-settings`.
   VM tests are `checks` in `flake.nix`, one file each in `tests/`. CI's `test` workflow runs on pull
   requests, by hand and inside each release, **not on pushes to `main`**, and GitHub does not run the
   full `nix flake check` for development: it runs on the check host. The last full `nix flake check`
-  passed on 2026-11-16 at f82d281 (phase 2 of `docs/HARNESS-AS-A-SYSTEM.md`, its third run: what the first two failed for
-  is in that file); the Secrets page and the agent's UIs
-  are type-checked only. On `work/harness-p3` (2026-11-16, no full check): wire 28, torq-model-proxy 38 (+1 ignored: the
-  by-hand entry), agent 60 (+2 ignored) and the VM test `model-proxy` ran; the real Claude Code 2.1.316 was put through the proxy by hand on
-  the check host, outside any unit. No test presses a button in the approval dialog (a VM test has the applet see a waiting use and send its yes). Say what was actually run; do not write that
+  passed on 2026-11-17 at ac18d2b (phase 3 of `docs/HARNESS-AS-A-SYSTEM.md`, the model proxy; `desktop-agent` passed
+  run alone after a timed-out login in the full run: what each run failed for is in that file); the Secrets page and the agent's UIs
+  are type-checked only. The real Claude Code 2.1.316 was put through the proxy by hand on the check host, outside
+  any unit (2026-11-16); never on the laptop. No test presses a button in the approval dialog (a VM test has the applet see a waiting use and send its yes). Say what was actually run; do not write that
   something is tested when it only exists.
 - **The dev host** is torq5, "the check host" (user `viper`, repo `~/torq`), an x86_64 ESXi VM with KVM, since 2026-11-15: development and every heavy build (`nix flake check`, VM tests, the images) run there. The owner's laptop (hostname `torqlaptop`, user `cwdavis`) is a TorqOS machine, the only one the desktop runs on, and is the try-it-out machine: it follows the `tested` branch and nothing is developed on it. Session worktrees live beside
   `~/torq`; do not edit in another session's.
