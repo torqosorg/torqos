@@ -748,7 +748,7 @@ impl<'a> Session<'a> {
                 }
                 Ok(out)
             }
-            Op::ShowCommits { .. } | Op::ShowRollback { .. } | Op::ShowAlarms { .. } | Op::ShowServices | Op::ShowPackages { .. } | Op::ShowLedger { .. } | Op::ShowVersion | Op::ShowUptime | Op::ShowInterfaces { .. } | Op::ShowStorage | Op::ShowUsers | Op::ShowProposals | Op::ShowSnapshots | Op::ShowBackups | Op::ShowSecrets | Op::ShowSecretsAllowed | Op::ShowSecretsWaiting | Op::ShowRemote | Op::ShowDesktop => {
+            Op::ShowCommits { .. } | Op::ShowRollback { .. } | Op::ShowAlarms { .. } | Op::ShowServices | Op::ShowPackages { .. } | Op::ShowLedger { .. } | Op::ShowVersion | Op::ShowUptime | Op::ShowInterfaces { .. } | Op::ShowStorage | Op::ShowUsers | Op::ShowProposals | Op::ShowSnapshots | Op::ShowBackups | Op::ShowSecrets | Op::ShowSecretsAllowed | Op::ShowSecretsWaiting | Op::ShowAgentActivity(_) | Op::ShowRemote | Op::ShowDesktop => {
                 self.show_operational(op)
             }
             Op::ClearCommit => self.clear_commit(),
@@ -1161,6 +1161,7 @@ impl<'a> Session<'a> {
             Op::ShowSecrets => crate::secrets::shown(&self.repo, &self.machine.secrets_kept()?),
             Op::ShowSecretsAllowed => self.machine.secret_approvals(false),
             Op::ShowSecretsWaiting => self.machine.secret_approvals(true),
+            Op::ShowAgentActivity(view) => crate::agent::activity::shown(&self.me, &view),
             Op::ShowRemote => self.machine.remote(),
             Op::ShowDesktop => Ok(crate::desktop::shown(&crate::desktop::status(&self.repo, &self.me, &crate::desktop::Paths::of_home()?)?)),
             Op::ShowServices => {

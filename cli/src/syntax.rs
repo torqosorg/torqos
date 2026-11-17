@@ -76,6 +76,8 @@ pub enum Op {
     ShowSecrets,
     /// `show system secrets allowed`: the grants of secret uses that hold.
     ShowSecretsAllowed,
+    /// `show system agent activity [day <day> | conversation <id>]`: what your agent did, asked and read (ADR-057).
+    ShowAgentActivity(crate::agent::activity::View),
     /// `show system secrets waiting`: your agent's uses that wait for your answer.
     ShowSecretsWaiting,
     ShowServices,
@@ -283,6 +285,9 @@ pub fn render(op: &Op) -> String {
         Op::ShowSecrets => "show system secrets".into(),
         Op::ShowSecretsAllowed => "show system secrets allowed".into(),
         Op::ShowSecretsWaiting => "show system secrets waiting".into(),
+        Op::ShowAgentActivity(crate::agent::activity::View::Days) => "show system agent activity".into(),
+        Op::ShowAgentActivity(crate::agent::activity::View::Day(d)) => format!("show system agent activity day {d}"),
+        Op::ShowAgentActivity(crate::agent::activity::View::Conversation(c)) => format!("show system agent activity conversation {c}"),
         Op::ShowServices => "show services".into(),
         Op::ShowLedger { count: None } => "show system ledger".into(),
         Op::ShowLedger { count: Some(n) } => format!("show system ledger {n}"),
@@ -417,6 +422,9 @@ mod tests {
             (Mode::Operational, Op::ShowSecrets),
             (Mode::Operational, Op::ShowSecretsAllowed),
             (Mode::Operational, Op::ShowSecretsWaiting),
+            (Mode::Operational, Op::ShowAgentActivity(crate::agent::activity::View::Days)),
+            (Mode::Operational, Op::ShowAgentActivity(crate::agent::activity::View::Day("2026-11-17".into()))),
+            (Mode::Operational, Op::ShowAgentActivity(crate::agent::activity::View::Conversation("0fa37e66".into()))),
             (Mode::Operational, Op::Request(Request::SecretApproval(crate::secrets::Approval::Grant { name: "gh".into(), user: Some("dev".into()), minutes: 480 }))),
             (Mode::Operational, Op::Request(Request::SecretApproval(crate::secrets::Approval::Grant { name: "ci".into(), user: None, minutes: 5 }))),
             (Mode::Operational, Op::Request(Request::SecretApproval(crate::secrets::Approval::Grant { name: "all".into(), user: None, minutes: 30 }))),
@@ -574,6 +582,21 @@ mod tests {
         assert_eq!(request("deny #7"), Request::SecretApproval(Approval::Answer { n: 7, approved: false, rest: false }));
     }
 
+    /// `show system agent activity`: by day, one day, one conversation; a word that is no day or no id is said to
+    /// be that.
+    #[test]
+    fn the_agents_activity_is_read_by_day_or_by_conversation() {
+        use crate::agent::activity::View;
+        let read = |line: &str| parse_line(Mode::Operational, &line.split(' ').map(String::from).collect::<Vec<_>>()).map(|(op, _)| op);
+        assert_eq!(read("show system agent activity").unwrap(), Op::ShowAgentActivity(View::Days));
+        assert_eq!(read("show system agent activity day 2026-11-17").unwrap(), Op::ShowAgentActivity(View::Day("2026-11-17".into())));
+        assert_eq!(read("show system agent activity conversation 0fa37e66").unwrap(), Op::ShowAgentActivity(View::Conversation("0fa37e66".into())));
+        assert_eq!(read("sh sys ag act conv 0fa37e66").unwrap(), Op::ShowAgentActivity(View::Conversation("0fa37e66".into())), "abbreviated as every command is");
+        assert_eq!(format!("{:#}", read("show system agent activity day today").unwrap_err()), "'today' is not a day (YYYY-MM-DD, as 2026-11-17: show system agent activity lists the days kept)");
+        assert_eq!(format!("{:#}", read("show system agent activity conversation ../x").unwrap_err()), "'../x' is not a conversation's id (letters, digits and dashes: show system agent activity lists them)");
+        assert!(read("show system agent").is_err(), "the agent alone shows nothing");
+    }
+
     /// Every operation, rendered as it is typed, parses back to itself.
     #[test]
     fn every_op_round_trips() {
@@ -600,7 +623,7 @@ mod tests {
             (Mode::Configuration, "top top show", "'top' is not a word here (after `top`) (one of: commit, delete, edit"),
             (Mode::Operational, "exit now", "'now' is not a word here: nothing may follow `exit`"),
             (Mode::Operational, "show packages", "needs <word> (words to search for, in names and descriptions)"),
-            (Mode::Operational, "show system", "not a whole command: one of these may follow: alarms, backups, commit, desktop, ledger, proposals, remote, rollback, secrets, snapshots, storage, uptime"),
+            (Mode::Operational, "show system", "not a whole command: one of these may follow: agent, alarms, backups, commit, desktop, ledger, proposals, remote, rollback, secrets, snapshots, storage, uptime"),
             (Mode::Operational, "request system revert x", "'x' is not a number (change numbers: 1, 2, …)"),
             (Mode::Configuration, "up 0", "'0' is out of range: levels go from 1 to 10000"),
             (Mode::Configuration, "commit check comment x", "'comment' is not a word here: nothing may follow `commit check`"),

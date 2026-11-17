@@ -19,7 +19,8 @@
 //! everything around it stays out of the agent's reach, by name or otherwise.
 
 /// The person's own agent, as every program of theirs reaches it (ADR-051 4): its client, what a
-/// conversation shows, and what the agent is here.
+/// conversation shows, what it did (the model proxy's record: `activity`), and what the agent is here.
+pub mod activity;
 pub mod client;
 pub mod conversation;
 pub mod crash;

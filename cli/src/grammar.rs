@@ -52,6 +52,10 @@ pub enum Value {
     Use,
     /// A secret's name (ADR-052).
     Secret,
+    /// A day of the agent's record (`show system agent activity day`): YYYY-MM-DD, in UTC.
+    Day,
+    /// A conversation of the agent's, by its engine's name for it or the start of that.
+    Conversation,
     /// A host a secret may be used for: a DNS name.
     Host,
     /// Free text (a comment).
@@ -76,6 +80,8 @@ impl Value {
             Value::Use => "<use>",
             Value::Secret => "<secret>",
             Value::Host => "<host>",
+            Value::Day => "<day>",
+            Value::Conversation => "<conversation>",
             Value::Text => "<\"text\">",
         }
     }
@@ -109,6 +115,10 @@ impl Value {
             Value::Secret => bail!("'{w}' is not a secret's name (letters, digits, - and _: show system secrets lists them)"),
             Value::Host if torq_wire::secrets::host_ok(w) => Ok(()),
             Value::Host => bail!("'{w}' is not a host name (lowercase, with a dot: api.github.com; no address, no wildcard)"),
+            Value::Day if torq_wire::activity::day_ok(w) => Ok(()),
+            Value::Day => bail!("'{w}' is not a day (YYYY-MM-DD, as 2026-11-17: show system agent activity lists the days kept)"),
+            Value::Conversation if (1..=torq_wire::activity::MAX_NAME).contains(&w.len()) && w.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_') => Ok(()),
+            Value::Conversation => bail!("'{w}' is not a conversation's id (letters, digits and dashes: show system agent activity lists them)"),
             Value::Text => Ok(()),
             _ => bail!("an empty word is not a {}", self.placeholder()),
         }
@@ -276,6 +286,10 @@ static SHOW: &[Node] = &[
 ];
 
 static SHOW_SYSTEM: &[Node] = &[
+    fixed("agent", "Your agent (torq-agent-<you>)", In::Op).then(&[fixed("activity", "What your agent asked its model, what it read and the sites it asked for, by day: from the model proxy's record, which only you (and root) can read", In::Op).whole(activity).pipes(Pipes::Filters).then(&[
+        fixed("conversation", "One conversation in order: each question, each tool's name and what it returned, each answer", In::Op).then(&[value(Value::Conversation, "Its id, from show system agent activity (its first characters are enough)").whole(activity).pipes(Pipes::Filters)]),
+        fixed("day", "One day's conversations and sites", In::Op).then(&[value(Value::Day, "The day: YYYY-MM-DD, in UTC as the record keeps them").whole(activity).pipes(Pipes::Filters)]),
+    ])]),
     fixed("alarms", "Whether this machine is as its history says", In::Op).whole(|r| Ok(Op::ShowAlarms { display: r.display })).pipes(Pipes::Views(DETAIL)),
     fixed("backups", "The backups the configuration declares: whether each has its key, its snapshots, its last run", In::Op).whole(|_| Ok(Op::ShowBackups)).pipes(Pipes::Filters),
     fixed("commit", "The configurations so far, newest first", In::Op).whole(|r| Ok(Op::ShowCommits { display: r.display })).pipes(Pipes::Views(DETAIL)),
@@ -441,6 +455,16 @@ fn offered(what: &str, allowed: &[Display], d: Option<Display>) -> Result<Option
         }
         d => Ok(d),
     }
+}
+
+/// `show system agent activity [day <day> | conversation <id>]`.
+fn activity(r: &Read) -> Result<Op> {
+    use crate::agent::activity::View;
+    Ok(Op::ShowAgentActivity(match (r.value(Value::Day), r.value(Value::Conversation)) {
+        (Some(d), _) => View::Day(d.to_string()),
+        (None, Some(c)) => View::Conversation(c.to_string()),
+        (None, None) => View::Days,
+    }))
 }
 
 fn show_candidate(r: &Read) -> Result<Op> {
