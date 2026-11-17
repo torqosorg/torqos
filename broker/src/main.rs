@@ -978,7 +978,16 @@ fn connected(client: u16, server: u16) -> Result<(String, u32)> {
         anyhow::bail!("refused: a use is of a connection to the secrets daemon's port ({PORT})");
     }
     let read = |p: &str| std::fs::read_to_string(p).unwrap_or_default();
-    let tables = format!("{}{}", read("/proc/net/tcp"), read("/proc/net/tcp6"));
+    // Read again where the two ends are not both found: a table that changed while it was written can leave a
+    // socket out. (Two connections with the same ports are found again each time, and are no one's each time.)
+    let found = |t: &str| uid_of_connection(t, server, client).is_some() && uid_of_connection(t, client, server).is_some();
+    let mut tables = String::new();
+    for _ in 0..3 {
+        tables = format!("{}{}", read("/proc/net/tcp"), read("/proc/net/tcp6"));
+        if found(&tables) {
+            break;
+        }
+    }
     let (passwd, group) = (read("/etc/passwd"), read("/etc/group"));
     // Only the account's name is wanted: whom an agent serves is not read here (no agent map is passed).
     let account = |uid: u32| torq_broker::socket::caller(uid, &passwd, &group, &Default::default()).map(|c| c.name);

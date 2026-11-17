@@ -320,14 +320,17 @@ pub fn uid_of_connection(table: &str, client: u16, server: u16) -> Option<u32> {
         let (addr, port) = field.split_once(':')?;
         Some((LOOPBACK.contains(&addr), u16::from_str_radix(port, 16).ok()?))
     };
-    let mut found = table.lines().filter_map(|l| {
+    // Each socket once: the kernel writes the table a page at a time, and one that changes between two pages can
+    // show a socket twice. A socket is its two ends' addresses, its uid and its inode together.
+    let found: std::collections::BTreeSet<(bool, &str, &str, Option<u32>, &str)> = table.lines().filter_map(|l| {
         let f: Vec<&str> = l.split_whitespace().collect();
-        // sl local remote st tx:rx tr:tm retrnsmt uid …; 01 is ESTABLISHED.
+        // sl local remote st tx:rx tr:tm retrnsmt uid timeout inode …; 01 is ESTABLISHED.
         let ((here, local), (there, remote)) = (split(f.get(1)?)?, split(f.get(2)?)?);
-        (f.len() > 7 && local == client && remote == server && f[3] == "01").then(|| (here && there, f[7].parse::<u32>().ok()))
-    });
+        (f.len() > 9 && local == client && remote == server && f[3] == "01").then(|| (here && there, f[1], f[2], f[7].parse::<u32>().ok(), f[9]))
+    }).collect();
+    let mut found = found.into_iter();
     match (found.next(), found.next()) {
-        (Some((true, uid)), None) => uid,
+        (Some((true, _, _, uid, _)), None) => uid,
         _ => None,
     }
 }
@@ -668,6 +671,14 @@ mod tests {
         let spoof = TABLE.to_string() + "   4: 0200007F:C350 0100007F:1E78 01 00000000:00000000 00:00000000 00000000  1000        0 5 1 0000000000000000 20 4 30 10 -1\n";
         assert_eq!(uid_of_connection(&spoof, 0xC350, 0x1E78), None);
         assert_eq!(uid_of_connection(&spoof, 0x1E78, 0xC350), Some(990), "the daemon's own end is still one");
+    }
+
+    /// The kernel writes its table a page at a time, and a table that changes between two pages can show one
+    /// socket twice (seen with the model proxy's same lookup, 2026-11-17): still one connection.
+    #[test]
+    fn one_socket_shown_twice_is_one_connection() {
+        let twice = TABLE.to_string() + "   4: 0100007F:C350 0100007F:1E78 01 00000000:00000000 00:00000000 00000000  4343        0 2 1 0000000000000000 20 4 30 10 -1\n";
+        assert_eq!(uid_of_connection(&twice, 0xC350, 0x1E78), Some(4343));
     }
 
     /// Sam's own rules: `torq-agent` there is sam's own agent.

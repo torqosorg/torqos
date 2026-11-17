@@ -19,14 +19,17 @@ pub fn uid_of_connection(table: &str, client: u16, server: u16) -> Option<u32> {
         let (addr, port) = field.split_once(':')?;
         Some((LOOPBACK.contains(&addr), u16::from_str_radix(port, 16).ok()?))
     };
-    let mut found = table.lines().filter_map(|l| {
+    // Each socket once: the kernel writes the table a page at a time, and one that changes between two pages can
+    // show a socket twice. A socket is its two ends' addresses, its uid and its inode together.
+    let found: std::collections::BTreeSet<(bool, &str, &str, Option<u32>, &str)> = table.lines().filter_map(|l| {
         let f: Vec<&str> = l.split_whitespace().collect();
-        // sl local remote st tx:rx tr:tm retrnsmt uid …; 01 is ESTABLISHED.
+        // sl local remote st tx:rx tr:tm retrnsmt uid timeout inode …; 01 is ESTABLISHED.
         let ((here, local), (there, remote)) = (split(f.get(1)?)?, split(f.get(2)?)?);
-        (f.len() > 7 && local == client && remote == server && f[3] == "01").then(|| (here && there, f[7].parse::<u32>().ok()))
-    });
+        (f.len() > 9 && local == client && remote == server && f[3] == "01").then(|| (here && there, f[1], f[2], f[7].parse::<u32>().ok(), f[9]))
+    }).collect();
+    let mut found = found.into_iter();
     match (found.next(), found.next()) {
-        (Some((true, uid)), None) => uid,
+        (Some((true, _, _, uid, _)), None) => uid,
         _ => None,
     }
 }
@@ -40,7 +43,9 @@ pub fn caller(peer: SocketAddr, local: SocketAddr) -> Option<u32> {
         return None;
     }
     let read = |p: &str| std::fs::read_to_string(p).unwrap_or_default();
-    uid_of_connection(&format!("{}{}", read("/proc/net/tcp"), read("/proc/net/tcp6")), peer.port(), local.port())
+    // Read again where it was not found: a table that changed while it was written can leave a socket out. (Two
+    // connections with the same ports are found again each time, and are no one's each time.)
+    (0..3).find_map(|_| uid_of_connection(&format!("{}{}", read("/proc/net/tcp"), read("/proc/net/tcp6")), peer.port(), local.port()))
 }
 
 #[cfg(test)]
@@ -76,6 +81,15 @@ mod tests {
         assert_eq!(uid_of_connection(&spoof, 0xC350, 0x1E79), None, "two connections with these ports: no one");
         let six = "  sl  local_address                         remote_address                        st\n   0: 0000000000000000FFFF00000200007F:C350 0000000000000000FFFF00000100007F:1E79 01 00000000:00000000 00:00000000 00000000  1000 0 9\n";
         assert_eq!(uid_of_connection(&format!("{TABLE}{six}"), 0xC350, 0x1E79), None, "in the IPv6 table too");
+    }
+
+    /// The kernel writes its table a page at a time, and a table that changes between two pages can show one
+    /// socket twice (seen: one run in forty of tests/proxy.rs, with many connections opening and closing). The
+    /// same socket twice is still one connection; two sockets are two.
+    #[test]
+    fn one_socket_shown_twice_is_one_connection() {
+        let twice = TABLE.to_string() + "   4: 0100007F:C350 0100007F:1E79 01 00000000:00000000 00:00000000 00000000   994        0 2 1 0000000000000000 20 4 30 10 -1\n";
+        assert_eq!(uid_of_connection(&twice, 0xC350, 0x1E79), Some(994));
     }
 
     /// A caller on another loopback address (127.0.0.2) is no one, whoever it is.
