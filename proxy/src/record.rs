@@ -56,23 +56,8 @@ pub struct Recorder {
     folders: Mutex<HashMap<String, Folder>>,
 }
 
-/// A file of the record by its name: `<day>.<part>.jsonl`, the part written as the proxy writes it (`part_name`):
-/// three digits at least, more past 999 (`1000`), never a zero in front of a longer one. Its day and part, or
-/// not one of the record's.
-fn part_of(name: &str) -> Option<(&str, u32)> {
-    let (day, rest) = name.strip_suffix(".jsonl")?.split_once('.')?;
-    let dated = day.len() == 10 && day.bytes().enumerate().all(|(i, b)| if i == 4 || i == 7 { b == b'-' } else { b.is_ascii_digit() });
-    if !dated || !rest.bytes().all(|b| b.is_ascii_digit()) {
-        return None;
-    }
-    let n: u32 = rest.parse().ok()?;
-    (rest == format!("{n:03}")).then_some((day, n))
-}
-
-/// The name of part `n` of `day`'s file.
-fn part_name(day: &str, n: u32) -> String {
-    format!("{day}.{n:03}.jsonl")
-}
+// A file of the record by its name, and the name of a part: torq-wire's, which torqcli reads them by too.
+use torq_wire::activity::{file_name as part_name, file_of as part_of};
 
 impl Recorder {
     pub fn new(dir: PathBuf, bounds: Bounds) -> Self {
@@ -334,17 +319,6 @@ mod tests {
         assert_eq!(files[0].1[0].line, Line::Lost(Lost { time: files[0].1[0].line.clone().time(), lines: 2 }));
         assert!(r.ready("alice"));
         assert_eq!(read(&d.path().join("alice"))[0].1.len(), 1, "said once");
-    }
-
-    #[test]
-    fn only_the_records_own_names_are_its_files() {
-        assert_eq!(part_of("2026-11-16.000.jsonl"), Some(("2026-11-16", 0)));
-        assert_eq!(part_of("2026-11-16.012.jsonl"), Some(("2026-11-16", 12)));
-        assert_eq!(part_of("2026-11-16.1000.jsonl"), Some(("2026-11-16", 1000)));
-        assert_eq!(part_of("2026-11-16.123456.jsonl"), Some(("2026-11-16", 123_456)));
-        for not in ["2026-11-16.jsonl", "2026-11-16.0.jsonl", "2026-11-16.0001.jsonl", "2026-11-16.99999999999.jsonl", "2026-11-16.+12.jsonl", "notes.txt", "2026-11-16.000.json", "x026-11-16.000.jsonl", "../2026-11-16.000.jsonl"] {
-            assert_eq!(part_of(not), None, "{not}");
-        }
     }
 
     trait Time {

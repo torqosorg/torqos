@@ -248,6 +248,29 @@ pub struct Lost {
     pub lines: u64,
 }
 
+/// Whether `s` is a day as the record's files are named by: `2026-11-16` (digits, dashes where those are).
+pub fn day_ok(s: &str) -> bool {
+    s.len() == 10 && s.bytes().enumerate().all(|(i, b)| if i == 4 || i == 7 { b == b'-' } else { b.is_ascii_digit() })
+}
+
+/// The name of part `n` of `day`'s file: `<day>.<part>.jsonl`, the part three digits at least, more past 999
+/// (`2026-11-16.1000.jsonl`).
+pub fn file_name(day: &str, n: u32) -> String {
+    format!("{day}.{n:03}.jsonl")
+}
+
+/// A file of the record by its name, as `file_name` writes it (never a zero in front of a longer part): its
+/// day and part, or not one of the record's. The writer and every reader order the files by these, the part
+/// as a number.
+pub fn file_of(name: &str) -> Option<(&str, u32)> {
+    let (day, rest) = name.strip_suffix(".jsonl")?.split_once('.')?;
+    if !day_ok(day) || !rest.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    let n: u32 = rest.parse().ok()?;
+    (rest == format!("{n:03}")).then_some((day, n))
+}
+
 /// A name the engine gave, safe to keep and to show: printable ASCII without spaces, at most `MAX_NAME`. One
 /// that is anything else is not kept at all.
 pub fn name(s: &str) -> Option<String> {
@@ -321,6 +344,21 @@ mod tests {
         assert!(kept.len() <= MAX_TEXT && kept.chars().all(|c| c == 'é'));
         let odd = format!("a{}", "é".repeat(MAX_TEXT));
         assert_eq!(cut(&odd).0.len(), MAX_TEXT - 1, "never in the middle of a character");
+    }
+
+    #[test]
+    fn only_the_records_own_names_are_its_files() {
+        assert_eq!(file_of("2026-11-16.000.jsonl"), Some(("2026-11-16", 0)));
+        assert_eq!(file_of("2026-11-16.012.jsonl"), Some(("2026-11-16", 12)));
+        assert_eq!(file_of("2026-11-16.1000.jsonl"), Some(("2026-11-16", 1000)));
+        assert_eq!(file_of("2026-11-16.123456.jsonl"), Some(("2026-11-16", 123_456)));
+        for not in ["2026-11-16.jsonl", "2026-11-16.0.jsonl", "2026-11-16.0001.jsonl", "2026-11-16.99999999999.jsonl", "2026-11-16.+12.jsonl", "notes.txt", "2026-11-16.000.json", "x026-11-16.000.jsonl", "../2026-11-16.000.jsonl"] {
+            assert_eq!(file_of(not), None, "{not}");
+        }
+        for n in [0, 7, 999, 1000, 123_456] {
+            assert_eq!(file_of(&file_name("2026-11-16", n)), Some(("2026-11-16", n)), "read back as written");
+        }
+        assert!(day_ok("2026-11-17") && !day_ok("2026-1-17") && !day_ok("2026/11/17") && !day_ok("today"));
     }
 
     #[test]
