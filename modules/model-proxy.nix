@@ -82,8 +82,8 @@ let
       [ -n "$uid" ] || refuse "no such account"
       table=$(nft list table inet torq_agents 2>/dev/null) || refuse "its table, inet torq_agents, is not loaded"
       rule=$(printf '%s\n' "$table" | grep -E '^[[:space:]]*meta skuid .* jump agent$' || true)
-      # shellcheck disable=SC2086 # the rule's words, one a line
-      printf '%s\n' $(printf '%s\n' "$rule" | tr -d '{},"') | grep -qx -e "$agent" -e "$uid" || refuse "its rule does not name $agent"
+      # The rule's words, one a line: the account named, by its name or its number.
+      printf '%s\n' "$rule" | tr -d '{},"' | tr -s ' \t' '\n\n' | grep -qx -e "$agent" -e "$uid" || refuse "its rule does not name $agent"
       printf '%s\n' "$table" | grep -qE '^[[:space:]]*reject with icmpx admin-prohibited$' || refuse "its chain refuses nothing"
     '';
   };

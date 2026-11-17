@@ -80,7 +80,14 @@ an agent account:
   account a connection belongs to, refuses every other packet of an agent's: any other address, IPv4 or
   IPv6, any other port of this machine, DNS. The services that would look a name up for anyone (nscd,
   systemd-resolved) are closed to it as well. A person's own account is not touched. Nothing is started as
-  an agent while that rule is not loaded.
+  an agent while that rule is not loaded: the agent's service and `torq agent run` look at the rule itself,
+  not only at its unit, and stopping the fence ends every program running as an agent. Under `torq agent
+  run` an agent may open only the kinds of socket the fence covers (unix, IPv4, IPv6, netlink), as in its
+  service: not one to the hypervisor (AF_VSOCK), Bluetooth or the like.
+- **An agent is never the person at the machine.** polkit refuses every agent account every action, and
+  `torq agent run` runs outside the person's login session: an agent cannot power the machine off, change
+  its network through NetworkManager, or turn on lingering for itself (which would give it a user manager
+  running its own programs outside its sandbox). No agent account lingers.
 - **Every request to the model passes through the proxy and is recorded**: whose agent (named by the
   kernel, never by the request), when, which model, how many tokens, what was new in the conversation (the
   question, each tool's result) and what the model answered (its text, each tool it called and with what).
