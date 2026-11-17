@@ -583,3 +583,49 @@ Kimi); a person's own Claude Code outside the fence.
     port, which the fence lets through, only evaluates; so do `agent`, `agent-mcp`, `agent-proposals`,
     `agents-per-person`, `desktop-agent`); the real Claude Code inside the fence; a sign-in; a machine with
     NixOS's nftables firewall turned on; an agent holding many large requests at once.
+- **What was run for the security reader's round** (2026-11-17, the check host, on `work/harness-p3`; ADR-057,
+  amended, 3; KNOWN-GAPS 6zzx; no full check).
+  - *The reruns owed by the port and spoofing fixes:* `agent-service` and `agent-run` passed at 0167349. `secrets`
+    failed: its agent signs in over SSH, and the fence refuses the agent's account every connection but the
+    proxy's and the secrets daemon's. The test now has root make that connection for it (a unix socket only the
+    test opens) and checks that the agent's own `ssh` is refused; it also holds its own daemon's refusal of a
+    caller on 127.0.0.2. Passed.
+  - *Built:* polkit's rule refusing the agents everything, linger off for every agent, `torq agent run` in a
+    scope of its own in `torq-agents.slice` (which the fence binds), its seccomp filter for socket families,
+    `torq-agent-fence-check` before the agent's service and `torq agent run`, a failed reload stopping the
+    fence; in the proxy, a non-agent answered and closed at once, `HEAD_WAIT`, the connection bounds, the
+    record's parts past 999, more private addresses and the machine's own networks, the model's refusal's
+    words; the `web` setting's description. **Found on the way:** the kernel's table can show one socket twice
+    while it changes, and since the spoofing fix that made an agent's request no one's (tests/proxy.rs failed
+    about one run in forty with the new connection tests beside it; 0 in 150 after the fix); the same fix went
+    into the broker's lookup for the secrets daemon. `systemd-run --scope` expands `${…}` in the command it
+    is given unless told not to (`--expand-environment=no`): the first VM run of the launcher stopped there.
+  - *Unit tests, each crate's whole suite, in the dev shell:* torq-model-proxy 49 (+1 ignored), broker 341,
+    secrets 15, wire 28, agent 60 (+2 ignored). Each new proxy test was seen failing before its fix (the
+    record past part 999, the addresses, the model's refusal's words, a non-agent closed at once, a slow head
+    and an idle connection, the connection bounds, a socket shown twice); the escaped-size test passed before
+    any change (the size was already counted as written) and is kept as a guard.
+  - *VM tests, `--max-jobs 2`:* `agent-run` passed on its sixth run with the new subtests (socket families;
+    polkit from a real console session, the agent and polkit's rule alone; the fence by its table; the fence
+    stopped ending a session). The runs before stopped at: shellcheck's words on the fence check (twice);
+    `systemd-run` expanding the launcher's variables; logind's JSON naming no session state; a long line typed
+    at the console losing keys; the console's first prompt scrolled away by kernel messages. `agent-service`
+    passed on its second run (the first: `nft` not in the test machine). `secrets` passed. `model-proxy`
+    passed on its second run: the first stopped because the test's "internet" site was on the network the
+    machine itself sits on, which the web setting now refuses; the site is now past a router, and the test
+    checks that an address of the machine's own network is refused with the web on. `agent-assertions`
+    built (linger, polkit's rule changed or taken away, the unit's fence check).
+  - *Each guard broken once, a test seen to fail, then put back:* in the crates, a socket shown twice counted
+    as two (proxy and broker), the connection bounds, the head's timeout, the machine's own networks, 6to4,
+    NAT64, the record ordered by name, a line's size not counted. In VM tests, each in a worktree of its own
+    from the commit: polkit's rule matching no agent (`agent-run`, the polkit subtest); no scope (the same, the
+    agent's cgroup in the person's session); no seccomp filter (the socket families subtest); the launcher
+    without the fence check (the fence subtest); the agent's service without it (`agent-service`, its fence
+    subtest).
+  - *Not broken to see a test fail:* the non-agent's closing at once (seen failing before the fix only); the
+    failed reload stopping the fence (no test makes a reload fail); linger off (an assertion's case, not run
+    on a machine); the slice ending a session at a terminal when the fence stops (its subtest passed, no
+    mutation run).
+  - *Not run:* `nix flake check`; every other VM test (`agent`, `agent-mcp`, `agent-proposals`,
+    `agents-per-person`, `desktop-agent` only evaluate); a desktop's polkit and NetworkManager; a reload that
+    fails for real; one memory budget for the proxy (not built).
