@@ -22,7 +22,10 @@ pkgs.testers.runNixOSTest {
     # has under half a gigabyte to write in, less than `min-free` (1 GiB), so Nix would collect garbage before
     # each copy and never get there: 40 seconds a time (measured), longer than this test waits for an answer.
     nix.settings.min-free = 0;
-    environment.systemPackages = [ pkgs.socat pkgs.jq pkgs.bubblewrap ];
+    # python3: a socket of any family, made as a program would.
+    environment.systemPackages = [ pkgs.socat pkgs.jq pkgs.bubblewrap pkgs.python3 ];
+    # polkit, as a desktop has it: what it allows a person at the machine, it must never allow an agent.
+    security.polkit.enable = true;
     # Room for the many files the sweep race below walks (the default disk runs out of inodes at ~75k).
     virtualisation.diskSize = 4096;
   };
@@ -150,5 +153,72 @@ pkgs.testers.runNixOSTest {
     with subtest("a sandbox of its own still runs inside (as Claude Code's does)"):
         out = agent("bwrap --ro-bind / / --dev /dev --proc /proc --unshare-all --die-with-parent sh -c 'id -un; echo nested'")
         assert "nested" in out, out
+
+    with subtest("only the socket families the fence covers, and the agent's service allows (the security reader, 2026-11-17)"):
+        made = "import socket, sys; f = getattr(socket, sys.argv[1]); socket.socket(f, socket.SOCK_STREAM if f != socket.AF_NETLINK else socket.SOCK_RAW); print('made')"
+        machine.succeed("modprobe vsock")
+        # The control: as dev, a socket to the hypervisor (AF_VSOCK) is made; as the agent it is refused.
+        assert "made" in as_dev(f"python3 -c {shlex.quote(made)} AF_VSOCK")
+        out = agent(f"python3 -c {shlex.quote(made)} AF_VSOCK", ok=False)
+        assert "Address family not supported" in out, out
+        for family in ["AF_UNIX", "AF_INET", "AF_INET6", "AF_NETLINK"]:
+            assert "made" in agent(f"python3 -c {shlex.quote(made)} {family}"), family
+
+    # dev at the machine's console: a real session of logind's, local and active, as at a desktop.
+    machine.wait_until_tty_matches("1", "login: ")
+    machine.send_chars("dev\n")
+    machine.wait_until_tty_matches("1", "Password: ")
+    machine.send_chars("Torq-sock-2210\n")
+    machine.wait_until_succeeds("loginctl list-sessions -o json | jq -e '.[] | select(.user == \"dev\" and .tty == \"tty1\" and .state == \"active\")'", timeout=60)
+
+    def at_console(line, done):
+        """`line` typed at dev's console; then waits for the file `done`."""
+        machine.succeed(f"rm -f {done}")
+        machine.send_chars(line + f"; touch {done}\n")
+        machine.wait_for_file(done, timeout=60)
+
+    logind = "busctl call org.freedesktop.login1 /org/freedesktop/login1 org.freedesktop.login1.Manager"
+
+    with subtest("an agent is never the person at the machine: polkit refuses it lingering and power, in her session or out of it"):
+        # The control: dev herself, in her session, may turn lingering on (polkit's default for the person at the machine).
+        at_console(f"{logind} SetUserLinger ubb $(id -u) true false > /tmp/dev-linger 2>&1; {logind} SetUserLinger ubb $(id -u) false false >> /tmp/dev-linger 2>&1", "/tmp/dev-linger-done")
+        assert machine.succeed("cat /tmp/dev-linger").strip() == "", machine.succeed("cat /tmp/dev-linger")
+        # Her agent, under `torq agent run` from that console: in a scope of its own, out of her session, and refused.
+        inner = (f"cat /proc/self/cgroup > ~/cgroup; {logind} SetUserLinger ubb $(id -u) true false > ~/linger 2>&1; echo exit $? >> ~/linger; "
+                 f"{logind} CanPowerOff > ~/power 2>&1; grep -q no ~/power && {{ {logind} PowerOff b false >> ~/power 2>&1; echo exit $? >> ~/power; }}")
+        at_console(f"torq agent run -- sh -c {shlex.quote(inner)}", "/tmp/agent-polkit-done")
+        home = "/var/lib/torq-agent-dev"
+        cgroup = machine.succeed(f"cat {home}/cgroup")
+        assert "session-" not in cgroup and "torq-agents.slice" in cgroup, cgroup
+        linger = machine.succeed(f"cat {home}/linger")
+        assert "exit 0" not in linger and "Access denied" in linger, linger
+        machine.fail("test -e /var/lib/systemd/linger/torq-agent-dev")
+        power = machine.succeed(f"cat {home}/power")
+        assert '"no"' in power and "exit 0" not in power and "Access denied" in power, power
+        # And polkit's rule alone, with the agent's process left in her session as it was before (root puts it
+        # there, through sudo, as dev): refused all the same.
+        machine.send_chars(f"sudo setpriv --reuid=torq-agent-dev --regid=torq-agent-dev --clear-groups {logind} SetUserLinger ubb $(id -u torq-agent-dev) true false > /tmp/rule-linger 2>&1; echo exit $? >> /tmp/rule-linger; touch /tmp/rule-done\n")
+        machine.wait_until_tty_matches("1", "password for dev")
+        machine.send_chars("Torq-sock-2210\n")
+        machine.wait_for_file("/tmp/rule-done", timeout=60)
+        rule = machine.succeed("cat /tmp/rule-linger")
+        assert "exit 0" not in rule and "Access denied" in rule, rule
+        machine.fail("test -e /var/lib/systemd/linger/torq-agent-dev")
+
+    with subtest("the fence by its table, not its unit: a table taken away with the unit still up, and nothing runs as the agent"):
+        machine.succeed("nft delete table inet torq_agents")
+        machine.succeed("systemctl is-active torq-agent-network.service")
+        out = as_dev("torq agent run -- true", ok=False)
+        assert "fence" in out and "not in place" in out, out
+        machine.succeed("systemctl reload torq-agent-network.service")
+        as_dev("torq agent run -- true")
+
+    with subtest("the fence stopped ends a program running as the agent at a terminal"):
+        machine.succeed("su - dev -c 'torq agent run -- sleep 300' > /dev/null 2>&1 &")
+        machine.wait_until_succeeds("pgrep -u torq-agent-dev sleep", timeout=20)
+        machine.succeed("systemctl stop torq-agent-network.service")
+        machine.wait_until_fails("pgrep -u torq-agent-dev", timeout=20)
+        machine.succeed("systemctl start torq-agent-network.service")
+        as_dev("torq agent run -- true")
   '';
 }

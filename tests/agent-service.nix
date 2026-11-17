@@ -633,5 +633,15 @@ pkgs.testers.runNixOSTest {
         assert as_user("alice", "torq ask hello").strip() == "Hello alice."
         machine.succeed("su - alice -c 'tmux kill-session -t s'")
         machine.succeed("torq-broker verify")
+
+    with subtest("the fence by its table, not its unit: a table taken away with the unit still up, and the agent's service does not start"):
+        machine.succeed(f"systemctl stop {unit}")
+        machine.succeed("nft delete table inet torq_agents")
+        machine.succeed("systemctl is-active torq-agent-network.service")
+        as_user("alice", "torq ask hello", ok=False)
+        machine.fail(engine)
+        assert "not in place" in machine.succeed(f"journalctl -u {unit} --no-pager"), "the reason, said in its journal"
+        machine.succeed("systemctl reload torq-agent-network.service")
+        assert as_user("alice", "torq ask hello").strip() == "Hello alice."
   '';
 }

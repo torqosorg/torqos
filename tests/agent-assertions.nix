@@ -164,7 +164,10 @@ let
       (refuses "the socket's mode changed" (withEngine { systemd.sockets."torq-agent@dev".socketConfig.SocketMode = lib.mkForce "0666"; }) "systemd.units.\"torq-agent@dev.socket\": ${said}")
       (refuses "the unit's text forced" (withEngine { systemd.units."torq-agent@dev.service".text = lib.mkForce "[Service]\nExecStart=/bin/sh -c true\n"; }) "ExecStart: it says `ExecStart=/bin/sh -c true`")
     ])
-    (refuses "a lingering agent" (withEngine { users.users.torq-agent-dev.linger = true; }) "the agent account has no user manager of its own")
+    (refuses "a lingering agent" { users.users.torq-agent-dev.linger = lib.mkForce true; } "the agent account has no user manager of its own")
+    (refuses "a lingering agent, with an engine" (withEngine { users.users.torq-agent-dev.linger = lib.mkForce null; }) "the agent account has no user manager of its own")
+    (refuses "polkit's rule for the agents changed" { environment.etc."polkit-1/rules.d/00-torq-agents.rules".text = lib.mkForce "// nothing"; } "polkit refuses every agent account")
+    (refuses "polkit's rule for the agents taken away" { environment.etc."polkit-1/rules.d/00-torq-agents.rules".enable = false; } "polkit refuses every agent account")
     (refuses "tracing allowed" (withEngine { boot.kernel.sysctl."kernel.yama.ptrace_scope" = lib.mkForce 0; }) "kernel.yama.ptrace_scope")
     # A start that fails does not cost the person their socket (KNOWN-GAPS 6zzo): what waits on the socket is
     # turned away when the service ends, so a failed start is not tried again for the same question, and the

@@ -64,6 +64,29 @@ let
       }
     }
   '';
+  # Whether the fence is there for one agent account, by the kernel's word and not by its unit's: the unit stays
+  # active through a `nft flush ruleset` or a table deleted by hand, which leave the account the whole network
+  # (the security reader, 2026-11-17). The table must be loaded, its rule must name the account (nft writes the
+  # account by its number, or by its name), and its chain must refuse. Asked by the agent's service before it
+  # starts (modules/agent.nix) and by `torq agent run` (modules/agent-run.sh), as root.
+  fenceCheck = pkgs.writeShellApplication {
+    name = "torq-agent-fence-check";
+    runtimeInputs = [ pkgs.nftables pkgs.coreutils pkgs.gnugrep pkgs.getent ];
+    text = ''
+      agent=''${1:?torq-agent-fence-check <agent account>}
+      refuse() {
+        echo "the fence that closes $agent's network is not in place ($1), and nothing is run as the agent without it. An administrator can put it back: systemctl restart torq-agent-network" >&2
+        exit 1
+      }
+      uid=$(getent passwd -- "$agent" | cut -d: -f3) || refuse "no such account"
+      [ -n "$uid" ] || refuse "no such account"
+      table=$(nft list table inet torq_agents 2>/dev/null) || refuse "its table, inet torq_agents, is not loaded"
+      rule=$(printf '%s\n' "$table" | grep -E '^[[:space:]]*meta skuid .* jump agent$' || true)
+      # shellcheck disable=SC2086 # the rule's words, one a line
+      printf '%s\n' $(printf '%s\n' "$rule" | tr -d '{},"') | grep -qx -e "$agent" -e "$uid" || refuse "its rule does not name $agent"
+      printf '%s\n' "$table" | grep -qE '^[[:space:]]*reject with icmpx admin-prohibited$' || refuse "its chain refuses nothing"
+    '';
+  };
 in
 {
   options.torq.modelProxy = {
@@ -91,6 +114,13 @@ in
         no_proxy = "127.0.0.1,localhost";
       };
       description = "What every program run as an agent is told of the proxy: the agent's service and the launcher of `torq agent run` set it (modules/agent.nix).";
+    };
+    fenceCheck = lib.mkOption {
+      type = lib.types.package;
+      internal = true;
+      readOnly = true;
+      default = fenceCheck;
+      description = "`torq-agent-fence-check <agent account>`: whether the fence's table is loaded and closes that account, asked before anything starts as an agent (the agent's service, `torq agent run`).";
     };
     fence = lib.mkOption {
       type = lib.types.str;
@@ -269,9 +299,27 @@ in
         Type = "oneshot";
         RemainAfterExit = true;
         ExecStart = "${nft} -f ${rules}";
-        ExecReload = "${nft} -f ${rules}";
-        ExecStop = "${nft} delete table inet torq_agents";
+        # A reload that fails stops the fence, and with it every agent's service and every `torq agent run`
+        # (the slice below): the unit is never left up over rules it could not load.
+        ExecReload = pkgs.writeShellScript "torq-agent-network-reload" ''
+          if ! ${nft} -f ${rules}; then
+            echo "the fence's rules could not be loaded: the fence is stopped, and every agent with it" >&2
+            ${config.systemd.package}/bin/systemctl stop --no-block torq-agent-network.service
+            exit 1
+          fi
+        '';
+        # Not there already is as good as deleted.
+        ExecStop = "-${nft} delete table inet torq_agents";
       };
+    };
+
+    # Where `torq agent run` puts each program it runs as an agent (a scope of its own, modules/agent-run.sh):
+    # bound to the fence, so that the fence stopped, by an administrator or by a reload that failed, ends every
+    # one of them, as it stops the agents' services.
+    systemd.slices.torq-agents = {
+      description = "TorqOS: the programs run as an agent at a terminal (torq agent run)";
+      bindsTo = [ "torq-agent-network.service" ];
+      after = [ "torq-agent-network.service" ];
     };
 
     # systemd-resolved answers a name for anyone on the system bus. An agent's account is refused there: a

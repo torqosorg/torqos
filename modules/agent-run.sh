@@ -140,6 +140,12 @@ if ! systemctl is-active --quiet torq-agent-network.service; then
   echo "torq agent run: the fence that closes your agent's network is not up, and nothing is run as your agent without it. An administrator can look: systemctl status torq-agent-network" >&2
   exit 2
 fi
+# And by the kernel's word, not only its unit's: the table loaded, its rule naming this account (a `nft flush
+# ruleset` leaves the unit up and the account open).
+if ! why=$(torq-agent-fence-check "$agent" 2>&1); then
+  echo "torq agent run: $why" >&2
+  exit 2
+fi
 share="" fd=""
 if [ "${1-}" = --share-fd ]; then
   fd=${2-} share=${3-}
@@ -171,7 +177,12 @@ fi
 # shellcheck disable=SC2016
 # The shared directory bound, as root, and checked to be the one that was opened (a descriptor from
 # another mount namespace cannot itself be bound); every home hidden around it; then the agent.
-exec unshare --mount --propagation private -- bash -euo pipefail -c '
+# All of it in a scope of its own (a transient unit of systemd's, this very process moved into it): out of the
+# person's login session, so that nothing run as the agent is taken for the person at the machine by what
+# decides by the session (polkit, logind; modules/agent.nix refuses the agents everything at polkit besides).
+# In the agents' slice, which the fence binds: the fence stopped ends this too (modules/model-proxy.nix).
+exec systemd-run --scope --slice=torq-agents.slice --quiet --collect --description="$person's agent, run at a terminal (torq agent run)" -- \
+  unshare --mount --propagation private -- bash -euo pipefail -c '
   share=$1 fd=$2 agent=$3 home=$4
   shift 4
   if [ -n "$share" ]; then
@@ -205,8 +216,11 @@ exec unshare --mount --propagation private -- bash -euo pipefail -c '
   # looked up is a message sent, and the network of the agent is closed, DNS included (ADR-057).
   mkdir -p -m 0755 /run/nscd /run/systemd/resolve
   # The sandbox, as the agent: every program the launcher runs as the agent runs in it (the link below too).
+  # Its socket families too (unix, IPv4, IPv6, netlink, as the agent service allows): the filter is read from
+  # descriptor 9, which each run below opens on it (/etc/torq/agent-socket-families.bpf, modules/agent.nix);
+  # without it, bwrap runs nothing.
   sandbox=(setpriv --reuid "$agent" --regid "$agent" --init-groups --no-new-privs --inh-caps=-all --bounding-set=-all --
-    bwrap --die-with-parent --unshare-pid --dev-bind / / --proc /proc
+    bwrap --die-with-parent --unshare-pid --seccomp 9 --dev-bind / / --proc /proc
       --tmpfs /run/user --tmpfs /tmp --tmpfs /root --tmpfs /var/lib/torq-agent-memory --tmpfs /run/credentials
       --tmpfs /run/nscd --tmpfs /run/systemd/resolve
       --ro-bind /etc/torq/claude-code /etc/claude-code
@@ -228,11 +242,11 @@ exec unshare --mount --propagation private -- bash -euo pipefail -c '
   # the tools of TorqOS, and the tool runs all the same. (No apostrophe in this script: it is one
   # single-quoted word.)
   if jq -e ".tools | index(\"claude-code\")" /etc/torq/agent-tools.json >/dev/null 2>&1 && [ -x /run/current-system/sw/bin/torq-mcp ]; then
-    "${sandbox[@]}" --chdir "$home" -- /run/current-system/sw/bin/torq-mcp --link </dev/null \
+    "${sandbox[@]}" --chdir "$home" -- /run/current-system/sw/bin/torq-mcp --link </dev/null 9</etc/torq/agent-socket-families.bpf \
       || echo "torq agent run: TorqOS is not linked into the settings of Claude Code this time (it runs without them)" >&2
   fi
   rc=0
-  "${sandbox[@]}" --chdir "${share:-$home}" -- "$@" || rc=$?
+  "${sandbox[@]}" --chdir "${share:-$home}" -- "$@" 9</etc/torq/agent-socket-families.bpf || rc=$?
   # A set-id file the agent left in the folder would run as the agent outside the sandbox, later: its bits
   # are taken off. As the agent, not as root: the files are owned by the agent, and an owner may change
   # them. The folder belongs to the person, who could swap a folder in it for a link while this runs,

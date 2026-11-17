@@ -130,6 +130,10 @@ let
       # The bridge (agent/src/service): it runs the engine named here, hands it each question, and passes on
       # what it says. `bridged` (below) says this unit is only where an engine is chosen.
       ExecStart = "${cfg.package}/bin/torq-agent-service ${person} ${toString cfg.engine}";
+      # The fence by the kernel's word, not by its unit's (which stays active through a `nft flush ruleset`): its
+      # table loaded and naming this account, or nothing starts. As root (`+`: reading the packet filter needs it),
+      # before anything runs as the agent.
+      ExecStartPre = "+${proxy.fenceCheck}/bin/torq-agent-fence-check ${agent}";
       # The listening socket as standard input (Accept=no): the program takes it from there.
       StandardInput = "socket";
       StandardOutput = "journal";
@@ -238,10 +242,29 @@ let
   # `torq agent run` (ADR-041, 5): a person starts a program as their own agent. This runs as root
   # (through sudo), hides every home and the people's runtime directories, gives a private /tmp,
   # binds in only the directory shared with it, and drops to the caller's agent for good.
+  # polkit's rule for the agents (below): every action refused to every agent account, whatever session its
+  # process is in and whatever the action's own default. (No person is named as an agent is: the assertion below.)
+  polkitRuleFile = "polkit-1/rules.d/00-torq-agents.rules";
+  polkitRule = ''
+    // TorqOS (modules/agent.nix): an agent's account (torq-agent-<person>) is never the person at the machine.
+    polkit.addRule(function(action, subject) {
+      if (subject.user.indexOf("torq-agent-") === 0) {
+        return polkit.Result.NO;
+      }
+    });
+  '';
+  # The seccomp filter of `torq agent run`'s sandbox, made when the system is built (modules/agent-socket-families.c).
+  socketFamilies = pkgs.runCommandCC "torq-agent-socket-families.bpf" { buildInputs = [ pkgs.libseccomp ]; } ''
+    $CC -O2 -Wall -Werror -o filter ${./agent-socket-families.c} -lseccomp
+    ./filter > $out
+    test -s $out
+  '';
   agentRun = pkgs.writeShellApplication {
     name = "torq-agent-run";
     # systemctl and sed: holding the agent's service still while a directory is shared (--hold-frozen).
-    runtimeInputs = [ pkgs.bubblewrap pkgs.coreutils pkgs.util-linux pkgs.bash pkgs.jq pkgs.getent pkgs.gnused config.systemd.package ];
+    runtimeInputs = [ pkgs.bubblewrap pkgs.coreutils pkgs.util-linux pkgs.bash pkgs.jq pkgs.getent pkgs.gnused config.systemd.package
+      # Whether the fence is in place for the agent, by its table (modules/model-proxy.nix).
+      proxy.fenceCheck ];
     text = builtins.readFile ./agent-run.sh;
   };
 in
@@ -472,6 +495,8 @@ in
       packages = lib.optional (claudeChosen && claudeAllowed) cfg.claudeCode;
       # The system journal, where `torq agent journal` gives it: read access, for everything run as the agent.
       extraGroups = lib.optional cfg.journal "systemd-journal";
+      # Never a user manager of its own (below).
+      linger = false;
     }) agents;
     users.groups = lib.mapAttrs (_: _: { }) agents;
 
@@ -491,6 +516,9 @@ in
     # And whether `claude`, typed plainly, is a command here (what a person is told to type to sign in).
     environment.etc."torq/agent-tools.json".text = builtins.toJSON { inherit (cfg) tools engine; plainCommand = claudeChosen && claudeAllowed && cfg.plainCommand; };
     environment.etc."torq/skills/torqos/SKILL.md".source = ./agent-skill.md;
+    # The kinds of socket a program run as an agent may open under `torq agent run` (unix, IPv4, IPv6, netlink: what
+    # the agent's service allows), as the seccomp filter bubblewrap is given (modules/agent-socket-families.c).
+    environment.etc."torq/agent-socket-families.bpf".source = socketFamilies;
     # Where the launcher binds a shared directory first, as root, before checking it (root's alone).
     systemd.tmpfiles.settings."10-torq-agent"."/run/torq-agent-stage".d = { mode = "0700"; user = "root"; group = "root"; };
     security.sudo.extraRules = [{
@@ -504,6 +532,27 @@ in
       Defaults!${agentRun}/bin/torq-agent-run closefrom_override, env_reset
     '';
   }
+
+  (lib.mkIf (agents != { }) {
+    # polkit decides what an account may ask of the system's services (logind: power off, reboot, lingering;
+    # NetworkManager: the network), and much of it it allows a person at the machine, by the session a process is
+    # in. An agent is never that person, wherever its process is: every action of polkit's is refused to every
+    # agent account, before any other rule is read (the file's name sorts first). (The security reader,
+    # 2026-11-17: under `torq agent run` the agent was in its person's session, and could turn on lingering for
+    # itself, which gives it a user manager that runs its own units outside both sandboxes and the fence check.)
+    environment.etc.${polkitRuleFile}.text = polkitRule;
+    assertions = [{
+      assertion = config.environment.etc.${polkitRuleFile}.enable && config.environment.etc.${polkitRuleFile}.text == polkitRule;
+      message = "environment.etc.\"${polkitRuleFile}\": polkit refuses every agent account (torq-agent-<person>) everything, by TorqOS's rule and no other text: an agent is never the person at the machine.";
+    }]
+    # No agent account lingers: lingering is how an account gets a user manager, whose units would be its own
+    # to make, outside its service's control group, its sandbox and the fence check. Off, by NixOS (its
+    # linger-users unit takes away a linger file of the account at each start), whether an engine is chosen or not.
+    ++ lib.mapAttrsToList (agent: _: {
+      assertion = config.users.users.${agent}.linger == false;
+      message = "users.users.${agent}.linger: the agent account has no user manager of its own (its units would be its own to make, outside its service's control group and its sandbox).";
+    }) agents;
+  })
 
   # Each person's agent, as a service (ADR-051 3, ADR-055 3): `torq-agent@<person>.service`, started by its
   # socket the first time the person asks (`torq ask`, the agent's window), so it costs nothing until then.
@@ -522,10 +571,6 @@ in
         {
           assertion = !(sc ? Delegate) && !(sc ? DelegateSubgroup);
           message = "systemd.services.\"torq-agent@${person}\": no Delegate or DelegateSubgroup — nothing ${person}'s agent starts may leave this unit's control group, which only root may move a process into or out of: stopping the agent ends all of it.";
-        }
-        {
-          assertion = (config.users.users.${agent}.linger or null) != true;
-          message = "users.users.${agent}.linger: the agent account has no user manager of its own (its units would be its own to make, outside its service's control group and its sandbox).";
         }
       ]) agents)
       # Each of the agent's units says what this module writes and nothing else (intendedText, above): who it
