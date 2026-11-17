@@ -198,7 +198,8 @@ pkgs.testers.runNixOSTest {
         assert last["args"] == ["-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose", "--permission-mode", "bypassPermissions"], last
         assert last["user"] == "torq-agent-alice" and last["cwd"] == home, last
         # Its environment is the service's making, the launcher's names and no others.
-        assert last["env"] == ["HOME", "LANG", "LOGNAME", "PATH", "SHELL", "TERM", "USER"], last["env"]
+        # Its environment is made by the service from nothing: these, and what it is told of TorqOS's model proxy (ADR-057).
+        assert last["env"] == ["ANTHROPIC_BASE_URL", "HOME", "HTTPS_PROXY", "LANG", "LOGNAME", "NO_PROXY", "PATH", "SHELL", "TERM", "USER", "https_proxy", "no_proxy"], last["env"]
         linked = json.loads(machine.succeed(f"cat {home}/.claude.json"))["mcpServers"]["torqos"]
         assert linked == {"type": "stdio", "command": "/run/current-system/sw/bin/torq-mcp", "args": [], "env": {}}, linked
         assert machine.succeed(f"readlink {home}/.claude/skills/torqos").strip() == "/etc/torq/skills/torqos"

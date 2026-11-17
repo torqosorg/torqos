@@ -539,3 +539,47 @@ Kimi); a person's own Claude Code outside the fence.
   - *Not tried with the real one:* inside the agent's unit or under `torq agent run` with the fence (the VM
     test has a stand-in there); a sign-in from inside the fence; a claude.ai connector used; a long session;
     more than one conversation at once.
+- **What was run for it** (2026-11-16 and the night after, the check host, on `work/harness-p3`; no full check).
+    Unit tests in the dev shell, each crate's whole suite: wire 28, torq-model-proxy 38 (+1 ignored: the
+    by-hand entry; against a stand-in for the model's service that speaks TLS with a test authority's
+    certificate), agent 60 (+2 ignored). The broker's `agent::` tests by hand (7); its whole suite, torqcli's
+    and the secrets daemon's ran as their packages were built for the VM tests (their only change is
+    torq-wire, and one test in the broker). The proxy's package builds in the Nix sandbox with its tests.
+    Every check of the flake evaluates (39: `model-proxy` is new). `agent-assertions` built (the proxy's
+    account and unit among its cases). VM tests, `--max-jobs 2`:
+  - `model-proxy` (new, two machines): passed, 11 subtests, on its eighth run. The runs before stopped at:
+    the test's own node settings (once); a person's zsh reading an IPv6 address's brackets as a pattern;
+    `rm` asking a question nobody answered; the test's expectation of how an access rule is printed; **the
+    record's files readable by the proxy's own group through the rule new files inherit** (no one is in
+    that group; the rule is now said whole); **the engine in the agent's service not told of the proxy**
+    (the bridge makes its environment from nothing: fixed in `agent/`, with a unit test); and the test's
+    own way of keeping the fence down. The proxy's unit: exposure 1.4 by `systemd-analyze security`.
+  - `agent-service` (its unit changed): passed, 27 subtests, on its second run (the first stopped at the
+    test's own list of the engine's environment, which now has the proxy's five names). `agent-run` (the
+    launcher changed): passed, 9 subtests, the first time. `agent-units` and `first-build-offline` (no VM)
+    built.
+  - Each guard was broken once and a test seen to fail, then put back. In the crates (unit tests): a caller
+    that is no agent taken for one; a credential put in the record; the query kept in the path; the
+    connection's own headers passed on; the host not renamed; listening off this machine; the record not
+    asked before passing; no line for an engine that goes away; the answer held to its end; the model
+    allowed as a site; this machine's addresses reached; a private address under the web's rule; an IPv6
+    address that maps an IPv4 one; any port; a loose `*.name`; the sign-in's name matched loosely; an
+    account that is no system account; each bound (things, a request, an answer, a text, a file, a
+    person); lost lines not counted; no limit at once; no authority taken for every authority; a tool's
+    name not found by its call; only the last message read; an unknown word in the settings; the engine
+    not told of the proxy, and told everything. In `modules/model-proxy.nix` (each clause of the account's
+    assertion taken out and its case evaluated, and the packet filter emptied whole): all stop being
+    refused but three that are second guards no case proves alone (`isSystemUser`, `extraGroups`,
+    `initialPassword`). In the VM test (twelve runs, each failing in the subtest that holds the claim): the
+    fence's rule; its refusals; nscd and systemd-resolved not hidden, under `torq agent run` and in the
+    service; the system bus open at systemd-resolved; a person's record open to everyone; the person's
+    access rule gone; the launcher and the service without the fence; Claude Code's settings not shown,
+    under `torq agent run` and in the service; and those settings put where every account reads them.
+  - *Tried and no test failed:* a check that a connection is from this machine's own address, beside the
+    kernel's table (which already holds only such connections): taken out as a guard that proved nothing.
+  - *Not broken to see a test fail:* rustls's checking of certificates itself (the tests show a stranger's
+    certificate and a wrong name refused); the proxy's unit hardening line by line.
+  - *Not run:* `nix flake check`; every other VM test (`secrets`, whose agent uses the secrets daemon's
+    port, which the fence lets through, only evaluates; so do `agent`, `agent-mcp`, `agent-proposals`,
+    `agents-per-person`, `desktop-agent`); the real Claude Code inside the fence; a sign-in; a machine with
+    NixOS's nftables firewall turned on; an agent holding many large requests at once.

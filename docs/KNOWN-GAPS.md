@@ -2070,6 +2070,10 @@ Its §5 lists claims without a test.
      down** (`systemctl stop torq-agent-network`): the agents' services stop with it and nothing new starts
      as an agent, but a session at a terminal goes on, with the network. A reload that fails leaves the
      rules that were there.
+   - **The proxy's memory is bounded only by its unit.** An agent may have 64 requests under way, and up to
+     16 MiB of each is held to be read until its answer ends: a gigabyte for one agent that tries. Two
+     agents doing so reach the unit's limit (2 GiB); the proxy is then restarted, and the requests under
+     way are lost unrecorded. Not built: one budget for everything held at once.
    - **Lines can be lost when the record cannot be written.** The proxy refuses everything for a person
      whose record it cannot write, but the requests under way at that moment have passed: they are counted
      in a line when writing works again, not recovered. A proxy that is killed loses the lines of the
