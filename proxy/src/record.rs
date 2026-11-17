@@ -56,11 +56,22 @@ pub struct Recorder {
     folders: Mutex<HashMap<String, Folder>>,
 }
 
-/// A file of the record by its name: `<day>.<part>.jsonl`. Its day and part, or not one of the record's.
+/// A file of the record by its name: `<day>.<part>.jsonl`, the part written as the proxy writes it (`part_name`):
+/// three digits at least, more past 999 (`1000`), never a zero in front of a longer one. Its day and part, or
+/// not one of the record's.
 fn part_of(name: &str) -> Option<(&str, u32)> {
     let (day, rest) = name.strip_suffix(".jsonl")?.split_once('.')?;
     let dated = day.len() == 10 && day.bytes().enumerate().all(|(i, b)| if i == 4 || i == 7 { b == b'-' } else { b.is_ascii_digit() });
-    (dated && rest.len() == 3 && rest.bytes().all(|b| b.is_ascii_digit())).then(|| rest.parse().ok().map(|n| (day, n))).flatten()
+    if !dated || !rest.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    let n: u32 = rest.parse().ok()?;
+    (rest == format!("{n:03}")).then_some((day, n))
+}
+
+/// The name of part `n` of `day`'s file.
+fn part_name(day: &str, n: u32) -> String {
+    format!("{day}.{n:03}.jsonl")
 }
 
 impl Recorder {
@@ -68,18 +79,19 @@ impl Recorder {
         Recorder { dir, bounds, folders: Mutex::new(HashMap::new()) }
     }
 
-    /// The record's files in a person's folder, oldest first, each with its size.
+    /// The record's files in a person's folder, oldest first (by day, then by part as a number: `1000` comes
+    /// after `999`, though not by name), each with its size.
     fn files(&self, person: &str) -> io::Result<Vec<(String, u64)>> {
         let mut files = Vec::new();
         for e in fs::read_dir(self.dir.join(person))? {
             let e = e?;
             let name = e.file_name().to_string_lossy().into_owned();
-            if part_of(&name).is_some() {
-                files.push((name, e.metadata()?.len()));
+            if let Some((day, n)) = part_of(&name) {
+                files.push(((day.to_string(), n), name.clone(), e.metadata()?.len()));
             }
         }
         files.sort();
-        Ok(files)
+        Ok(files.into_iter().map(|(_, name, len)| (name, len)).collect())
     }
 
     /// One line appended, as a single write: a reader never sees half of one.
@@ -104,10 +116,10 @@ impl Recorder {
         let next = match &folder.current {
             Some((name, len)) => match part_of(name) {
                 Some((d, _)) if d == day && len + size <= self.bounds.file => None,
-                Some((d, n)) if d == day => Some(format!("{day}.{:03}.jsonl", n + 1)),
-                _ => Some(format!("{day}.000.jsonl")),
+                Some((d, n)) if d == day => Some(part_name(&day, n.saturating_add(1))),
+                _ => Some(part_name(&day, 0)),
             },
-            None => Some(format!("{day}.000.jsonl")),
+            None => Some(part_name(&day, 0)),
         };
         if let Some(name) = next {
             folder.current = Some((name, 0));
@@ -260,6 +272,51 @@ mod tests {
         assert!(d.path().join("alice/notes.txt").exists(), "a file that is not the record's is not touched");
     }
 
+    /// Past part 999 of a day the parts go on (1000, 1001, …), in order by their number, not by their name: none
+    /// wraps to 000 or is left out of the count, and the oldest go first, never the newest (the security reader,
+    /// 2026-11-17).
+    #[test]
+    fn past_part_999_of_a_day_the_parts_go_on_in_order() {
+        let d = tempfile::tempdir().unwrap();
+        fs::create_dir(d.path().join("alice")).unwrap();
+        // One line a file; room for 400 files' worth, so the oldest go once the parts pass 999.
+        let one = serde_json::to_vec(&Entry { v: VERSION, line: line("0000.example") }).unwrap().len() as u64 + 1;
+        let r = Recorder::new(d.path().into(), Bounds { file: 1, person: 400 * one + 2_000 });
+        let mut f = Folder::default();
+        for i in 0..1_010 {
+            r.put(&mut f, "alice", &line(&format!("{i:04}.example")), 1_794_819_599).unwrap();
+        }
+        let names = r.files("alice").unwrap();
+        let last = &names.last().unwrap().0;
+        assert_eq!(last, "2026-11-16.1009.jsonl", "the newest part is the last, by its number ({} files)", names.len());
+        let text = fs::read_to_string(d.path().join("alice").join(last)).unwrap();
+        assert!(text.contains("1009.example"), "the newest line is kept, in the newest part: {text}");
+        assert!(!d.path().join("alice/2026-11-16.000.jsonl").exists(), "the oldest went: 000 did not come back");
+        let total: u64 = fs::read_dir(d.path().join("alice")).unwrap().map(|e| e.unwrap().metadata().unwrap().len()).sum();
+        assert!(total <= 400 * one + 2_000, "every file counted, within the bound: {total}");
+        // Started again: it goes on after 1009, never over an older part.
+        let again = Recorder::new(d.path().into(), Bounds { file: 1, person: 400 * one + 2_000 });
+        again.put(&mut Folder::default(), "alice", &line("later.example"), 1_794_819_599).unwrap();
+        assert_eq!(again.files("alice").unwrap().last().unwrap().0, "2026-11-16.1010.jsonl");
+    }
+
+    /// A line's size is counted as it is written, escaped: a text of control characters is six times as long in
+    /// JSON, and a file still never passes its bound by more than the one line that begins it.
+    #[test]
+    fn a_lines_size_is_counted_as_written_escaped() {
+        let d = tempfile::tempdir().unwrap();
+        fs::create_dir(d.path().join("alice")).unwrap();
+        let r = Recorder::new(d.path().into(), Bounds { file: 4_000, person: 1_000_000 });
+        let mut f = Folder::default();
+        let escaped = "\u{1}".repeat(100);
+        for _ in 0..40 {
+            r.put(&mut f, "alice", &line(&escaped), 1_794_819_599).unwrap();
+        }
+        for (name, len) in r.files("alice").unwrap() {
+            assert!(len <= 4_000, "{name}: {len}");
+        }
+    }
+
     #[test]
     fn a_record_that_cannot_be_written_stops_the_agent_until_it_can_and_says_what_was_lost() {
         let d = tempfile::tempdir().unwrap();
@@ -283,7 +340,9 @@ mod tests {
     fn only_the_records_own_names_are_its_files() {
         assert_eq!(part_of("2026-11-16.000.jsonl"), Some(("2026-11-16", 0)));
         assert_eq!(part_of("2026-11-16.012.jsonl"), Some(("2026-11-16", 12)));
-        for not in ["2026-11-16.jsonl", "2026-11-16.0.jsonl", "notes.txt", "2026-11-16.000.json", "x026-11-16.000.jsonl", "../2026-11-16.000.jsonl"] {
+        assert_eq!(part_of("2026-11-16.1000.jsonl"), Some(("2026-11-16", 1000)));
+        assert_eq!(part_of("2026-11-16.123456.jsonl"), Some(("2026-11-16", 123_456)));
+        for not in ["2026-11-16.jsonl", "2026-11-16.0.jsonl", "2026-11-16.0001.jsonl", "2026-11-16.99999999999.jsonl", "2026-11-16.+12.jsonl", "notes.txt", "2026-11-16.000.json", "x026-11-16.000.jsonl", "../2026-11-16.000.jsonl"] {
             assert_eq!(part_of(not), None, "{not}");
         }
     }

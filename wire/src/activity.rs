@@ -4,7 +4,8 @@
 //!
 //! Where: `/var/lib/torq-model-proxy/<person>/<day>.<part>.jsonl` (`DIR`), one line of JSON for each thing
 //! recorded (`Entry`), oldest first. The day is the date in UTC of the moment the line was written, the part
-//! a number from 000 that goes up when a file is full (`MAX_FILE`); sorted by name the files are in order.
+//! a number from 000 that goes up when a file is full (`MAX_FILE`), three digits at least and more past 999
+//! (`1000`): the files are in order by day, then by part as a number (not by name: `1000` is after `999`).
 //! The folder is the proxy's; the person reads it (an access rule for them alone), no one else does but root,
 //! and no agent's account reads or writes it. It is not in the broker's ledger and nothing chains its lines:
 //! root, and the proxy's own account, can change it.
