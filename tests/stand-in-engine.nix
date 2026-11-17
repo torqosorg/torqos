@@ -143,6 +143,48 @@ pkgs.writeScriptBin "claude" ''
           child.kill()
           child.wait()
 
+  def errno_of(f):
+      """What came of `f`: "ok", or the error's number."""
+      try:
+          f()
+          return "ok"
+      except OSError as e:
+          return f"errno {e.errno}"
+
+  def abstract(name):
+      """A connection to the unix socket with the abstract name `name`."""
+      import socket
+      def go():
+          with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
+              s.connect("\0" + name)
+      return errno_of(go)
+
+  def pair(family):
+      """socketpair of `family`, by its number (the real call, whatever Python knows of the family)."""
+      code = "import ctypes, os, sys; c = ctypes.CDLL(None, use_errno=True); fds = (ctypes.c_int * 2)(); r = c.socketpair(int(sys.argv[1]), 5, 0, fds); print('made' if r == 0 else 'errno %d' % ctypes.get_errno())"
+      return subprocess.run([sys.executable, "-c", code, str(family)], capture_output=True, text=True).stdout.strip()
+
+  def own_abstract():
+      """An abstract socket it listens on itself, connected to: its own (the control for the scope)."""
+      import socket
+      with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as l:
+          l.bind("\0torq-test-own-%d" % os.getpid())
+          l.listen(1)
+          return abstract("torq-test-own-%d" % os.getpid())
+
+  def signal_outsider():
+      """Signal 0 to a process of this same account outside the service (its number in /srv/open/outsider)."""
+      try:
+          pid = int(open("/srv/open/outsider").read())
+      except OSError:
+          return "no outsider"
+      return errno_of(lambda: os.kill(pid, 0))
+
+  def avahi():
+      """Avahi asked over the system bus, and its own socket."""
+      bus = subprocess.run(["/run/current-system/sw/bin/busctl", "call", "org.freedesktop.Avahi", "/", "org.freedesktop.Avahi.Server", "GetVersionString"], capture_output=True, text=True, timeout=30)
+      return {"bus": "answered" if bus.returncode == 0 else bus.stderr.strip(), "socket": attempt(lambda: sorted(os.listdir("/run/avahi-daemon")))}
+
   def look():
       """What this account sees and may write from here."""
       def write(path):
@@ -176,6 +218,14 @@ pkgs.writeScriptBin "claude" ''
           "parent's memory": memory(os.getppid()),
           # The control for the memory: a child of its own, which it may open.
           "child's memory": childs_memory(),
+          # Abstract unix sockets made outside it (root's, the test's) and one of its own (Landlock's scope).
+          "abstract outside": abstract("torq-test-root"),
+          "abstract own": own_abstract(),
+          # A process of the same account outside the service (Landlock's signal scope).
+          "signal outside": signal_outsider(),
+          # socketpair of unix (made) and of TIPC (30): only unix.
+          "pair unix": pair(1), "pair tipc": pair(30),
+          "avahi": avahi(),
       }
 
   n = 0

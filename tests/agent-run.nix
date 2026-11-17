@@ -26,6 +26,8 @@ pkgs.testers.runNixOSTest {
     environment.systemPackages = [ pkgs.socat pkgs.jq pkgs.bubblewrap pkgs.python3 pkgs.nftables ];
     # polkit, as a desktop has it: what it allows a person at the machine, it must never allow an agent.
     security.polkit.enable = true;
+    # avahi, as a desktop runs it (modules/cosmic/cosmic.nix): what it answers anyone, it must never answer an agent.
+    services.avahi.enable = true;
     # Room for the many files the sweep race below walks (the default disk runs out of inodes at ~75k).
     virtualisation.diskSize = 4096;
   };
@@ -168,6 +170,53 @@ pkgs.testers.runNixOSTest {
         assert "ring" in as_dev(f"python3 -c {shlex.quote(ring)}"), "the control: io_uring for dev"
         out = agent(f"python3 -c {shlex.quote(ring)}")
         assert "refused Operation not permitted" in out, out
+        # Nor a pair of sockets of any family but unix (socketpair: the `socket` rules above do not judge it). TIPC
+        # makes pairs: dev may (the control), the agent may not; unix pairs (every program's pipes to its children) it may.
+        machine.succeed("modprobe tipc")
+        pair = "import socket, sys; a, b = socket.socketpair(getattr(socket, sys.argv[1]), socket.SOCK_SEQPACKET); print('made')"
+        assert "made" in as_dev(f"python3 -c {shlex.quote(pair)} AF_TIPC")
+        out = agent(f"python3 -c {shlex.quote(pair)} AF_TIPC", ok=False)
+        assert "Address family not supported" in out, out
+        assert "made" in agent(f"python3 -c {shlex.quote(pair)} AF_UNIX")
+
+    with subtest("no abstract unix socket and no signal but its own (Landlock's scopes; the security reader, 2026-11-17)"):
+        # An abstract socket of root's (as Xwayland's is of the person's on a desktop): dev reaches it (the control),
+        # the agent does not, though it shares the network namespace where it is. One of its own it reaches.
+        machine.succeed("systemd-run --unit=torq-test-abstract socat ABSTRACT-LISTEN:torq-test-root,fork SYSTEM:true")
+        machine.wait_until_succeeds("echo | socat - ABSTRACT-CONNECT:torq-test-root")
+        as_dev("echo | socat - ABSTRACT-CONNECT:torq-test-root")
+        out = agent("echo | socat - ABSTRACT-CONNECT:torq-test-root", ok=False)
+        assert "Operation not permitted" in out, out
+        agent("socat ABSTRACT-LISTEN:torq-test-own SYSTEM:true & sleep 1; echo | socat - ABSTRACT-CONNECT:torq-test-own")
+        # A process of the agent's own account outside the sandbox: the account may signal it there (the control),
+        # not from inside. Its own child it may.
+        machine.succeed("systemd-run --unit=torq-test-outsider -p User=torq-agent-dev sleep 900")
+        outsider = machine.wait_until_succeeds("systemctl show -P MainPID torq-test-outsider | grep -v '^0$'").strip()
+        machine.succeed(f"setpriv --reuid torq-agent-dev --regid torq-agent-dev --clear-groups kill -0 {outsider}")
+        out = agent(f"kill -0 {outsider}", ok=False)
+        assert "Operation not permitted" in out, out
+        agent("sleep 30 & kill $!")
+        machine.succeed("systemctl stop torq-test-outsider torq-test-abstract")
+        # torq-mcp's link is started the same way (the launcher's two runs: one sandbox, one way in).
+        launcher = machine.succeed("readlink -f /run/current-system/sw/bin/torq-agent-run").strip()
+        assert machine.succeed(f"grep -c -- '-- \"$scope\" --' {launcher}").strip() == "2"
+
+    with subtest("avahi answers the agent nothing: refused on the system bus, its socket not there"):
+        machine.wait_for_unit("avahi-daemon.service")
+        avahi = "busctl call org.freedesktop.Avahi / org.freedesktop.Avahi.Server GetVersionString"
+        assert "avahi" in as_dev(avahi), "the control: dev is answered"
+        out = agent(avahi, ok=False)
+        assert "Access denied" in out, out
+        machine.succeed("test -S /run/avahi-daemon/socket")
+        assert agent("ls -A /run/avahi-daemon").strip() == ""
+
+    with subtest("no descriptor the person's shell left open reaches the agent (the security reader, 2026-11-17)"):
+        # Two below the ones torqcli hands over (the shared folder, here), which sudo then keeps (`-C`): open on a file
+        # the agent may not read.
+        out = as_dev("exec 3</home/dev/secret 4</home/dev/secret; torq agent run --share /home/dev/src/project -- sh -c 'for f in /proc/$$/fd/*; do echo \"$f $(readlink $f)\"; done'")
+        assert "/home/dev/secret" not in out, out
+        fds = [int(l.split()[0].rsplit("/", 1)[1]) for l in out.splitlines() if l.startswith("/proc/")]
+        assert 0 in fds and 3 not in fds and 4 not in fds, out
 
     # dev at the machine's console: a real session of logind's, local and active, as at a desktop.
     # (The kernel writes to that console too, so its first prompt may have scrolled away: asked for again.)
@@ -239,11 +288,12 @@ pkgs.testers.runNixOSTest {
         machine.succeed("systemctl reload torq-agent-network.service")
         as_dev("torq agent run -- true")
 
-    with subtest("the fence stopped ends a program running as the agent at a terminal"):
-        machine.succeed("su - dev -c 'torq agent run -- sleep 300' > /dev/null 2>&1 &")
+    with subtest("the fence stopped ends a program running as the agent at a terminal, and says why"):
+        machine.succeed("su - dev -c 'torq agent run -- sleep 300' > /tmp/fence-stopped 2>&1 &")
         machine.wait_until_succeeds("pgrep -u torq-agent-dev sleep", timeout=20)
         machine.succeed("systemctl stop torq-agent-network.service")
         machine.wait_until_fails("pgrep -u torq-agent-dev", timeout=20)
+        machine.wait_until_succeeds("grep -q 'was ended because the fence that closes its network was stopped' /tmp/fence-stopped", timeout=20)
         machine.succeed("systemctl start torq-agent-network.service")
         as_dev("torq agent run -- true")
   '';

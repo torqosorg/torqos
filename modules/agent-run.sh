@@ -193,15 +193,29 @@ fi
 # shellcheck disable=SC2016
 # The shared directory bound, as root, and checked to be the one that was opened (a descriptor from
 # another mount namespace cannot itself be bound); every home hidden around it; then the agent.
-# All of it in a scope of its own (a transient unit of systemd's, this very process moved into it): out of the
+# All of it in a scope of its own (a transient unit of systemd's, a process of this one moved into it): out of the
 # person's login session, so that nothing run as the agent is taken for the person at the machine by what
 # decides by the session (polkit, logind; modules/agent.nix refuses the agents everything at polkit besides).
-# In the agents' slice, which the fence binds: the fence stopped ends this too (modules/model-proxy.nix).
+# In the agents' slice, which the fence binds: the fence stopped ends this too (modules/model-proxy.nix). This
+# launcher waits outside it, to say so when that is why the program ended.
 # (--expand-environment=no: systemd-run would otherwise read the inner script's ${…} as its own variables.)
-exec systemd-run --scope --slice=torq-agents.slice --expand-environment=no --quiet --collect --description="$person's agent, run at a terminal (torq agent run)" -- \
+rc=0
+systemd-run --scope --slice=torq-agents.slice --expand-environment=no --quiet --collect --description="$person's agent, run at a terminal (torq agent run)" -- \
   unshare --mount --propagation private -- bash -euo pipefail -c '
   share=$1 fd=$2 agent=$3 home=$4 ifd=$5
   shift 5
+  # No descriptor reaches the agent but the ones named: sudo keeps every one below the highest
+  # it is asked to keep (`-C`, which torqcli gives for the shared folder and the instructions), so whatever the
+  # shell of the person left open below those would be here too (the security reader, 2026-11-17). Standard input,
+  # output and error, the shared folder until it is bound and the instructions until they are copied stay; every
+  # other is closed now, before anything is run as the agent. (Each run below opens 9 on its filter itself.)
+  for open in /proc/self/fd/*; do
+    n=${open##*/}
+    case "$n" in
+      0 | 1 | 2 | "$fd" | "$ifd") ;;
+      *) eval "exec $n>&-" 2>/dev/null || true ;;
+    esac
+  done
   if [ -n "$share" ]; then
     # Bound by its name, on a staging point only root reaches; then checked to be the very directory
     # that was opened (device and inode): if a link on the way led elsewhere, nothing runs.
@@ -232,6 +246,9 @@ exec systemd-run --scope --slice=torq-agents.slice --expand-environment=no --qui
   # The services that look a name up for anyone who asks (nscd, systemd-resolved): hidden too. A name
   # looked up is a message sent, and the network of the agent is closed, DNS included (ADR-057).
   mkdir -p -m 0755 /run/nscd /run/systemd/resolve
+  # And avahi (mDNS, a name looked up on the local network for anyone who asks, where a desktop runs it): its own
+  # socket hidden; its bus name is refused to the agents (modules/model-proxy.nix).
+  mkdir -p -m 0755 /run/avahi-daemon
   # The standing instructions of the person (`claude` typed plainly): copied from the file torqcli holds open into
   # a place of this namespace alone (a tmpfs no other process of the machine sees, gone when this ends), as a file
   # of the agent, 0600. At most 32 KiB (torqcli sends at most 16 KiB and a line before them).
@@ -250,11 +267,15 @@ exec systemd-run --scope --slice=torq-agents.slice --expand-environment=no --qui
   # The sandbox, as the agent: every program the launcher runs as the agent runs in it (the link below too).
   # Its socket families too (unix, IPv4, IPv6, netlink, as the agent service allows): the filter is read from
   # descriptor 9, which each run below opens on it (/etc/torq/agent-socket-families.bpf, modules/agent.nix);
-  # without it, bwrap runs nothing.
+  # without it, bwrap runs nothing. And inside it, every program is started through torq-agent-scope (`$scope`
+  # below, agent/src/scope), as the agent service is: Landlock scopes, no abstract unix socket and no signal but
+  # its own (the sandbox shares the network namespace of the machine, where every abstract socket is). On a
+  # kernel without those, it runs nothing, and says so.
+  scope=$(command -v torq-agent-scope)
   sandbox=(setpriv --reuid "$agent" --regid "$agent" --init-groups --no-new-privs --inh-caps=-all --bounding-set=-all --
     bwrap --die-with-parent --unshare-pid --seccomp 9 --dev-bind / / --proc /proc
       --tmpfs /run/user --tmpfs /tmp --tmpfs /root --tmpfs /var/lib/torq-agent-memory --tmpfs /run/credentials
-      --tmpfs /run/nscd --tmpfs /run/systemd/resolve
+      --tmpfs /run/nscd --tmpfs /run/systemd/resolve --tmpfs /run/avahi-daemon
       --ro-bind /etc/torq/claude-code /etc/claude-code
       --clearenv
       --setenv HOME "$home" --setenv USER "$agent" --setenv LOGNAME "$agent"
@@ -274,11 +295,11 @@ exec systemd-run --scope --slice=torq-agents.slice --expand-environment=no --qui
   # the tools of TorqOS, and the tool runs all the same. (No apostrophe in this script: it is one
   # single-quoted word.)
   if jq -e ".tools | index(\"claude-code\")" /etc/torq/agent-tools.json >/dev/null 2>&1 && [ -x /run/current-system/sw/bin/torq-mcp ]; then
-    "${sandbox[@]}" --chdir "$home" -- /run/current-system/sw/bin/torq-mcp --link </dev/null 9</etc/torq/agent-socket-families.bpf \
+    "${sandbox[@]}" --chdir "$home" -- "$scope" -- /run/current-system/sw/bin/torq-mcp --link </dev/null 9</etc/torq/agent-socket-families.bpf \
       || echo "torq agent run: TorqOS is not linked into the settings of Claude Code this time (it runs without them)" >&2
   fi
   rc=0
-  "${sandbox[@]}" --chdir "${share:-$home}" -- "$@" 9</etc/torq/agent-socket-families.bpf || rc=$?
+  "${sandbox[@]}" --chdir "${share:-$home}" -- "$scope" -- "$@" 9</etc/torq/agent-socket-families.bpf || rc=$?
   # A set-id file the agent left in the folder would run as the agent outside the sandbox, later: its bits
   # are taken off. As the agent, not as root: the files are owned by the agent, and an owner may change
   # them. The folder belongs to the person, who could swap a folder in it for a link while this runs,
@@ -292,4 +313,10 @@ exec systemd-run --scope --slice=torq-agents.slice --expand-environment=no --qui
     [ -z "$found" ] || echo "torq agent run: set-id bits taken off what the agent left: $found" >&2
   fi
   exit "$rc"
-' torq-agent-run "$share" "$fd" "$agent" "$home" "$ifd" "$@"
+' torq-agent-run "$share" "$fd" "$agent" "$home" "$ifd" "$@" || rc=$?
+# Ended because the fence was stopped (the slice it binds ends every program in it): said, so that the person
+# does not take it for the program failing by itself.
+if [ "$rc" -ne 0 ] && ! systemctl is-active --quiet torq-agent-network.service; then
+  echo "torq agent run: your agent's program was ended because the fence that closes its network was stopped (by an administrator, or because its rules could not be loaded). Nothing runs as your agent until it is back. An administrator can look: systemctl status torq-agent-network" >&2
+fi
+exit "$rc"

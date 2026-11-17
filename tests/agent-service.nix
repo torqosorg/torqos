@@ -90,6 +90,8 @@ pkgs.testers.runNixOSTest {
     torq.agent.engine = "claude-code";
     torq.agent.claudeCode = claude;
     environment.systemPackages = [ pkgs.socat pkgs.jq pkgs.tmux pkgs.procps pkgs.strace (lib.hiPrio torqcli) (lib.hiPrio setfacl) pkgs.nftables ];
+    # avahi, as a desktop runs it (modules/cosmic/cosmic.nix): what it answers anyone, it must never answer an agent.
+    services.avahi.enable = true;
   };
 
   testScript = ''
@@ -164,7 +166,9 @@ pkgs.testers.runNixOSTest {
         assert "socket" in calls.split() and not any(c.startswith("io_uring") for c in calls.split()), "no io_uring (a socket of any family past RestrictAddressFamilies)"
         assert f"ReadWritePaths={home}\n" in text and text.count("ReadWritePaths=") == 1, "its own home, and nothing else, to write"
         assert "InaccessiblePaths=-/run/credentials\n" in text and "Credential=" not in text, text
-        assert re.search(r"^ExecStart=/nix/store/\S+/bin/torq-agent-service alice claude-code$", text, re.M), text
+        # Through torq-agent-scope: the socket families' filter, then Landlock's scopes, then the bridge.
+        assert re.search(r"^ExecStart=/nix/store/\S+/bin/torq-agent-scope --families /nix/store/\S+-torq-agent-socket-families.bpf -- /nix/store/\S+/bin/torq-agent-service alice claude-code$", text, re.M), text
+        assert "landlock_restrict_self" in calls.split() and "seccomp" in calls.split(), calls
         sec = machine.succeed(f"systemd-analyze security --no-pager {unit}")
         print(sec)
         found = re.search(r"Overall exposure level for \S+: ([0-9.]+)", sec)
@@ -245,6 +249,23 @@ pkgs.testers.runNixOSTest {
         # The control: the agent account, outside the service, reads both, and writes where anyone may.
         machine.succeed("setpriv --reuid torq-agent-alice --regid torq-agent-alice --clear-groups cat /home/alice/open /tmp/outside /dev/shm/outside")
         machine.succeed("setpriv --reuid torq-agent-alice --regid torq-agent-alice --clear-groups sh -c 'touch /srv/open/x && rm /srv/open/x'")
+        # What it must not reach though it shares the machine's network namespace (the security reader, 2026-11-17):
+        # an abstract unix socket of root's, a process of its own account outside the service, a pair of TIPC
+        # sockets (systemd's RestrictAddressFamilies judges `socket`, not `socketpair`), and avahi. Each the control
+        # first: reached by alice herself, and the signal by the agent's account outside the service.
+        machine.succeed("modprobe tipc")
+        machine.succeed("systemd-run --unit=torq-test-abstract socat ABSTRACT-LISTEN:torq-test-root,fork SYSTEM:true")
+        machine.wait_until_succeeds("echo | socat - ABSTRACT-CONNECT:torq-test-root")
+        as_user("alice", "echo | socat - ABSTRACT-CONNECT:torq-test-root")
+        machine.succeed("systemd-run --unit=torq-test-outsider -p User=torq-agent-alice sleep 900")
+        outsider = machine.wait_until_succeeds("systemctl show -P MainPID torq-test-outsider | grep -v '^0$'").strip()
+        machine.succeed(f"echo {outsider} > /srv/open/outsider")
+        machine.succeed(f"setpriv --reuid torq-agent-alice --regid torq-agent-alice --clear-groups kill -0 {outsider}")
+        pair = "import socket; a, b = socket.socketpair(socket.AF_TIPC, socket.SOCK_SEQPACKET); print('made')"
+        assert "made" in as_user("alice", f"${pkgs.python3}/bin/python3 -c {shlex.quote(pair)}")
+        machine.wait_for_unit("avahi-daemon.service")
+        as_user("alice", "busctl call org.freedesktop.Avahi / org.freedesktop.Avahi.Server GetVersionString")
+        machine.succeed("test -S /run/avahi-daemon/socket")
         out = as_user("alice", "torq ask look 2>/tmp/err")
         seen = json.loads(out)
         print(json.dumps(seen, indent=1))
@@ -277,6 +298,16 @@ pkgs.testers.runNixOSTest {
         assert seen["trace parent"] in ("errno 1", "errno 3"), seen
         assert seen["parent's memory"] in ("PermissionError", "FileNotFoundError"), seen
         assert seen["child's memory"] == "opened", seen
+        # Landlock's scopes: root's abstract socket refused (EPERM), one of its own reached; no signal to its own
+        # account outside the service (EPERM; the same account outside it may: the control above).
+        assert seen["abstract outside"] == "errno 1" and seen["abstract own"] == "ok", seen
+        assert seen["signal outside"] == "errno 1", seen
+        # A pair of sockets of unix only: TIPC's refused as a family it may not use (EAFNOSUPPORT).
+        assert seen["pair unix"] == "made" and seen["pair tipc"] == "errno 97", seen
+        # Avahi: refused on the bus, its socket not there.
+        assert seen["avahi"]["bus"] != "answered" and "Access denied" in seen["avahi"]["bus"], seen
+        assert seen["avahi"]["socket"] in ("PermissionError", "FileNotFoundError", []), seen
+        machine.succeed("systemctl stop torq-test-outsider torq-test-abstract")
         machine.succeed("chmod 700 /home/alice")
         # The same, of the service's own view of the machine (its mount namespace, as the agent).
         inside = f"nsenter -t {prop('MainPID')} -m -- setpriv --reuid torq-agent-alice --regid torq-agent-alice --clear-groups"

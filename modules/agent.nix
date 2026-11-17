@@ -129,7 +129,11 @@ let
     serviceConfig = {
       # The bridge (agent/src/service): it runs the engine named here, hands it each question, and passes on
       # what it says. `bridged` (below) says this unit is only where an engine is chosen.
-      ExecStart = "${cfg.package}/bin/torq-agent-service ${person} ${toString cfg.engine}";
+      # Started through torq-agent-scope (agent/src/scope), as everything under `torq agent run` is: the socket
+      # families' filter (modules/agent-socket-families.c: socketpair of unix alone, which systemd's own filter
+      # below does not judge), then Landlock's scopes: no abstract unix socket and no signal but its own. On a
+      # kernel without those (before Linux 6.12) it starts nothing, and says so.
+      ExecStart = "${cfg.package}/bin/torq-agent-scope --families ${socketFamilies} -- ${cfg.package}/bin/torq-agent-service ${person} ${toString cfg.engine}";
       # The fence by the kernel's word, not by its unit's (which stays active through a `nft flush ruleset`): its
       # table loaded and naming this account, or nothing starts. As root (`+`: reading the packet filter needs it),
       # before anything runs as the agent.
@@ -155,7 +159,9 @@ let
       # And the services that look a name up for anyone who asks (nscd, systemd-resolved): a name looked up is
       # a message sent, and the agent's network is closed, DNS included (ADR-057). The account's own name is
       # still found, in /etc/passwd.
-      InaccessiblePaths = [ "-/run/credentials" "-/run/nscd" "-/run/systemd/resolve" ];
+      # And avahi's own socket (mDNS: a name looked up on the local network, for anyone who asks; its bus name is
+      # refused to the agents too, modules/model-proxy.nix).
+      InaccessiblePaths = [ "-/run/credentials" "-/run/nscd" "-/run/systemd/resolve" "-/run/avahi-daemon" ];
       # Claude Code's settings for the agents, where Claude Code looks for the settings an account cannot
       # override (/etc/claude-code): shown there in this unit only, never to a person's own Claude Code.
       BindReadOnlyPaths = [ "/etc/torq/claude-code:/etc/claude-code" ];
@@ -202,7 +208,9 @@ let
       # Not io_uring: a socket it makes is of any family (its own operation, not the `socket` call that
       # RestrictAddressFamilies filters), a way past the fence (the controller's review, 2026-11-17). A program
       # refused it does what it does where the kernel has none.
-      SystemCallFilter = [ "@system-service" "~io_uring_setup io_uring_enter io_uring_register" ];
+      # And the three calls torq-agent-scope makes to keep itself to its own (seccomp, landlock_create_ruleset,
+      # landlock_restrict_self; not in @system-service): each only ever takes away from the process that makes it.
+      SystemCallFilter = [ "@system-service" "seccomp landlock_create_ruleset landlock_restrict_self" "~io_uring_setup io_uring_enter io_uring_register" ];
       SystemCallErrorNumber = "EPERM";
       SystemCallArchitectures = "native";
       # Not PrivateUsers: in a user namespace of its own, SO_PEERCRED would name every caller nobody.
@@ -267,7 +275,9 @@ let
     # systemctl and sed: holding the agent's service still while a directory is shared (--hold-frozen).
     runtimeInputs = [ pkgs.bubblewrap pkgs.coreutils pkgs.util-linux pkgs.bash pkgs.jq pkgs.getent pkgs.gnused config.systemd.package
       # Whether the fence is in place for the agent, by its table (modules/model-proxy.nix).
-      proxy.fenceCheck ];
+      proxy.fenceCheck
+      # torq-agent-scope, what the program is started through inside the sandbox (agent/src/scope).
+      cfg.package ];
     text = builtins.readFile ./agent-run.sh;
   };
 in

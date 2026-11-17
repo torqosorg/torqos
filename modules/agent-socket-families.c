@@ -1,10 +1,12 @@
-/* The kinds of socket a program run as an agent may open under `torq agent run` (modules/agent-run.sh), written
- * as a seccomp filter for bubblewrap's --seccomp, at build time (modules/agent.nix): the same as the agent's
- * service allows by systemd's RestrictAddressFamilies — unix, IPv4, IPv6 and netlink. Every other family is
- * refused as systemd refuses it (EAFNOSUPPORT): the packet filter's fence covers IPv4 and IPv6 only, and a
- * socket to the hypervisor (AF_VSOCK), Bluetooth, TIPC or RDS would be a way out past it (the security reader,
- * 2026-11-17). Only this machine's own system call ABI: a program of another (32-bit x86, whose socketcall
- * hides the family from a filter) is ended, as the service's SystemCallArchitectures=native ends it.
+/* The kinds of socket a program run as an agent may open, written as a seccomp filter at build time
+ * (modules/agent.nix): loaded by bubblewrap under `torq agent run` (--seccomp, modules/agent-run.sh) and by
+ * torq-agent-scope in the agent's service (--families, agent/src/scope/main.rs), so both ways allow the same. The
+ * families are what the service's RestrictAddressFamilies allows: unix, IPv4, IPv6 and netlink. Every other family is
+ * refused as systemd refuses it (EAFNOSUPPORT), and `socketpair` of any family but unix, which systemd does not
+ * judge: the packet filter's fence covers IPv4 and IPv6 only, and a socket to the hypervisor (AF_VSOCK), Bluetooth,
+ * TIPC or RDS would be a way out past it (the security reader, 2026-11-17). Only this machine's own system call
+ * ABI: a program of another (32-bit x86, whose socketcall hides the family from a filter) is ended, as the
+ * service's SystemCallArchitectures=native ends it.
  *
  * Writes the filter (BPF) to its standard output. */
 #include <errno.h>
@@ -33,6 +35,11 @@ int main(void) {
         if (!is_allowed(family))
             rc |= seccomp_rule_add(ctx, SCMP_ACT_ERRNO(EAFNOSUPPORT), SCMP_SYS(socket), 1, SCMP_A0(SCMP_CMP_EQ, family));
     rc |= seccomp_rule_add(ctx, SCMP_ACT_ERRNO(EAFNOSUPPORT), SCMP_SYS(socket), 1, SCMP_A0(SCMP_CMP_GT, AF_NETLINK));
+    /* A pair of sockets made at once (socketpair) of no family but unix: `socket` above is not the only call that
+     * makes one, and systemd's RestrictAddressFamilies judges `socket` alone (src/shared/seccomp-util.c,
+     * seccomp_restrict_address_families: its rules are of SCMP_SYS(socket) only). The kernel makes a pair for few
+     * families (unix, TIPC); unix is the one a program needs (its children's pipes, Node's among them). */
+    rc |= seccomp_rule_add(ctx, SCMP_ACT_ERRNO(EAFNOSUPPORT), SCMP_SYS(socketpair), 1, SCMP_A0(SCMP_CMP_NE, AF_UNIX));
     /* And no io_uring: it makes a socket of any family by an operation of its own, never through the `socket`
      * call above (the controller's review, 2026-11-17). Refused as the agent's service refuses it (EPERM); a
      * program then does what it does where the kernel has none. */

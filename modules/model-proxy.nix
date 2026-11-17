@@ -323,8 +323,10 @@ in
       after = [ "torq-agent-network.service" ];
     };
 
-    # systemd-resolved answers a name for anyone on the system bus. An agent's account is refused there: a
-    # name looked up is a message sent (to whoever runs the name's servers), and the fence closes DNS.
+    # systemd-resolved answers a name for anyone on the system bus, and so does avahi (mDNS, where a desktop runs it:
+    # modules/cosmic/cosmic.nix; it also browses and publishes on the local network for whoever asks). An agent's
+    # account is refused at both: a name looked up is a message sent, and the fence closes DNS. (Avahi's own socket
+    # is hidden where an agent runs: modules/agent.nix, modules/agent-run.sh.)
     services.dbus.packages = [
       (pkgs.writeTextDir "share/dbus-1/system.d/torq-agents.conf" ''
         <?xml version="1.0"?>
@@ -334,6 +336,7 @@ in
         ${lib.concatMapStrings (a: ''
           <policy user="${a}">
             <deny send_destination="org.freedesktop.resolve1"/>
+            <deny send_destination="org.freedesktop.Avahi"/>
           </policy>
         '') (lib.attrNames agents)}</busconfig>
       '')

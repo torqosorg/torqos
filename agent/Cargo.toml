@@ -20,6 +20,13 @@ path = "src/service/main.rs"
 name = "torq-mcp"
 path = "src/mcp/main.rs"
 
+# What runs as an agent, kept to its own (ADR-057): Landlock's scopes (no abstract unix socket, no signal but its
+# own) and the socket families' filter, then the program. Before the engine in the service, inside the sandbox of
+# `torq agent run`.
+[[bin]]
+name = "torq-agent-scope"
+path = "src/scope/main.rs"
+
 [dependencies]
 anyhow = "1"
 serde_json = "1"
@@ -27,6 +34,9 @@ serde_json = "1"
 rustix = { version = "1.1.6", features = ["fs", "net", "process"] }
 # The words of the agent service's socket (ADR-044, ADR-051 3), shared with torqcli.
 torq-wire = { path = "../wire" }
+# torq-agent-scope: Landlock and seccomp through maintained crates, no unsafe code here.
+landlock = "0.4.7"
+seccompiler = { version = "0.5", default-features = false }
 
 [dev-dependencies]
 tempfile = "3"
