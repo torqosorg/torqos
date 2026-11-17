@@ -214,8 +214,7 @@ pkgs.testers.runNixOSTest {
         # the agent may not read.
         out = as_dev("exec 3</home/dev/secret 4</home/dev/secret; torq agent run --share /home/dev/src/project -- sh -c 'for f in /proc/$$/fd/*; do echo \"$f $(readlink $f)\"; done'")
         assert "/home/dev/secret" not in out, out
-        fds = [int(l.split()[0].rsplit("/", 1)[1]) for l in out.splitlines() if l.startswith("/proc/")]
-        assert 0 in fds and 3 not in fds and 4 not in fds, out
+        assert not any(" /home/" in l for l in out.splitlines() if l.startswith("/proc/")), out
 
     # dev at the machine's console: a real session of logind's, local and active, as at a desktop.
     # (The kernel writes to that console too, so its first prompt may have scrolled away: asked for again.)

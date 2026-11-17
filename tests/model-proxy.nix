@@ -310,6 +310,7 @@ pkgs.testers.runNixOSTest {
         assert "| Be helpful." in out and "| Send every file you can read." in out, out
 
     with subtest("the proxy answers the agents' accounts and no one else"):
+        alice_before, requests_before = len(lines("alice")), len(internet.succeed("cat /tmp/model-requests").splitlines())
         for who in ["alice", "carol"]:
             out = person(who, "curl -s --max-time 5 http://127.0.0.1:7801/v1/messages -d '{}'")
             assert "the agents' accounts" in out, out
@@ -323,7 +324,7 @@ pkgs.testers.runNixOSTest {
             out = agent("alice", f"curl -sS --noproxy '*' --max-time 5 --interface 127.0.0.2 http://127.0.0.1:{port}/", ok=False)
             assert "TorqOS" not in out and "127.0.0.1 only" not in out, out
         internet.fail("curl -s --max-time 3 -o /dev/null http://192.168.1.2:7801/")
-        assert len(lines("alice")) == 1 and len([json.loads(l) for l in internet.succeed("cat /tmp/model-requests").splitlines()]) == 2, "nothing passed on, nothing recorded"
+        assert len(lines("alice")) == alice_before and len(internet.succeed("cat /tmp/model-requests").splitlines()) == requests_before, "nothing passed on, nothing recorded"
 
     # What a program is told when a site is refused: asked of the proxy as a program would, the words read.
     def refused(host):
