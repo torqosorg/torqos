@@ -365,6 +365,28 @@ async fn an_engine_that_goes_away_mid_answer_leaves_a_line_that_says_so() {
     assert_eq!(r.new.len(), 1);
 }
 
+/// Someone on 127.0.0.2 using the very client port of a live connection of the agent's: refused, and the
+/// agent's own connection is not taken for theirs, nor theirs for the agent's (the security reader, 2026-11-17).
+#[tokio::test]
+async fn a_caller_on_another_loopback_address_is_refused_even_on_an_agents_port() {
+    let (model, mut got) = model("model.pem", "model.key", vec![]).await;
+    let p = proxy(model, true, closed(), dial_to(None)).await;
+    // The agent's own connection, held open, from 127.0.0.1:P.
+    let agents = TcpStream::connect(p.at).await.unwrap();
+    let port = agents.local_addr().unwrap().port();
+    let s = tokio::net::TcpSocket::new_v4().unwrap();
+    s.bind(SocketAddr::from(([127, 0, 0, 2], port))).unwrap();
+    let mut spoof = s.connect(p.at).await.unwrap();
+    spoof.write_all(&request(QUESTION)).await.unwrap();
+    let mut back = Vec::new();
+    tokio::time::timeout(Duration::from_secs(20), spoof.read_to_end(&mut back)).await.unwrap().unwrap();
+    let (head, _) = parts(&back);
+    assert!(head.starts_with("HTTP/1.1 403 "), "{head}");
+    assert!(tokio::time::timeout(Duration::from_millis(300), got.recv()).await.is_err(), "nothing sent");
+    assert_eq!(everything(p.record.path()), "", "nothing recorded as the agent's");
+    drop(agents);
+}
+
 #[tokio::test]
 async fn anything_else_asked_of_the_service_is_passed_and_recorded_but_not_read() {
     let answer = br#"{"content":[{"type":"text","text":"not a message"}],"usage":{"input_tokens":5}}"#.to_vec();

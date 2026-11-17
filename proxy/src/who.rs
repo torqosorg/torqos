@@ -9,26 +9,38 @@
 use std::net::SocketAddr;
 
 /// The uid of the socket whose own end is 127.0.0.1:`client` and whose other end is 127.0.0.1:`server`,
-/// established, in the kernel's table as text.
+/// established, in the kernel's table as text (IPv4's and IPv6's together). Only if it is the one established
+/// connection with those two ports, whatever its addresses: a second one (another account on 127.0.0.2, say,
+/// that took the same client port to the same server port) makes the answer no one, never the first one's.
 pub fn uid_of_connection(table: &str, client: u16, server: u16) -> Option<u32> {
     // 127.0.0.1 as the table writes it: in IPv4's, and as IPv6's maps it.
     const LOOPBACK: [&str; 2] = ["0100007F", "0000000000000000FFFF00000100007F"];
-    let at = |field: &str| -> Option<u16> {
+    let split = |field: &str| -> Option<(bool, u16)> {
         let (addr, port) = field.split_once(':')?;
-        LOOPBACK.contains(&addr).then(|| u16::from_str_radix(port, 16).ok()).flatten()
+        Some((LOOPBACK.contains(&addr), u16::from_str_radix(port, 16).ok()?))
     };
-    table.lines().skip(1).find_map(|l| {
+    let mut found = table.lines().filter_map(|l| {
         let f: Vec<&str> = l.split_whitespace().collect();
         // sl local remote st tx:rx tr:tm retrnsmt uid …; 01 is ESTABLISHED.
-        (f.len() > 7 && at(f[1]) == Some(client) && at(f[2]) == Some(server) && f[3] == "01").then(|| f[7].parse().ok()).flatten()
-    })
+        let ((here, local), (there, remote)) = (split(f.get(1)?)?, split(f.get(2)?)?);
+        (f.len() > 7 && local == client && remote == server && f[3] == "01").then(|| (here && there, f[7].parse::<u32>().ok()))
+    });
+    match (found.next(), found.next()) {
+        (Some((true, uid)), None) => uid,
+        _ => None,
+    }
 }
 
 /// The uid at the other end of a connection this program accepted on `local` from `peer`. Only a connection
 /// whose two ends are this machine's own address (127.0.0.1) is found in the table at all: any other is no one's.
 pub fn caller(peer: SocketAddr, local: SocketAddr) -> Option<u32> {
+    // Exactly 127.0.0.1 at both ends: every other loopback address (127.0.0.2, …) is anyone's to bind.
+    let one27 = |a: SocketAddr| a.ip().to_canonical() == std::net::IpAddr::from([127, 0, 0, 1]);
+    if !one27(peer) || !one27(local) {
+        return None;
+    }
     let read = |p: &str| std::fs::read_to_string(p).unwrap_or_default();
-    uid_of_connection(&read("/proc/net/tcp"), peer.port(), local.port()).or_else(|| uid_of_connection(&read("/proc/net/tcp6"), peer.port(), local.port()))
+    uid_of_connection(&format!("{}{}", read("/proc/net/tcp"), read("/proc/net/tcp6")), peer.port(), local.port())
 }
 
 #[cfg(test)]
@@ -54,6 +66,28 @@ mod tests {
         assert_eq!(uid_of_connection(six, 0xC350, 0x1E79), Some(994), "from an IPv6 socket");
         let closing = TABLE.replace(" 01 00000000:00000000 00:00000000 00000000   994", " 08 00000000:00000000 00:00000000 00000000   994");
         assert_eq!(uid_of_connection(&closing, 0xC350, 0x1E79), None, "established only");
+    }
+
+    /// Another socket on 127.0.0.2 with a live agent's client port, to the same server port, makes the lookup
+    /// ambiguous: refused, never taken for the agent (the security reader's finding, 2026-11-17).
+    #[test]
+    fn a_second_connection_from_another_loopback_address_is_no_ones() {
+        let spoof = TABLE.to_string() + "   4: 0200007F:C350 0100007F:1E79 01 00000000:00000000 00:00000000 00000000  1000        0 5 1 0000000000000000 20 4 30 10 -1\n";
+        assert_eq!(uid_of_connection(&spoof, 0xC350, 0x1E79), None, "two connections with these ports: no one");
+        let six = "  sl  local_address                         remote_address                        st\n   0: 0000000000000000FFFF00000200007F:C350 0000000000000000FFFF00000100007F:1E79 01 00000000:00000000 00:00000000 00000000  1000 0 9\n";
+        assert_eq!(uid_of_connection(&format!("{TABLE}{six}"), 0xC350, 0x1E79), None, "in the IPv6 table too");
+    }
+
+    /// A caller on another loopback address (127.0.0.2) is no one, whoever it is.
+    #[tokio::test]
+    async fn a_caller_not_at_127_0_0_1_is_no_one() {
+        let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let s = tokio::net::TcpSocket::new_v4().unwrap();
+        s.bind("127.0.0.2:0".parse().unwrap()).unwrap();
+        let _c = s.connect(l.local_addr().unwrap()).await.unwrap();
+        let (accepted, peer) = l.accept().await.unwrap();
+        assert_eq!(peer.ip().to_string(), "127.0.0.2");
+        assert_eq!(caller(peer, accepted.local_addr().unwrap()), None);
     }
 
     /// Against the real table: a connection this test makes is this test's own account's.
