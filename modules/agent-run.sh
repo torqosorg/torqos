@@ -189,8 +189,8 @@ if [ -n "$share" ]; then
     *) echo "torq-agent-run: shares a directory inside a home, not $share" >&2; exit 2 ;;
   esac
 fi
+rc=0
 # (The inner script is single-quoted on purpose: its variables are its own arguments.)
-# shellcheck disable=SC2016
 # The shared directory bound, as root, and checked to be the one that was opened (a descriptor from
 # another mount namespace cannot itself be bound); every home hidden around it; then the agent.
 # All of it in a scope of its own (a transient unit of systemd's, a process of this one moved into it): out of the
@@ -199,7 +199,7 @@ fi
 # In the agents' slice, which the fence binds: the fence stopped ends this too (modules/model-proxy.nix). This
 # launcher waits outside it, to say so when that is why the program ended.
 # (--expand-environment=no: systemd-run would otherwise read the inner script's ${…} as its own variables.)
-rc=0
+# shellcheck disable=SC2016
 systemd-run --scope --slice=torq-agents.slice --expand-environment=no --quiet --collect --description="$person's agent, run at a terminal (torq agent run)" -- \
   unshare --mount --propagation private -- bash -euo pipefail -c '
   share=$1 fd=$2 agent=$3 home=$4 ifd=$5
