@@ -590,3 +590,17 @@ fn the_settings_are_read_exactly() {
     // And nothing has a default: a file that does not say whether the web is open is refused.
     assert!(serde_json::from_str::<torq_model_proxy::Settings>(r#"{"port":7801,"agents":{},"hosts":[]}"#).is_err());
 }
+
+#[test]
+fn it_listens_only_on_the_socket_systemd_hands_over() {
+    use torq_model_proxy::inherited;
+    let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = l.local_addr().unwrap().port();
+    assert!(inherited(Ok(Some(l)), port).is_ok());
+    let none = inherited(Ok(None), 7801).unwrap_err();
+    assert!(none.contains("never listens by itself"), "{none}");
+    let other = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let e = inherited(Ok(Some(other)), port).unwrap_err();
+    assert!(e.contains("not 127.0.0.1:"), "a socket on another port is refused: {e}");
+    assert!(inherited(Err(std::io::Error::other("a datagram socket")), 7801).is_err());
+}

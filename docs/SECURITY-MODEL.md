@@ -85,7 +85,9 @@ an agent account:
   kernel, never by the request), when, which model, how many tokens, what was new in the conversation (the
   question, each tool's result) and what the model answered (its text, each tool it called and with what).
   The proxy passes the request on as it came, the person's sign-in included, and keeps no credential: the
-  record, the journal and its error messages hold none.
+  record, the journal and its error messages hold none. **Its port is held by systemd** from early boot and
+  handed to the proxy, never left free between restarts, so no other account can listen there and be sent
+  the agents' requests; without that socket, nothing runs as an agent.
 - **A site is reached only through the proxy, as HTTPS, and only if it is allowed**: signing in to the
   engine's service; the sites the owner lists (`torq agent network hosts`); every site if the owner turns
   the web on (`torq agent network web`, off by default). Each site asked for is recorded, allowed or

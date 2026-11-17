@@ -466,6 +466,22 @@ pub fn run() -> std::process::ExitCode {
     }
 }
 
+/// The listening socket systemd made and handed over (torq-model-proxy.socket), checked to be 127.0.0.1:`port`.
+/// The proxy never binds the port itself: an unprivileged port is anyone's to take while no one holds it, and
+/// whoever held it would be sent the agents' requests, sign-in and all (ADR-057 4). systemd holds it from early
+/// boot, across the proxy's restarts, so no account but root ever can. Without it the proxy does not start.
+pub fn inherited(given: std::io::Result<Option<std::net::TcpListener>>, port: u16) -> Result<std::net::TcpListener, String> {
+    let listener = given
+        .map_err(|e| format!("the socket systemd handed over is not a listening TCP socket: {e}"))?
+        .ok_or_else(|| "no listening socket from systemd: the proxy is started by its socket (torq-model-proxy.socket), and never listens by itself".to_string())?;
+    let at = listener.local_addr().map_err(|e| e.to_string())?;
+    if at != SocketAddr::from(([127, 0, 0, 1], port)) {
+        return Err(format!("the socket systemd handed over listens on {at}, not 127.0.0.1:{port}"));
+    }
+    listener.set_nonblocking(true).map_err(|e| e.to_string())?;
+    Ok(listener)
+}
+
 fn start(settings: &Path) -> Result<(), String> {
     let text = std::fs::read_to_string(settings).map_err(|e| format!("reading {}: {e}", settings.display()))?;
     let settings: Settings = serde_json::from_str(&text).map_err(|e| format!("{}: {e}", settings.display()))?;
@@ -480,8 +496,9 @@ fn start(settings: &Path) -> Result<(), String> {
         busy: Mutex::default(),
     });
     let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().map_err(|e| e.to_string())?;
+    let listener = inherited(listenfd::ListenFd::from_env().take_tcp_listener(0), port)?;
     runtime.block_on(async {
-        let listener = TcpListener::bind(("127.0.0.1", port)).await.map_err(|e| format!("listening on 127.0.0.1:{port}: {e}"))?;
+        let listener = TcpListener::from_std(listener).map_err(|e| format!("the listening socket from systemd: {e}"))?;
         eprintln!("torq-model-proxy: listening on 127.0.0.1:{port} for {} agent account(s); the web is {} to them, {} site(s) listed", proxy.agents.len(), if proxy.policy.web { "open" } else { "closed" }, proxy.policy.hosts.len());
         proxy.serve(listener).await.map_err(|e| e.to_string())
     })

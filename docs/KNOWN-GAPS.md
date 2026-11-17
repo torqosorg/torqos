@@ -2070,6 +2070,14 @@ Its §5 lists claims without a test.
      down** (`systemctl stop torq-agent-network`): the agents' services stop with it and nothing new starts
      as an agent, but a session at a terminal goes on, with the network. A reload that fails leaves the
      rules that were there.
+   - **The secrets daemon's port (127.0.0.1:7800) can be taken by any account while the daemon is down**
+     (ADR-052, from before; found with the model proxy's, 2026-11-17). The fence lets an agent's packets
+     through to it, so whoever listens there is sent an agent's requests for a secret's use: never a secret
+     (the broker gives a value only to the daemon's own account, read from the kernel), but what the agent
+     meant to send to the host, and the answer is theirs to make. Not fixed with the model proxy's: the
+     same fix (systemd holding the port) makes the daemon's end of each connection root's, and the broker
+     names the daemon by that end (`broker/src/main.rs`, `connected`), so it needs a change at the broker
+     of its own.
    - **The proxy's memory is bounded only by its unit.** An agent may have 64 requests under way, and up to
      16 MiB of each is held to be read until its answer ends: a gigabyte for one agent that tries. Two
      agents doing so reach the unit's limit (2 GiB); the proxy is then restarted, and the requests under

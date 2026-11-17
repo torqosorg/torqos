@@ -123,6 +123,7 @@ let
         # network, told where its model is, Claude Code's own settings for it bound where Claude Code reads
         # them, and the services that look a name up for anyone hidden.
         && builtins.elem "torq-agent-network.service" unit.requires && builtins.elem "torq-agent-network.service" unit.after
+        && builtins.elem "torq-model-proxy.socket" unit.bindsTo && builtins.elem "torq-model-proxy.socket" unit.after
         && unit.environment.ANTHROPIC_BASE_URL == "http://127.0.0.1:7801" && unit.environment.HTTPS_PROXY == "http://127.0.0.1:7801"
         && sc.BindReadOnlyPaths == [ "/etc/torq/claude-code:/etc/claude-code" ]
         && sc.StateDirectory == "torq-agent-memory/dev" && sc.RestrictNamespaces && sc.ProtectControlGroups
@@ -214,6 +215,10 @@ let
         if u.hashedPassword == "!" && lib.hasSuffix "/bin/nologin" u.shell && u.home == "/var/empty" && !u.createHome && u.group == "torq-model-proxy"
           && unit.User == "torq-model-proxy" && unit.CapabilityBoundingSet == "" && unit.ProtectSystem == "strict" && unit.ReadWritePaths == [ "/var/lib/torq-model-proxy" ]
           && c.systemd.services ? torq-agent-network
+          # The port is systemd's to hold (a socket), never the proxy's to bind; the fence and the proxy require it.
+          && c.systemd.sockets.torq-model-proxy.socketConfig.ListenStream == "127.0.0.1:7801"
+          && builtins.elem "torq-model-proxy.socket" c.systemd.services.torq-agent-network.bindsTo
+          && builtins.elem "torq-model-proxy.socket" c.systemd.services.torq-model-proxy.requires
           # Closed by default, and the agents' settings for Claude Code are not the machine's.
           && c.torq.agent.network.hosts == [ ] && !c.torq.agent.network.web
           && !(c.environment.etc ? "claude-code/managed-settings.json")

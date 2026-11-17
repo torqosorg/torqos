@@ -3736,7 +3736,17 @@ content at the next), and a proposal must be judged on what it does, not on what
 - **Decision:**
   1. **`torq-model-proxy`, a small service with a locked account of its own** (`proxy/`,
      `modules/model-proxy.nix`), wherever a person has an agent account. It listens on 127.0.0.1, port
-     7801, and nowhere else (it refuses to serve any other address). Its account is held as the checker's is
+     7801, and nowhere else (it refuses to serve any other address). **What holds the port is systemd**, not
+     the proxy: a socket unit (`torq-model-proxy.socket`) opens it from early boot and hands it to the proxy,
+     which never binds a port itself (`listenfd`; the proxy refuses to start without that socket, or with
+     one on any other address). 7801 is an unprivileged port, and found free (the proxy not started yet,
+     crashed, restarting) any account could listen there, and would be sent the agents' requests, the
+     person's sign-in with them. The socket stays open across the proxy's restarts, the proxy is never given
+     up on (no start limit, which would fail the socket), and the fence and every agent's service are bound
+     to the socket (`BindsTo`): the socket stopped or failed, nothing runs as an agent, and none starts while
+     another account holds the port. A port below 1024 with a capability for the proxy was the alternative:
+     it leaves no gap only while nothing lowers `net.ipv4.ip_unprivileged_port_start`, and gives the proxy a
+     capability; this way it has none. (Found by the controller's review, 2026-11-17.) Its account is held as the checker's is
      (ADR-056): a system account alone in its own group, no password, shell, home or SSH key, each asserted
      (`tests/agent-assertions.nix`). Its unit can write the record and nothing else.
   2. **A request to the model is passed on as it came.** Whatever arrives that is not a request for a site

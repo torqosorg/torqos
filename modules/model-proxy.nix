@@ -181,10 +181,29 @@ in
       "a+".argument = "u:${person}:r-x,d:u::rwx,d:g::---,d:o::---,d:u:${person}:r-x";
     }) agents;
 
+    # Who holds the port: systemd, from early boot (sockets.target, before anyone logs in or anything runs as an
+    # agent), across every restart of the proxy, which is handed the socket and never binds it. 7801 is an
+    # unprivileged port: were it ever free (the proxy not started yet, crashed, restarting), any account could
+    # listen there, and the agents' requests, the person's sign-in with them, would go to it. Stopped, the
+    # socket, or failed, takes the proxy, the fence and every agent's service down with it (`bindsTo`, below:
+    # `requires` would not stop them when it fails by itself).
+    systemd.sockets.torq-model-proxy = {
+      description = "TorqOS model proxy: its port, held for it (ADR-057)";
+      wantedBy = [ "sockets.target" ];
+      socketConfig = {
+        ListenStream = "127.0.0.1:${toString cfg.port}";
+        Accept = false;
+      };
+    };
+
     systemd.services.torq-model-proxy = {
       description = "TorqOS model proxy: what the agents ask their model, recorded; the sites they may reach (ADR-057)";
       wantedBy = [ "multi-user.target" ];
-      after = [ "network.target" "systemd-tmpfiles-setup.service" ];
+      requires = [ "torq-model-proxy.socket" ];
+      after = [ "torq-model-proxy.socket" "network.target" "systemd-tmpfiles-setup.service" ];
+      # Restarted for as long as it fails, never given up on: a service that reaches systemd's limit of starts
+      # puts its socket in the failed state, and a failed socket's port is free again.
+      unitConfig.StartLimitIntervalSec = 0;
       serviceConfig = {
         ExecStart = "${lib.getExe cfg.package} serve ${settings}";
         User = account;
@@ -238,7 +257,10 @@ in
       wantedBy = [ "multi-user.target" ];
       wants = [ "network-pre.target" ];
       before = [ "network-pre.target" ];
-      after = [ "systemd-sysusers.service" "systemd-modules-load.service" ];
+      # Never up while the proxy's port is not held for it: the fence lets an agent's packets through to that
+      # port whoever listens there.
+      bindsTo = [ "torq-model-proxy.socket" ];
+      after = [ "torq-model-proxy.socket" "systemd-sysusers.service" "systemd-modules-load.service" ];
       reloadIfChanged = true;
       serviceConfig = {
         Type = "oneshot";

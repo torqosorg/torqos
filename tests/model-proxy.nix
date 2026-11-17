@@ -86,6 +86,25 @@ let
         if len(data) > 12:
             s.sendto(data[:2] + b"\x81\x83" + data[4:6] + b"\x00\x00\x00\x00\x00\x00" + data[12:], peer)
   '';
+  # Someone else trying to take the proxy's port: bind it (on 127.0.0.1, or on every address, with every option
+  # that lets a second socket share a port), say whether it could, and with `hold`, keep it.
+  squat = pkgs.writeText "squat.py" ''
+    import socket, sys, time
+    s = socket.socket()
+    s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
+    try:
+        s.bind((sys.argv[1], 7801))
+        s.listen()
+    except OSError as e:
+        print("refused:", e.strerror, flush=True)
+        sys.exit(1)
+    print("bound", flush=True)
+    while len(sys.argv) > 2:
+        c, _ = s.accept()
+        c.sendall(b"HTTP/1.1 200 OK\r\ncontent-length: 8\r\n\r\nsquatted")
+        c.close()
+  '';
   # Claude Code's stand-in, as the agents' engine: it writes down what it was told and what it can reach, where
   # the test reads it, and ends. (`service` when the agent's service started it, `plain` at a terminal.)
   claude = pkgs.writeShellScriptBin "claude" ''
@@ -376,6 +395,42 @@ pkgs.testers.runNixOSTest {
         print(exposure)
         assert float(exposure.split("Overall exposure level for torq-model-proxy.service:")[1].split()[0]) < 3.0, exposure
         assert machine.succeed("getent passwd torq-model-proxy").strip().split(":")[5:] == ["/var/empty", "${pkgs.shadow}/bin/nologin"]
+
+    with subtest("only systemd holds the proxy's port, for the proxy: no one else can take it, even while the proxy is down"):
+        squat = "python3 ${squat}"
+        machine.succeed("systemctl stop torq-model-proxy.service")
+        machine.fail("systemctl is-active torq-model-proxy.service")
+        machine.succeed("systemctl is-active torq-model-proxy.socket torq-agent-network.service")
+        # The proxy down, its port is still held: a person cannot take it, on 127.0.0.1 or on every address.
+        for where in ["127.0.0.1", "0.0.0.0"]:
+            out = person("carol", f"{squat} {where}", ok=False)
+            assert "refused" in out and "in use" in out, out
+        # And an agent's question starts the proxy on the socket that waited for it: answered, and recorded.
+        before = len(lines("alice"))
+        out = agent("alice", "curl -sS --max-time 20 \"$ANTHROPIC_BASE_URL/v1/messages\" -d '{\"model\":\"m\",\"messages\":[{\"role\":\"user\",\"content\":\"while it was down\"}]}'")
+        assert "hello from the model" in out and "squatted" not in out, out
+        assert len(lines("alice")) == before + 1 and lines("alice")[-1]["new"][0]["text"] == "while it was down"
+        # Killed, it comes back on the same socket: the port is never free between.
+        machine.succeed("systemctl kill -s KILL torq-model-proxy.service")
+        assert "refused" in person("carol", f"{squat} 127.0.0.1", ok=False)
+        machine.wait_until_succeeds("systemctl is-active torq-model-proxy.service")
+        # Without the socket nothing of the agents is up: the fence, the agent's service, `torq agent run`.
+        machine.succeed("systemctl start torq-agent@alice.service")
+        machine.succeed("systemctl stop torq-model-proxy.socket")
+        for unit in ["torq-model-proxy.service", "torq-agent-network.service", "torq-agent@alice.service"]:
+            assert machine.succeed(f"systemctl is-active {unit} || true").strip() != "active", unit
+        assert "the fence that closes your agent's network is not up" in agent("alice", "true", ok=False)
+        # The port free (the control: a person can take it now), the fence cannot come up, and no agent runs.
+        machine.succeed(f"su - carol -c 'nohup {squat} 127.0.0.1 hold >/tmp/squat.out 2>&1 &'")
+        machine.wait_until_succeeds("grep -q bound /tmp/squat.out")
+        machine.fail("systemctl start torq-agent-network.service")
+        machine.fail("systemctl start torq-agent@alice.service")
+        agent("alice", "true", ok=False)
+        machine.succeed("pkill -u carol python3")
+        machine.wait_until_fails("ss -ltn | grep -q 127.0.0.1:7801")
+        machine.succeed("systemctl reset-failed; systemctl start torq-agent-network.service")
+        machine.succeed("systemctl is-active torq-model-proxy.socket")
+        assert agent("alice", "id -un").strip() == "torq-agent-alice"
 
     with subtest("nothing runs as an agent while the fence is not up"):
         machine.succeed("systemctl stop torq-agent-network.service")

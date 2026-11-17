@@ -108,9 +108,11 @@ let
     # Never without the fence that closes the account's network (ADR-057, modules/model-proxy.nix): the unit
     # is not started where it is not up, and is stopped where it goes. The model proxy is wanted, not
     # required: without it the engine reaches no model and says so.
+    # And never before the model proxy's port is held for it (its socket), whoever else would listen there.
     requires = [ "torq-agent@${person}.socket" proxy.fence ];
+    bindsTo = [ "torq-model-proxy.socket" ];
     wants = [ "torq-model-proxy.service" ];
-    after = [ "torq-agent@${person}.socket" "torq-broker.socket" proxy.fence "torq-model-proxy.service" ];
+    after = [ "torq-agent@${person}.socket" "torq-broker.socket" proxy.fence "torq-model-proxy.socket" "torq-model-proxy.service" ];
     # Where the engine's model is and how a site is reached: TorqOS's model proxy (ADR-057). Said here for
     # every program the engine starts; for Claude Code itself the settings below say the same, and it cannot
     # override those.
