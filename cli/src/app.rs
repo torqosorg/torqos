@@ -1939,6 +1939,10 @@ const fn draft(label: &'static str, command: &'static str) -> Action {
 /// The Agent page's Forget (asked first): the person's conversation with their agent deleted, through its own socket.
 pub const AGENT_FORGET: &str = "request system agent forget";
 
+/// The Agent page's words on Claude Code's claude.ai connectors (ADR-057, consequences): where they run, that the
+/// agents' closed network closes them, and what opening them costs. user-docs/pages/guide/agent.md says the same.
+pub const AGENT_CONNECTORS: &str = "Claude Code's claude.ai connectors (Gmail, Google Calendar, Google Docs and the like) run at Anthropic, not on this machine: they act in your accounts there, and your agent only sees what they return. With your agent's network as it is, closed to all but TorqOS's model proxy and the sites an administrator lists, they do not work for your agent. Opening them means listing two sites for the agents: api.anthropic.com and mcp-proxy.anthropic.com (set torq agent network hosts …). Listing api.anthropic.com also lets a program run as your agent reach its model directly, past the record of what it asked: what it asks that way is not in Agent Activity.";
+
 /// Every **Decline** (the Proposals page, the agent's applet and window): turn a waiting proposal down, as
 /// torqcli does it (it shows the proposal and asks first; who may, the broker says).
 pub fn decline_line(seq: u64) -> String {

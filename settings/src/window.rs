@@ -17,6 +17,7 @@ use torq::agent::handoff::{self, About, Handoff};
 use torq::agent::setup::Setup;
 use torq::history::Row;
 
+mod activity;
 mod secrets;
 
 /// How many changes History shows.
@@ -42,6 +43,7 @@ enum Page {
     Desktop,
     Secrets,
     Agent,
+    Activity,
     System,
     Commands,
 }
@@ -149,6 +151,7 @@ pub struct Settings {
     app_results: Option<Loaded<Vec<App>>>,
     desktop: Option<Loaded<app::DesktopStatus>>,
     secrets: secrets::State,
+    activity: activity::State,
     /// What is being installed, removed or remembered.
     app_work: Option<String>,
     /// Remembering what is installed: one at a time.
@@ -283,6 +286,9 @@ pub enum Message {
     DesktopSaving(app::Saving),
     DesktopSavingDone(Result<String, String>),
     Secrets(secrets::Msg),
+    Activity(activity::Msg),
+    /// To the Agent Activity page, from the Agent page.
+    OpenActivity,
     ToolSearch(String),
     FindTool,
     ToolsFound(Result<String, String>),
@@ -359,6 +365,7 @@ impl cosmic::Application for Settings {
             "secrets" => Page::Secrets,
             "backup" => Page::System,
             "agent" => Page::Agent,
+            "activity" => Page::Activity,
             s if VIEWS.iter().any(|v| v.id == s) => Page::System,
             _ => Page::Overview,
         };
@@ -372,6 +379,7 @@ impl cosmic::Application for Settings {
             ("History", Page::History, "document-open-recent-symbolic"),
             ("Proposals", Page::Proposals, "mail-message-new-symbolic"),
             ("Agent", Page::Agent, "system-users-symbolic"),
+            ("Agent Activity", Page::Activity, "view-list-symbolic"),
             ("System", Page::System, "computer-symbolic"),
             ("Command Line", Page::Commands, "utilities-terminal-symbolic"),
         ] {
@@ -439,6 +447,7 @@ impl cosmic::Application for Settings {
             app_results: None,
             desktop: None,
             secrets: Default::default(),
+            activity: Default::default(),
             app_work: None,
             syncing: false,
             tool_search: String::new(),
@@ -554,6 +563,7 @@ impl cosmic::Application for Settings {
             Page::System => self.system(),
             Page::Commands => self.commands(),
             Page::Agent => self.agent_page(),
+            Page::Activity => self.activity_page(),
         };
         let mut content = widget::column::with_capacity(3).spacing(spacing.space_m).max_width(960);
         if let Some(what) = &self.busy {
@@ -1032,6 +1042,11 @@ impl Settings {
             }
 
             Message::Secrets(m) => return self.secrets_update(m),
+            Message::Activity(m) => return self.activity_update(m),
+            Message::OpenActivity => {
+                self.go(Page::Activity);
+                return self.load();
+            }
             Message::DesktopLoaded(r) => self.desktop = Some(r.into()),
             Message::DesktopSave => {
                 self.busy = Some("Saving your desktop".into());
@@ -1209,6 +1224,7 @@ impl Settings {
             },
             Page::Desktop => tasks.push(cosmic::task::future(async { Message::DesktopLoaded(blocking(app::desktop_status).await) })),
             Page::Secrets => tasks.push(secrets::load()),
+            Page::Activity => tasks.push(activity::load()),
             Page::Apps => {
                 tasks.push(cosmic::task::future(async { Message::Apps(blocking(app::installed_apps).await) }));
                 tasks.push(self.read(At::Read, ACTIVE.into()));
@@ -2104,8 +2120,15 @@ impl Settings {
             settings::section()
                 .title("Open")
                 .add(settings::item::builder("The agent's window").description("Ask it, see what it did, stop it. Closing the window while it answers stops the answer too").control(widget::button::standard("Open").on_press(Message::OpenAgent)))
-                .add(settings::item::builder("What it proposed").description("Each change waiting for you, with what it does").control(widget::button::standard("Proposals").on_press(Message::Approve))),
+                .add(settings::item::builder("What it proposed").description("Each change waiting for you, with what it does").control(widget::button::standard("Proposals").on_press(Message::Approve)))
+                .add(
+                    settings::item::builder("What it did")
+                        .description("What it asked its model, what it read and which sites it asked for, by day and by conversation, from the record TorqOS keeps of it")
+                        .control(widget::button::standard("Activity").on_press(Message::OpenActivity)),
+                ),
         );
+        // Claude Code's claude.ai connectors, said plainly: where they run, and what opening them costs.
+        page = page.push(settings::section().title("Claude.ai connectors").add(settings::item_row(vec![widget::text::body(app::AGENT_CONNECTORS).width(Length::Fill).into()])));
         // The coding tools (ADR-051 5): whether this person's agent has each, and how they start it — as their
         // agent, in a folder they share, from a terminal.
         let mut tools = settings::section().title("Coding tools");
