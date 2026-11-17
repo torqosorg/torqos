@@ -165,7 +165,10 @@ pkgs.testers.runNixOSTest {
             assert "made" in agent(f"python3 -c {shlex.quote(made)} {family}"), family
 
     # dev at the machine's console: a real session of logind's, local and active, as at a desktop.
-    machine.wait_until_tty_matches("1", "login: ")
+    # (The kernel writes to that console too, so its first prompt may have scrolled away: asked for again.)
+    machine.wait_for_unit("getty@tty1.service")
+    machine.send_chars("\n")
+    machine.wait_until_tty_matches("1", "login: ", timeout=60)
     machine.send_chars("dev\n")
     machine.wait_until_tty_matches("1", "Password: ")
     machine.send_chars("Torq-sock-2210\n")
