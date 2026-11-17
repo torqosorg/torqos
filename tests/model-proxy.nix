@@ -359,6 +359,27 @@ pkgs.testers.runNixOSTest {
         assert machine.succeed(f"stat -c '%U %G %a' {record} {record}/alice {record}/alice/{day}").split("\n")[:3] == ["torq-model-proxy torq-model-proxy 711", "torq-model-proxy torq-model-proxy 750", "torq-model-proxy torq-model-proxy 640"], machine.succeed(f"stat -c '%U %G %a' {record} {record}/alice {record}/alice/{day}")
         assert machine.succeed("id -Gn torq-model-proxy").split() == ["torq-model-proxy"] and machine.succeed("getent group torq-model-proxy").strip().endswith(":")
 
+    with subtest("show system agent activity: a person's own record, by day and by conversation, and no one else's"):
+        repo = "/var/lib/torq/config"
+        machine.succeed(f"mkdir -p {repo} && echo '{{}}' > {repo}/desktop.json && touch {repo}/flake.nix && torq-broker init")
+        def activity(who, words=""):
+            return machine.execute(f"su - {who} -c {shlex.quote('torqcli -c ' + shlex.quote(('show system agent activity ' + words).strip()))} 2>&1")[1]
+        today = machine.succeed("date -u +%F").strip()
+        out = activity("alice")
+        # Her conversation on a line (its id's first characters, the question it began with), then her sites.
+        assert f"\n{today}\n" in out and "  session-  " in out and '"a question from alice"' in out, out
+        assert "listed.example: reached" in out and "unlisted.example: refused" in out and "(not on the agents' list of sites)" in out, out
+        assert "a question from bob" not in out, out
+        assert activity("alice", f"day {today}") == out
+        one = activity("alice", "conversation session-1")
+        assert one.startswith("Conversation session-1 (its engine's own name for it)") and "  Asked:\n    | a question from alice\n" in one and "  Answered:\n" in one, one
+        assert activity("alice", "conversation sess").startswith("Conversation session-1"), "its first characters are enough"
+        # Bob reads his own, never hers; a person with no agent is told so plainly; an agent reads none.
+        theirs = activity("bob")
+        assert '"a question from bob"' in theirs and "a question from alice" not in theirs, theirs
+        assert activity("carol").startswith("Your agent has no record yet: nothing it asked its model"), activity("carol")
+        assert "this is an agent's account" in agent("alice", "torqcli -c 'show system agent activity'", ok=False)
+
     with subtest("Claude Code is told of the proxy by settings only an agent sees, however the engine is started"):
         want = {"ANTHROPIC_BASE_URL": "http://127.0.0.1:7801", "HTTPS_PROXY": "http://127.0.0.1:7801", "https_proxy": "http://127.0.0.1:7801", "NO_PROXY": "127.0.0.1,localhost", "no_proxy": "127.0.0.1,localhost"}
         # `torq agent run`: any program.

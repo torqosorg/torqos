@@ -207,6 +207,8 @@ pub fn days_in(dir: &Path, day: Option<&str>) -> Result<Option<Days>> {
     let Some(files) = files(dir, day)? else { return Ok(None) };
     // Each day: its conversations in the order they began, its sites by name, its notes in order.
     let mut by_day: BTreeMap<String, Gathered> = BTreeMap::new();
+    // What a helper asked first in each conversation of each day: its question where the engine's own is none.
+    let mut helpers_asked: BTreeMap<(String, Option<String>), Option<String>> = BTreeMap::new();
     let unread = each(&files, |d, _, e| {
         let (conversations, sites, notes) = by_day.entry(d.to_string()).or_default();
         match &e.line {
@@ -231,8 +233,11 @@ pub fn days_in(dir: &Path, day: Option<&str>) -> Result<Option<Days>> {
                     c.tokens.cache_write += t.cache_write;
                     c.tokens.output += t.output;
                 }
+                // The question of the engine's own first request; a helper's only where the day has no other.
                 if c.question.is_none() && r.agent_id.is_none() {
                     c.question = question(r);
+                } else if c.question.is_none() {
+                    helpers_asked.entry((d.to_string(), c.id.clone())).or_insert_with(|| question(r));
                 }
             }
             Line::Connect(k) => {
@@ -247,6 +252,11 @@ pub fn days_in(dir: &Path, day: Option<&str>) -> Result<Option<Days>> {
             other => notes.extend(note(other)),
         }
     });
+    for (day, (conversations, _, _)) in by_day.iter_mut() {
+        for c in conversations.iter_mut().filter(|c| c.question.is_none()) {
+            c.question = helpers_asked.remove(&(day.clone(), c.id.clone())).flatten();
+        }
+    }
     let days = by_day.into_iter().rev().map(|(day, (conversations, sites, notes))| Day { day, conversations, sites: sites.into_values().collect(), notes }).collect();
     Ok(Some(Days { days, unread }))
 }
@@ -674,6 +684,28 @@ mod tests {
 \n2026-11-17 09:00:09, its helper helper-7, claude-x, 1.5 s, 1,015 tokens read (1,000 of them from the cache), 20 written\n  Bash failed, and said:\n    | hi\n    | there\n    (cut: it was 9,000 bytes; the record keeps the first 8 KiB)\n  (3 more things new in this request were not kept: the record keeps 48)\n  Answered:\n    | It printed hi.\n  The answer stopped before its end (your agent or the model's service went away).\n";
         assert_eq!(out, want);
         assert!(!out.contains("not this one"), "another conversation's");
+    }
+
+    /// A day's line takes its question from the engine's own first request; from a helper's only where there is
+    /// no other that day.
+    #[test]
+    fn a_days_question_is_the_engines_own_before_a_helpers() {
+        let by = |helper: Option<&str>, line: Line| match line {
+            Line::Request(r) => Line::Request(Request { agent_id: helper.map(String::from), ..r }),
+            other => other,
+        };
+        let d = record(&[(
+            "2026-11-17.000.jsonl",
+            vec![
+                by(Some("h-1"), req("2026-11-17T09:00:00Z", Some("s-1"), vec![text("a helper's task")], vec![])),
+                by(None, req("2026-11-17T09:01:00Z", Some("s-1"), vec![text("the person's question")], vec![])),
+                by(Some("h-2"), req("2026-11-17T10:00:00Z", Some("s-2"), vec![text("only a helper asked")], vec![])),
+            ],
+        )]);
+        let days = days_in(d.path(), None).unwrap().unwrap();
+        let asked: Vec<Option<&str>> = days.days[0].conversations.iter().map(|c| c.question.as_deref()).collect();
+        assert_eq!(asked, [Some("the person's question"), Some("only a helper asked")]);
+        assert_eq!(days.days[0].conversations[0].helpers.len(), 1);
     }
 
     #[test]
