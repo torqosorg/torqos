@@ -176,11 +176,14 @@ One consistent deletion, so nothing dead is left behind.
 - [x] One full check (2026-11-17, at ac18d2b; what it failed for first is below, "Phase 3's full checks").
 
 ### Phase 4: opencode, API keys and local models
-- [ ] `torq agent engine opencode`, driven through the Agent Client Protocol on its standard streams.
+- [x] `torq agent engine opencode`, driven through the Agent Client Protocol on its standard streams. (Built
+      2026-11-17 on `work/harness-p4`, ADR-058, KNOWN-GAPS 6zzy: unit tests and the VM test `agent-opencode` with
+      the real opencode and a stand-in model. Below.)
 - [ ] The model's API key is a TorqOS secret (ADR-052): set on the Secrets page, added by the proxy,
       never in the agent's account.
 - [ ] A local model (llama.cpp or Ollama) as opencode's provider.
-- [ ] A build of opencode that TorqOS can pin and that runs on the check host.
+- [x] A build of opencode that TorqOS can pin and that runs on the check host. (Upstream's baseline release,
+      `opencode/package.nix`, ADR-058 1.)
 - [ ] One full check.
 
 ### Phase 5: the agent in the desktop
@@ -706,3 +709,41 @@ Kimi); a person's own Claude Code outside the fence.
     `desktop-agent`, whose owner was still at the greeter after the password was typed twice (no panel within 30
     seconds; the greeter came up about four minutes after boot, under the run's load). Run alone at the same
     commit it passed (278 seconds). Merged to `main` after that.
+- 2026-11-17, **phase 4, its first part: `torq agent engine opencode`**, built on `work/harness-p4` (ADR-058; KNOWN-GAPS
+  6zzy; not merged, no full check). In short: upstream's baseline release of opencode 1.15.10, pinned
+  (`opencode/package.nix`); `torq agent tools opencode` and `torq agent engine opencode`; its settings in the agent's
+  environment (never `/etc/opencode`); the bridge's second arm, ACP (`agent/src/service/engine.rs`); its own HTTP
+  server on a port of the agent's own, which the fence lets only that agent's service reach, and a new password at
+  every start; "no API key yet" said in plain words. No plain `opencode` command.
+  - *Found on the way:* `opencode acp` drives itself through its own server over TCP, which the fence of phase 3
+    refuses: behind it, it could not even begin a conversation (`session/new` answered "No models available"), seen
+    in a network namespace with the fence's rules; with the per-agent port rules, the same run began one, and its
+    server answered 401 without the password and 200 with it. opencode ends a question its model refused (a 401) as
+    answered, with nothing said: seen against a stand-in. `OPENCODE_DISABLE_EMBEDDED_WEB_UI` would make its server
+    fetch its web interface from opencode's site (its source): not set. Claude Code 2.1.316 runs a slash command
+    typed as a question itself (`/cost`, offline, answered by Claude Code): so does opencode's arm, as typed.
+  - *What was run (2026-11-17 and the night after, the check host).* The package builds in the Nix sandbox and its
+    check runs `--version`; `opencode acp` answered `initialize` from the built package, offline. Unit tests, whole
+    suites, in the dev shell: agent 67 (+2 ignored; 7 new for opencode), torqcli 519. TorqOS Settings type-checked
+    (`cargo check`), not started. Each new guard in the ACP arm was broken once and a test seen to fail, then put
+    back: updates of another conversation taken, updates between questions taken, the replay while a conversation
+    opens taken, the no-answer words not said, a session's name not checked. `free` (the free-software check) built.
+    `agent-assertions` and `agent-units` built (a new opencode case: its unit's two lines, its port, its settings,
+    nothing in /etc/opencode). VM tests, `--max-jobs 2`: `agent-opencode` (new) passed, 10 subtests, on its sixth
+    run (the first three never started: the test's own Python, a name not interpolated and its lint; the fourth
+    stopped at nft printing an account by its number where the test looked for its name; the fifth at the test's
+    own order: its refused question stayed in the conversation, which the stand-in then refused). In it: the real
+    opencode answered `torq ask` with the stand-in's words through the proxy, recorded as alice's agent's, with the
+    placeholder key and no sign-in; its settings and a 64-hex-digit password in its environment, not on its command
+    line, not readable by bob or carol; bob, carol, root, and programs run under `torq agent run` by alice and by bob
+    did not reach its server; after the service was started again, the second question went with the first (the
+    conversation loaded); only the model's requests reached the stand-in internet, and the one other site opencode
+    asked for, `registry.npmjs.org`, was refused and recorded; with carol listening on 7810, nothing alice's agent
+    sent reached her; Forget removed the session from opencode's database; `torq agent run -- opencode` ran as the
+    agent with TorqOS's settings; a refused question (401) said "opencode got no answer from its model. It has no API
+    key yet …". The fence's group check broken (its two accepts without the set): the VM test failed at bob, who got
+    the server's 401 (so the password held there too). `agent-service` passed (its schema now lists two engines);
+    `agent-run` and `model-proxy` passed, each the first time.
+  - *Not run:* `nix flake check`; every other VM test; opencode with a real model (it has no key); a tool, a
+    proposal or a permission request from the real opencode (unit tests only); a fence reload while opencode runs
+    (the restore is written, not seen); anything on the laptop or a desktop.
