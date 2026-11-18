@@ -179,7 +179,7 @@ pkgs.testers.runNixOSTest {
         machine.fail("su - carol -c 'command -v opencode'")
         # The fence's rules for opencode's own port: alice's agent's is 7810, bob's 7811.
         table = machine.succeed("nft list table inet torq_agents")
-        for want in ['tcp dport 7810 ct state new drop', 'tcp sport 7811 drop', 'tcp dport 7810 accept', 'tcp sport 7810 ct direction reply accept']:
+        for want in ['tcp dport 7810 ct mark & 0xff000000 != 0x01000000 drop', 'tcp dport 7811 ct mark & 0xff000000 != 0x02000000 drop', 'tcp sport 7811 drop', 'tcp dport 7810 accept', 'tcp sport 7810 ct direction reply accept']:
             assert want in table, table
 
     with subtest("torq ask: opencode answers, through the model proxy, recorded as alice's agent's"):
@@ -240,17 +240,62 @@ pkgs.testers.runNixOSTest {
         assert all(l["allowed"] is False for l in sites), sites
         print("sites opencode asked for, refused:", sorted(set(l["host"] for l in sites)))
 
+    with subtest("opencode's ports are kept: no person's program binds one, nor a program run as an agent at a terminal"):
+        bind = "python3 -c 'import socket,sys; print(open(\"/proc/self/cgroup\").read().strip()); socket.socket().bind((\"127.0.0.1\", int(sys.argv[1])))'"
+        # bob in the people's slice, as a login puts him (`su` from the test starts no session of its own, so
+        # systemd-run puts the program where a session's are: under user.slice).
+        def bob(port, ok):
+            code, out = machine.execute(f"systemd-run --wait --pipe --quiet --uid=bob --gid=users --slice=user.slice {bind} {port} 2>&1")
+            assert (code == 0) == ok and "/user.slice/" in out, f"bob binding {port}: exit {code}:\n{out}"
+            return out
+        # (Ports nothing holds now: alice's opencode holds 7810, and a bind there would fail as taken either way.)
+        for port in ["7811", "7900", "7999"]:
+            out = bob(port, False)
+            assert "PermissionError" in out or "not permitted" in out, out
+            as_user("alice", f"torq agent run -- {bind} {port}", ok=False)
+        # (The control: the ports beside them are anyone's.)
+        bob("7809", True)
+        bob("8000", True)
+        as_user("alice", f"torq agent run -- {bind} 7809")
+
+    # A program of another account's that is not under the people's slice (as a system service an administrator
+    # installs would be): started by root, as carol, from root's own control group.
+    as_carol = "setpriv --reuid carol --regid users --clear-groups"
+    # A program in alice's agent's service (as the engine's own children are), as her agent: root moves a shell into
+    # the service's control group, which only root can, and it becomes the agent. Nothing of the machine's own does this.
+    service_group = "/sys/fs/cgroup/system.slice/system-torq\\x2dagent.slice/torq-agent@alice.service"
+    def in_service(cmd):
+        inner = f"echo $$ > '{service_group}/cgroup.procs' && exec setpriv --reuid torq-agent-alice --regid torq-agent-alice --clear-groups {cmd}"
+        return f"sh -c {shlex.quote(inner)}"
+
+    with subtest("TCP's simultaneous open does not join another account's program to alice's agent's service on its port"):
+        # The service runs, its opencode does not (Forget ends it): the port is free.
+        as_user("alice", "torq ask 'say hello'")
+        as_user("alice", "torq ask --forget")
+        machine.wait_until_fails(engine)
+        machine.succeed(f"systemctl is-active {unit}")
+        machine.succeed("rm -f /tmp/agent-side /tmp/carol-side")
+        # The agent's side connects to the port from 40000; carol's, bound to the port, connects to 40000, at the same moment.
+        machine.execute(in_service("socat -T8 - TCP:127.0.0.1:7810,bind=127.0.0.1:40000,connect-timeout=12") + " </dev/null >/tmp/agent-side 2>&1 & " + "sleep 0.3; " + f"if echo carol-was-here | {as_carol} socat -T8 - TCP:127.0.0.1:40000,bind=127.0.0.1:7810,reuseaddr,connect-timeout=12 >/tmp/carol-side 2>&1; then echo carol-rc=0 >> /tmp/carol-side; else echo carol-rc=failed >> /tmp/carol-side; fi; wait")
+        agent_side, carol_side = machine.succeed("cat /tmp/agent-side"), machine.succeed("cat /tmp/carol-side")
+        assert "carol-was-here" not in agent_side, f"carol reached alice's agent's service: {agent_side}"
+        assert "carol-rc=0" not in carol_side, f"carol's side was connected: {carol_side}"
+        # (The control: the same shell in the service's group reaches the port when the service's opencode holds it.)
+
     with subtest("a program alice's agent runs cannot reach another account's program on opencode's port"):
         machine.succeed(f"systemctl stop {unit}")
         machine.wait_until_fails(engine)
-        machine.succeed("su - carol -c 'python3 ${listen} 7810 /tmp/carol-heard >/tmp/carol-listen 2>&1 &'")
+        machine.succeed(f"{as_carol} python3 ${listen} 7810 /tmp/carol-heard >/tmp/carol-listen 2>&1 &")
         machine.wait_until_succeeds("grep -q listening /tmp/carol-listen")
         as_user("alice", "torq agent run -- sh -c 'echo SECRET | timeout 5 socat - TCP:127.0.0.1:7810'", ok=False)
         machine.succeed("su -s /bin/sh torq-agent-alice -c 'echo SECRET2 | timeout 5 socat - TCP:127.0.0.1:7810' || true")
         machine.fail("grep -q SECRET /tmp/carol-heard")
-        # (The control: carol's program does listen there. The port is opencode's on this machine: nothing reaches
-        # another account's program on it, whoever sends, so no person's own connection is the control either.)
+        # (The control: carol's program does listen there. No account's own connection is a control: the fence lets
+        # nothing reach another account's program on the port, whoever sends.)
         machine.succeed("ss -ltnH 'sport = :7810' | grep -q 127.0.0.1:7810")
+        # With it there, alice's agent's service says the port is taken, in words, and starts nothing.
+        out = as_user("alice", "torq ask 'say hello'", ok=False)
+        assert "opencode cannot start: its own port on this machine, 7810, is taken by another program" in out, out
         machine.succeed("pkill -u carol python3")
 
     with subtest("Forget deletes opencode's own record of the conversation"):

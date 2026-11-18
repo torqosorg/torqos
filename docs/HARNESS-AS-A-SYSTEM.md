@@ -747,3 +747,27 @@ Kimi); a person's own Claude Code outside the fence.
   - *Not run:* `nix flake check`; every other VM test; opencode with a real model (it has no key); a tool, a
     proposal or a permission request from the real opencode (unit tests only); a fence reload while opencode runs
     (the restore is written, not seen); anything on the laptop or a desktop.
+- 2026-11-18, **the security reader's round on phase 4's first part** (ADR-058 amended; KNOWN-GAPS 6zzy; on
+  `work/harness-p4`, no full check). TCP's simultaneous open closed by conntrack's mark (one byte, a value for each
+  agent); opencode's ports kept from people's programs and `torq agent run` (`SocketBindDeny=` on `user.slice` and
+  `torq-agents.slice`), each agent's service binding only its own; the bridge saying when its port is taken; ports
+  moving when a person is added, and the password in opencode's children, written down.
+  - *What was run (the check host).* Unit tests: agent 67 (+2 ignored; the taken-port words in an existing test).
+    `agent-opencode` passed, 12 subtests, on its fifth run of the round (the first stopped at the test's own list of
+    rule texts; the second at a bind of 7810, which alice's opencode held; the third because `su` from the test
+    starts no session, so bob was not under `user.slice`: he binds through `systemd-run --slice=user.slice` now, and
+    the test checks where he is; the fourth at the test's own exit codes). New in it: bob refused 7811, 7900 and 7999
+    and allowed 7809 and 8000, alice's `torq agent run` the same; the simultaneous open (alice's agent, from a shell
+    root moved into her service's control group, connecting from 40000 to 7810 while carol, outside the people's
+    slice, bound to 7810 connects to 40000) joins nothing; with carol on 7810, alice's `torq ask` says "opencode cannot
+    start: its own port on this machine, 7810, is taken by another program". Mutation, from the working tree (put
+    back after): the mark no longer required (an `established` accept before the mark's drop, and the answers from
+    the port taken without it) — the VM test failed at the simultaneous open, "carol reached alice's agent's service:
+    carol-was-here". (A first try at the mutant took the fence check's use of the mark out too, and did not build:
+    shellcheck.)
+  - Then, from the commit, in one run: `agent-opencode`, `agent-run`, `agent-service`, `model-proxy` passed and
+    `agent-assertions` and `agent-units` built (their first try in this round stopped at shellcheck: the fence
+    check named a mark it did not set where no agent has a port, on machines without opencode). Unit tests: agent 67
+    (+2 ignored). Not run: `nix flake check`; a real login session's slice (the test puts bob under `user.slice` with
+    `systemd-run`); a reload of the fence with opencode running; ports moving when a person is added (a switch
+    restarts the changed units: by NixOS's rule for a unit whose text changed, not seen here).

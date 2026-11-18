@@ -67,23 +67,40 @@ let
   '';
   # opencode's own HTTP server (ADR-058), where it is the engine: `opencode acp` drives itself through a server it
   # opens on 127.0.0.1, and the fence would refuse it its own connection. Each person's agent gets a port of its
-  # own for it (7810 and up, in the order of the agents' names), and the fence lets through to that port, and back
-  # from it, exactly what goes between sockets of that agent's own service: by the account on the way out, by the
-  # receiving socket's control group on the way in (a set per agent, `own_<n>`, which the agent's service puts its
-  # control group in as it starts, `torq-agent-own-port`). So no other account reaches the server (its packets
-  # are let in, and the server's answers are dropped before they reach anyone but the agent's service), and the
-  # agent reaches nothing else through the port (a program of the agent's that listens there in the server's
-  # place is not in the set, and nor is anything another account listens there with). The server also asks a
-  # password, new at every start (agent/src/service/engine.rs).
+  # own for it (7810 and up, in the order of the agents' names: adding a person can move the ports of those after,
+  # which changes their units' environment, so a switch restarts those that run), and the fence lets through to
+  # that port, and back from it, exactly what goes between sockets of that agent's own service: by the account on
+  # the way out, by the receiving socket's control group on the way in (a set per agent, `own_<n>`, which the
+  # agent's service puts its control group in as it starts, `torq-agent-own-port`). So no other account reaches the
+  # server (its packets are let in, and the server's answers are dropped before they reach anyone but the agent's
+  # service), and the agent reaches nothing else through the port (a program of the agent's that listens there in
+  # the server's place is not in the set, and nor is anything another account listens there with). The server also
+  # asks a password, new at every start (agent/src/service/engine.rs).
+  #
+  # A connection to the port counts only if it began with a SYN to the port that the fence saw reach a socket in the
+  # set: that SYN marks the connection (conntrack's mark, `mark`), and every later packet to the port, and every packet
+  # from it, must carry the mark. Without it, TCP's simultaneous open got through (the security reader, 2026-11-17):
+  # another account's program bound to the port while it is free and connecting to an agent's socket that is
+  # connecting to the port at the same moment sends a SYN *from* the port to a socket in the set, which was taken;
+  # the connection was then established, and the agent's later packets to the port were not new. The mark is one
+  # byte, the conntrack mark's top one (0xff000000), a value of its own for each agent (its index + 1), set with the
+  # rest of the mark kept as it was: no other user of the mark is clobbered (none in TorqOS; NixOS's own firewall uses
+  # none; tools that use one, a VPN's, use low bits), and one agent's mark is no use on another's port.
   opencodeBridged = config.torq.agent.engine == "opencode";
   agentNames = lib.attrNames agents;
   firstOwnPort = 7810;
-  ownPorts = lib.optionalAttrs opencodeBridged (lib.listToAttrs (lib.imap0 (i: a: lib.nameValuePair a { port = firstOwnPort + i; set = "own_${toString i}"; }) agentNames));
+  lastOwnPort = 7999;
+  markMask = "0xff000000";
+  hex = n: "0x${lib.toLower (lib.fixedWidthString 8 "0" (lib.toHexString n))}";
+  ownPorts = lib.optionalAttrs opencodeBridged (lib.listToAttrs (lib.imap0 (i: a: lib.nameValuePair a { port = firstOwnPort + i; set = "own_${toString i}"; mark = hex ((i + 1) * 16777216); }) agentNames));
   ownRules = lib.concatStrings (lib.mapAttrsToList (a: o: ''
     meta skuid "${a}" oifname "lo" ip saddr 127.0.0.1 ip daddr 127.0.0.1 tcp dport ${toString o.port} accept
     meta skuid "${a}" oifname "lo" ip saddr 127.0.0.1 ip daddr 127.0.0.1 tcp sport ${toString o.port} ct direction reply accept
   '') ownPorts);
-  # On the way in: a new connection to the port only to a socket in the set; anything from the port only to one.
+  # On the way in: a new connection to the port only to a socket in the set, and marked; anything else to the port
+  # only if marked; anything from the port only if marked, and to a socket in the set. (`nft list` prints these
+  # sets as `typeof socket cgroupv2 level 0`: how nftables 1.1.6 prints that key, whatever its level; the rules say
+  # level 3, and are what is matched.)
   ownInput = lib.optionalString (ownPorts != { }) ''
     ${lib.concatStrings (lib.mapAttrsToList (_: o: ''
       set ${o.set} {
@@ -93,9 +110,9 @@ let
       chain in {
         type filter hook input priority filter; policy accept;
     ${lib.concatStrings (lib.mapAttrsToList (_: o: ''
-        iifname "lo" tcp dport ${toString o.port} ct state new socket cgroupv2 level 3 @${o.set} accept
-        iifname "lo" tcp dport ${toString o.port} ct state new drop
-        iifname "lo" tcp sport ${toString o.port} socket cgroupv2 level 3 @${o.set} accept
+        iifname "lo" tcp dport ${toString o.port} ct state new socket cgroupv2 level 3 @${o.set} ct mark set ct mark and 0x00ffffff or ${o.mark} accept
+        iifname "lo" tcp dport ${toString o.port} ct mark and ${markMask} != ${o.mark} drop
+        iifname "lo" tcp sport ${toString o.port} ct mark and ${markMask} == ${o.mark} socket cgroupv2 level 3 @${o.set} accept
         iifname "lo" tcp sport ${toString o.port} drop
     '') ownPorts)}  }
   '';
@@ -161,11 +178,11 @@ let
       printf '%s\n' "$table" | grep -qE '^[[:space:]]*reject with icmpx admin-prohibited$' || refuse "its chain refuses nothing"
       # Where opencode is the engine: the rules that keep everyone else from the agent's own port (ownInput).
       case "$agent" in
-        ${lib.concatStrings (lib.mapAttrsToList (a: o: "${a}) port=${toString o.port} ;;\n") ownPorts)}
-        *) port="" ;;
+        ${lib.concatStrings (lib.mapAttrsToList (a: o: "${a}) port=${toString o.port} mark=${o.mark} ;;\n") ownPorts)}
+        *) port="" mark="" ;;
       esac
       if [ -n "$port" ]; then
-        for want in "tcp dport $port ct state new drop" "tcp sport $port drop"; do
+        for want in "tcp dport $port ct mark & ${markMask} != $mark drop" "tcp sport $port drop"; do
           printf '%s\n' "$table" | grep -qxE "[[:space:]]*iifname \"lo\" $want" || refuse "its rule that keeps every other account from opencode's own port, $port, is not there"
         done
       fi
@@ -205,6 +222,13 @@ in
       readOnly = true;
       default = lib.mapAttrs (_: o: o.port) ownPorts;
       description = "Where opencode is the engine: each agent account's own port for opencode's own server, on 127.0.0.1, which the fence lets only that agent's service reach (ADR-058).";
+    };
+    opencodePortRange = lib.mkOption {
+      type = lib.types.str;
+      internal = true;
+      readOnly = true;
+      default = "${toString firstOwnPort}-${toString lastOwnPort}";
+      description = "The ports kept for opencode's own servers (ADR-058): no person's program binds them, nor a program run as an agent at a terminal, nor an agent's service but on its own port.";
     };
     ownPort = lib.mkOption {
       type = lib.types.package;
@@ -428,6 +452,20 @@ in
       description = "TorqOS: the programs run as an agent at a terminal (torq agent run)";
       bindsTo = [ "torq-agent-network.service" ];
       after = [ "torq-agent-network.service" ];
+      # opencode's own ports (ownPorts): no program run as an agent at a terminal binds one (it would stand where
+      # the person's opencode listens).
+      sliceConfig.SocketBindDeny = lib.optional (ownPorts != { }) "tcp:${cfg.opencodePortRange}";
+    };
+
+    # And no person's program binds one (the security reader, 2026-11-17): any account could otherwise take a
+    # person's port while it is free, and their opencode would never start (a web server for development on 7810
+    # does it without meaning to). The kernel refuses the bind (systemd's socket-bind programs, cgroup BPF on the
+    # slice, which hold for everything under it: every login session and every person's own user manager).
+    # System services an administrator installs are not under it: one that binds such a port is not stopped
+    # (KNOWN-GAPS 6zzy), and the bridge says the port is taken.
+    systemd.slices.user = lib.mkIf (ownPorts != { }) {
+      overrideStrategy = "asDropin";
+      sliceConfig.SocketBindDeny = [ "tcp:${cfg.opencodePortRange}" ];
     };
 
     # systemd-resolved answers a name for anyone on the system bus, and so does avahi (mDNS, where a desktop runs it:

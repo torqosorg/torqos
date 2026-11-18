@@ -124,6 +124,8 @@ let
         && lib.hasPrefix "+/nix/store/" (lib.elemAt sc.ExecStartPre 1)
         && lib.length sc.ExecStopPost == 1 && lib.hasPrefix "-+/nix/store/" (lib.head sc.ExecStopPost) && lib.hasSuffix "/bin/torq-agent-own-port remove torq-agent-dev" (lib.head sc.ExecStopPost)
         && env.TORQ_OPENCODE_PORT == "7810" && c.torq.modelProxy.opencodePorts == { torq-agent-dev = 7810; }
+        && sc.SocketBindAllow == [ "tcp:7810" ] && sc.SocketBindDeny == [ "tcp:7810-7999" ]
+        && c.systemd.slices.user.sliceConfig.SocketBindDeny == [ "tcp:7810-7999" ] && c.systemd.slices.torq-agents.sliceConfig.SocketBindDeny == [ "tcp:7810-7999" ]
         && (builtins.fromJSON env.OPENCODE_CONFIG_CONTENT).provider.anthropic.options.baseURL == "http://127.0.0.1:7801/v1"
         && env.OPENCODE_PURE == "1" && !(env ? OPENCODE_DISABLE_EMBEDDED_WEB_UI)
         && !(lib.any (n: lib.hasPrefix "opencode" n) (lib.attrNames c.environment.etc))

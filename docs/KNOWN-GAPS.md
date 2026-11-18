@@ -2196,8 +2196,12 @@ Its §5 lists claims without a test.
      The reload puts back each running agent service's group (`torq-agent-own-port restore`); if that fails, that
      agent's opencode cannot reach its own server until its service starts again (it fails closed: nothing else
      gets through). `opencode acp` run at a terminal (`torq agent run -- opencode acp`) cannot reach its own server
-     at all (its scope is not in the set), and is not supported. The port is opencode's on the machine: no other
-     account's program can be reached on it, by anyone.
+     at all (its scope is not in the set), and is not supported.
+   - **The ports are kept from people's programs and from `torq agent run`, not from system services.** Binds of
+     7810–7999 are refused under `user.slice` and `torq-agents.slice`, and each agent's service binds only its own; a
+     system service an administrator installs (in `system.slice`) can still take one, and that person's opencode does
+     not start (the bridge says the port is taken, and how to see by what). What any program reaches on the port is
+     the fence's: only connections that began at a socket of the agent's own service, marked by conntrack.
    - **Its plugin library is asked of npm at every start**, which the proxy refuses and records (opencode has no
      switch for it, and goes on without).
    - **Its permissions are allowed by settings, not forced.** If opencode asks anyway, the bridge says no, and a

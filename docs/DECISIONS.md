@@ -4077,3 +4077,27 @@ content at the next), and a proposal must be judged on what it does, not on what
   for answers until the key step (the proxy adding a key from a TorqOS secret). The no-key message is inferred,
   not read (opencode 1.15.10 does not say why over ACP): any refusal by the model reads the same. The own-port
   rules exist only where opencode is the engine; with Claude Code the fence is as it was.
+- **Amended, 2026-11-18 (the security reader's round, `work/harness-p4`):**
+  1. **TCP's simultaneous open is closed.** A program of another account's, bound to an agent's port while it is
+     free and connecting to an agent socket that is connecting to the port at the same moment, sent a SYN *from* the
+     port to a socket in the set and was taken; conntrack then had the connection established, and the agent's
+     later packets to the port were not new (confirmed by the reader in a namespace with these rules). Now the SYN
+     to the port that reaches a socket in the set marks the connection (conntrack's mark, its top byte, the agent's
+     index + 1, the rest of the mark kept), and every other packet to the port, and every packet from it, must
+     carry that agent's mark. The window was agent code in the service's group while opencode does not hold the
+     port (Forget's `opencode session delete`, opencode's start before it binds). The fence check requires the
+     mark's drop.
+  2. **The ports are kept** (7810–7999): binds refused by the kernel (systemd's `SocketBindDeny=`, cgroup BPF) on
+     `user.slice` (every login session and every person's user manager under it) and on `torq-agents.slice`
+     (`torq agent run`); each agent's service may bind its own port alone (`SocketBindAllow=`). Before, any account
+     could take a person's port and their opencode would never start (a development web server on 7810 does it by
+     accident). System services an administrator installs are not under those slices: one that binds such a port
+     is not stopped (KNOWN-GAPS 6zzy). The bridge now says in words when its port is taken, before it starts
+     opencode.
+  3. **Ports move when a person is added** (they are given in the order of the agents' names). That changes the
+     moved agents' units (their environment and bind rules), so a switch restarts those that run, and the fence's
+     table is loaded anew with the new sets. Kept so: a stable assignment would need a table of its own to keep.
+  4. **The server's password is inherited by every program opencode runs** (a tool that prints its environment
+     puts it in what the model reads, and in the proxy's record). opencode gives no way to keep it from its
+     children. It is harmless where it goes: only sockets of the agent's own service reach the port, and they are
+     the agent already.

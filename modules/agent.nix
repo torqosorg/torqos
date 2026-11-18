@@ -145,6 +145,10 @@ let
         # modules/model-proxy.nix), as root, and taken away when the unit stops.
         ++ lib.optional opencodeEngine "+${proxy.ownPort}/bin/torq-agent-own-port add ${agent}";
       ExecStopPost = lib.optional opencodeEngine "-+${proxy.ownPort}/bin/torq-agent-own-port remove ${agent}";
+      # And of opencode's ports (modules/model-proxy.nix) it binds its own alone: another person's agent cannot
+      # stand where this person's opencode listens. (The allow takes precedence over the deny, systemd.resource-control.)
+      SocketBindAllow = lib.optional opencodeEngine "tcp:${toString proxy.opencodePorts.${agent}}";
+      SocketBindDeny = lib.optional opencodeEngine "tcp:${proxy.opencodePortRange}";
       # The listening socket as standard input (Accept=no): the program takes it from there.
       StandardInput = "socket";
       StandardOutput = "journal";

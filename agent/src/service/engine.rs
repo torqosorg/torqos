@@ -305,6 +305,13 @@ impl Engine {
             }
             Engine::OpenCode => {
                 let port = given_value(given, OPENCODE_PORT).and_then(|p| p.parse::<u16>().ok()).filter(|p| *p >= 1024).with_context(|| format!("this service was not given its port for opencode ({OPENCODE_PORT}, modules/agent.nix): opencode is not started without it"))?;
+                // Taken by another program, opencode would end at once, saying so only to the journal: said here,
+                // in words, before it is started. (Asked by binding the port for a moment, which this service may.)
+                if let Err(e) = std::net::TcpListener::bind(("127.0.0.1", port)) {
+                    if e.kind() == std::io::ErrorKind::AddrInUse {
+                        bail!("opencode cannot start: its own port on this machine, {port}, is taken by another program. Nothing was asked. An administrator can see which program: ss -ltnp 'sport = :{port}'. Once it is closed, ask again");
+                    }
+                }
                 c.args(["acp", "--port", &port.to_string(), "--hostname", "127.0.0.1"]);
             }
         }
@@ -1300,6 +1307,13 @@ mod tests {
         let args = |c: Command| c.get_args().map(|a| a.to_string_lossy().into_owned()).collect::<Vec<_>>().join(" ");
         let file = Path::new("/var/lib/torq-agent-memory/alice/instructions.md");
         assert_eq!(args(e.command(Path::new("/x/opencode"), Some(SID), Some(file), true, &given).unwrap()), "acp --port 7810 --hostname 127.0.0.1", "the conversation and the instructions are not on its command line");
+        // Its port taken by another program: said in words, and it is not started.
+        let held = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = held.local_addr().unwrap().port().to_string();
+        let taken = e.command(Path::new("/x/opencode"), None, None, false, &[(OPENCODE_PORT.into(), port.clone())]).unwrap_err().to_string();
+        assert_eq!(taken, format!("opencode cannot start: its own port on this machine, {port}, is taken by another program. Nothing was asked. An administrator can see which program: ss -ltnp 'sport = :{port}'. Once it is closed, ask again"));
+        drop(held);
+        assert!(e.command(Path::new("/x/opencode"), None, None, false, &[(OPENCODE_PORT.into(), port)]).is_ok(), "free again: started");
         for bad in ["", "80", "x", "70000"] {
             let given: Vec<(String, String)> = vec![(OPENCODE_PORT.into(), bad.into())];
             assert!(e.command(Path::new("/x/opencode"), None, None, false, &given).is_err(), "{bad}");
