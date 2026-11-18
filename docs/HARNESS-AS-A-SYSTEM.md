@@ -217,7 +217,8 @@ A desk of its own for the agent (its own hidden desktop session); a pull request
 task's files and system changes as one diff to merge or throw away); rehearsal (the agent tries a
 system change in a throwaway copy of the machine); an inbox of what agents want and did; budgets the
 proxy enforces; taint decided from what the proxy saw, so that trust can return; other engines (Codex,
-Kimi); a person's own Claude Code outside the fence.
+Kimi); a person's own Claude Code outside the fence; custom harnesses a person brings (oh-my-pi and the like: the
+owner, 2026-11-18, "we do need to think about custom harnesses in the future but not right now").
 
 ## Where it stands
 
@@ -771,3 +772,10 @@ Kimi); a person's own Claude Code outside the fence.
     (+2 ignored). Not run: `nix flake check`; a real login session's slice (the test puts bob under `user.slice` with
     `systemd-run`); a reload of the fence with opencode running; ports moving when a person is added (a switch
     restarts the changed units: by NixOS's rule for a unit whose text changed, not seen here).
+- 2026-11-18, **phase 4's first part's full check** (opencode, ADR-058, with the panel applet's quicker look from
+  `main`, eae943e), at 9625ac4 on the check host: `nix flake check --keep-going --max-jobs 2` ended 1 with three
+  VM tests failed, each passing run alone after (`nix build .#checks.x86_64-linux.<name>`, one after another):
+  `agents-per-person` (its 14th waiting proposal answered in 30.21 s, past the test's `socat -t 30`: the check of
+  each proposal is slow under load; 218 s alone), `desktop-agent` (the owner's login not at COSMIC's panel in 30 s,
+  as in phase 3's full check; 537 s alone) and `desktop` (no approval dialog seen; 542 s alone). Every other check
+  passed in the full run. Merged to `main`. Not run: opencode with a real model, on the laptop or on a desktop.

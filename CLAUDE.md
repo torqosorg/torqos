@@ -146,14 +146,11 @@ Phase 3 (on `main` since its full check passed at ac18d2b, 2026-11-17) is the mo
 `torq-model-proxy` on 127.0.0.1:7801 records each agent's conversations with its model, the agents' network is
 closed by nft (`inet torq_agents`): an agent reaches the proxy, which passes on its requests to the model and to
 the sites its person allowed, and nothing else on the network; a person reads the
-record with `show system agent activity` or the Agent Activity page in TorqOS Settings. Phase 4 (opencode, API keys
-as secrets, local models) is next.
-
-Being built on `work/harness-p3` (ADR-057, 2026-11-16; not merged, no full check): the first half of phase 3.
-The model proxy (`torq-model-proxy`: every request an agent makes of its model passes through it and is
-recorded for the person, in `/var/lib/torq-model-proxy/<person>/`), and the agents' accounts' network closed
-but for it and the sites the owner allows (`torq agent network hosts`, `torq agent network web`). Not built
-yet: showing the record (`show system agent activity`, the page in TorqOS Settings).
+record with `show system agent activity` or the Agent Activity page in TorqOS Settings. Phase 4's first part (on
+`main` since its full check passed at 9625ac4, 2026-11-18) is opencode as the second engine (ADR-058:
+`torq agent engine opencode`, upstream's pinned baseline build, driven over ACP, its own port fenced for its agent
+alone). Phase 4's rest is being built: the model's API key as a TorqOS secret (ADR-059, `work/harness-p4b`), then a
+local model.
 
 Milestones as built (`docs/ROADMAP.md`'s checkboxes are the most current record): M1, M1.5, M2 and M3
 are done. M3.5 (the install on real hardware) is partly done: the offline first build, network-first
@@ -225,8 +222,8 @@ removed since phase 2; the agent as it is now (ADR-055) is unreleased.
   VM tests are `checks` in `flake.nix`, one file each in `tests/`. CI's `test` workflow runs on pull
   requests, by hand and inside each release, **not on pushes to `main`**, and GitHub does not run the
   full `nix flake check` for development: it runs on the check host. The last full `nix flake check`
-  passed on 2026-11-17 at ac18d2b (phase 3 of `docs/HARNESS-AS-A-SYSTEM.md`, the model proxy; `desktop-agent` passed
-  run alone after a timed-out login in the full run: what each run failed for is in that file); the Secrets page and the agent's UIs
+  passed on 2026-11-18 at 9625ac4 (phase 4's first part of `docs/HARNESS-AS-A-SYSTEM.md`, opencode; `agents-per-person`,
+  `desktop-agent` and `desktop` passed run alone after timing out under the full run's load: what each run failed for is in that file); the Secrets page and the agent's UIs
   are type-checked only. The real Claude Code 2.1.316 was put through the proxy by hand on the check host, outside
   any unit (2026-11-16); never on the laptop. No test presses a button in the approval dialog (a VM test has the applet see a waiting use and send its yes). Say what was actually run; do not write that
   something is tested when it only exists.
