@@ -199,6 +199,8 @@
         # An agent's proposal checked by the broker's checker, with a real evaluation in the VM, offline (ADR-056).
         agent-check = import ./tests/agent-check.nix { inherit pkgs self; };
         agent-service = import ./tests/agent-service.nix { inherit pkgs self; };
+        # opencode as the engine (ADR-058): the real one, through the Agent Client Protocol and the model proxy.
+        agent-opencode = import ./tests/agent-opencode.nix { inherit pkgs self; };
         # torq-mcp and Claude Code as a tool (ADR-051 5 and 7): a stand-in client; its proposal waits for the person.
         agent-mcp = import ./tests/agent-mcp.nix { inherit pkgs self; };
         remote = import ./tests/remote.nix { inherit pkgs self; };

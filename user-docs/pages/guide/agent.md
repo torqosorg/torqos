@@ -1,7 +1,7 @@
 # The agent
 
 TorqOS does not come with an AI of its own. You choose a coding tool that already exists (today: Claude
-Code), and it becomes **your agent**: the one program that answers wherever TorqOS offers AI. TorqOS is the
+Code, or opencode), and it becomes **your agent**: the one program that answers wherever TorqOS offers AI. TorqOS is the
 system around it. It gives the agent an account of its own, keeps it out of your home, and lets it change
 the machine in one way only: by *proposing* a change, which you read and approve.
 
@@ -48,6 +48,23 @@ so.
 The system journal is off limits to the agents unless the owner sets `torq agent journal true`. Turning
 that on gives every agent account, and so every program run as it, read access to every service's log, so
 it is off by default.
+
+### opencode instead
+
+opencode is open-source, so there is nothing to allow first (x86_64 machines only):
+
+```text
+alice@torq# set torq agent tools opencode
+alice@torq# set torq agent engine opencode
+alice@torq# commit
+```
+
+TorqOS gives it its settings itself, in your agent's account only (a copy of opencode you run as yourself is
+not touched): it asks Anthropic's models through TorqOS's model proxy, which records each request, and it
+has TorqOS's tools. **It needs an API key, which this version of TorqOS does not give it yet** (a later one
+adds yours, kept as a TorqOS secret). Until then Anthropic refuses what it asks, and your agent says: "opencode
+got no answer from its model. It has no API key yet …". There is no plain `opencode` command; at a terminal it
+is `torq agent run --share <a folder of yours> -- opencode`.
 
 ## Ask your agent
 

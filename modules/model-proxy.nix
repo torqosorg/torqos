@@ -59,11 +59,85 @@ let
       }
       chain agent {
         oifname "lo" ip saddr 127.0.0.1 ip daddr 127.0.0.1 tcp dport { ${lib.concatMapStringsSep ", " toString ([ cfg.port ] ++ lib.optional config.torq.secrets.enable secretsPort)} } accept
-        meta l4proto tcp reject with tcp reset
+        ${ownRules}meta l4proto tcp reject with tcp reset
         reject with icmpx admin-prohibited
       }
+    ${ownInput}
     }
   '';
+  # opencode's own HTTP server (ADR-058), where it is the engine: `opencode acp` drives itself through a server it
+  # opens on 127.0.0.1, and the fence would refuse it its own connection. Each person's agent gets a port of its
+  # own for it (7810 and up, in the order of the agents' names), and the fence lets through to that port, and back
+  # from it, exactly what goes between sockets of that agent's own service: by the account on the way out, by the
+  # receiving socket's control group on the way in (a set per agent, `own_<n>`, which the agent's service puts its
+  # control group in as it starts, `torq-agent-own-port`). So no other account reaches the server (its packets
+  # are let in, and the server's answers are dropped before they reach anyone but the agent's service), and the
+  # agent reaches nothing else through the port (a program of the agent's that listens there in the server's
+  # place is not in the set, and nor is anything another account listens there with). The server also asks a
+  # password, new at every start (agent/src/service/engine.rs).
+  opencodeBridged = config.torq.agent.engine == "opencode";
+  agentNames = lib.attrNames agents;
+  firstOwnPort = 7810;
+  ownPorts = lib.optionalAttrs opencodeBridged (lib.listToAttrs (lib.imap0 (i: a: lib.nameValuePair a { port = firstOwnPort + i; set = "own_${toString i}"; }) agentNames));
+  ownRules = lib.concatStrings (lib.mapAttrsToList (a: o: ''
+    meta skuid "${a}" oifname "lo" ip saddr 127.0.0.1 ip daddr 127.0.0.1 tcp dport ${toString o.port} accept
+    meta skuid "${a}" oifname "lo" ip saddr 127.0.0.1 ip daddr 127.0.0.1 tcp sport ${toString o.port} ct direction reply accept
+  '') ownPorts);
+  # On the way in: a new connection to the port only to a socket in the set; anything from the port only to one.
+  ownInput = lib.optionalString (ownPorts != { }) ''
+    ${lib.concatStrings (lib.mapAttrsToList (_: o: ''
+      set ${o.set} {
+        typeof socket cgroupv2 level 3
+      }
+    '') ownPorts)}
+      chain in {
+        type filter hook input priority filter; policy accept;
+    ${lib.concatStrings (lib.mapAttrsToList (_: o: ''
+        iifname "lo" tcp dport ${toString o.port} ct state new socket cgroupv2 level 3 @${o.set} accept
+        iifname "lo" tcp dport ${toString o.port} ct state new drop
+        iifname "lo" tcp sport ${toString o.port} socket cgroupv2 level 3 @${o.set} accept
+        iifname "lo" tcp sport ${toString o.port} drop
+    '') ownPorts)}  }
+  '';
+  # `torq-agent-own-port add|remove <agent>`: the control group this runs in (the agent's service's, whose
+  # ExecStartPre and ExecStopPost run it as root) put in, or taken out of, that agent's set. And `restore`: each
+  # running agent service's group put back, after the fence's table was loaded anew (a reload empties the sets).
+  ownPort = pkgs.writeShellApplication {
+    name = "torq-agent-own-port";
+    runtimeInputs = [ pkgs.nftables pkgs.coreutils pkgs.gnused config.systemd.package ];
+    text = ''
+      set_of() {
+        case "$1" in
+          ${lib.concatStrings (lib.mapAttrsToList (a: o: "${a}) echo ${o.set} ;;\n") ownPorts)}
+          *) echo "torq-agent-own-port: $1 has no port of its own for opencode" >&2; exit 2 ;;
+        esac
+      }
+      case "''${1-}" in
+        add | remove)
+          set=$(set_of "''${2:?torq-agent-own-port add|remove <agent>}")
+          group=$(sed -n 's|^0::/||p' /proc/self/cgroup)
+          case "$group" in
+            system.slice/system-torq\\x2dagent.slice/torq-agent@*.service) ;;
+            *) echo "torq-agent-own-port: run from an agent's service only, not from $group" >&2; exit 2 ;;
+          esac
+          if [ "$1" = add ]; then
+            nft add element inet torq_agents "$set" "{ \"$group\" }"
+          else
+            nft delete element inet torq_agents "$set" "{ \"$group\" }"
+          fi
+          ;;
+        restore)
+          ${lib.concatStrings (lib.mapAttrsToList (a: o: ''
+          group=$(systemctl show -P ControlGroup -- "torq-agent@${agents.${a}}.service" || true)
+          if [ -n "$group" ]; then
+            nft add element inet torq_agents ${o.set} "{ \"''${group#/}\" }" || echo "torq-agent-own-port: ${a}'s service could not be named again: its opencode cannot reach its own server until it starts again" >&2
+          fi
+          '') ownPorts)}
+          ;;
+        *) echo "usage: torq-agent-own-port add|remove <agent> | restore" >&2; exit 2 ;;
+      esac
+    '';
+  };
   # Whether the fence is there for one agent account, by the kernel's word and not by its unit's: the unit stays
   # active through a `nft flush ruleset` or a table deleted by hand, which leave the account the whole network
   # (the security reader, 2026-11-17). The table must be loaded, its rule must name the account (nft writes the
@@ -85,6 +159,16 @@ let
       # The rule's words, one a line: the account named, by its name or its number.
       printf '%s\n' "$rule" | tr -d '{},"' | tr -s ' \t' '\n' | grep -qx -e "$agent" -e "$uid" || refuse "its rule does not name $agent"
       printf '%s\n' "$table" | grep -qE '^[[:space:]]*reject with icmpx admin-prohibited$' || refuse "its chain refuses nothing"
+      # Where opencode is the engine: the rules that keep everyone else from the agent's own port (ownInput).
+      case "$agent" in
+        ${lib.concatStrings (lib.mapAttrsToList (a: o: "${a}) port=${toString o.port} ;;\n") ownPorts)}
+        *) port="" ;;
+      esac
+      if [ -n "$port" ]; then
+        for want in "tcp dport $port ct state new drop" "tcp sport $port drop"; do
+          printf '%s\n' "$table" | grep -qxE "[[:space:]]*iifname \"lo\" $want" || refuse "its rule that keeps every other account from opencode's own port, $port, is not there"
+        done
+      fi
     '';
   };
 in
@@ -114,6 +198,20 @@ in
         no_proxy = "127.0.0.1,localhost";
       };
       description = "What every program run as an agent is told of the proxy: the agent's service and the launcher of `torq agent run` set it (modules/agent.nix).";
+    };
+    opencodePorts = lib.mkOption {
+      type = lib.types.attrsOf lib.types.port;
+      internal = true;
+      readOnly = true;
+      default = lib.mapAttrs (_: o: o.port) ownPorts;
+      description = "Where opencode is the engine: each agent account's own port for opencode's own server, on 127.0.0.1, which the fence lets only that agent's service reach (ADR-058).";
+    };
+    ownPort = lib.mkOption {
+      type = lib.types.package;
+      internal = true;
+      readOnly = true;
+      default = ownPort;
+      description = "`torq-agent-own-port add|remove <agent>`: the agent's service's control group named in the fence as the one place its opencode port leads (its ExecStartPre and ExecStopPost, modules/agent.nix).";
     };
     fenceCheck = lib.mkOption {
       type = lib.types.package;
@@ -182,6 +280,11 @@ in
           && u.shell == noShell && u.home == "/var/empty" && !u.createHome
           && u.openssh.authorizedKeys.keys == [ ] && u.openssh.authorizedKeys.keyFiles == [ ];
         message = "users.users.${account}: the model proxy's account (ADR-057) is a system account in its own group and no other, alone in that group, with no password, no shell, no home and no SSH key: it sees what every agent asks its model, and writes each person's record.";
+      }
+      {
+        # opencode's own ports, 7810 and up: below the next service TorqOS knows of (8000), one for each agent.
+        assertion = lib.length (lib.attrNames ownPorts) <= 190;
+        message = "torq.agent.people: where opencode is the engine, each person's agent has a port of its own on this machine for opencode's own server (7810 and up), and there are at most 190: ${toString (lib.length agentNames)} people have an agent.";
       }
       {
         # The fence is a table of its own in the kernel's packet filter. NixOS's nftables service, told to
@@ -302,13 +405,17 @@ in
         ExecStart = "${nft} -f ${rules}";
         # A reload that fails stops the fence, and with it every agent's service and every `torq agent run`
         # (the slice below): the unit is never left up over rules it could not load.
-        ExecReload = pkgs.writeShellScript "torq-agent-network-reload" ''
+        ExecReload = pkgs.writeShellScript "torq-agent-network-reload" (''
           if ! ${nft} -f ${rules}; then
             echo "the fence's rules could not be loaded: the fence is stopped, and every agent with it" >&2
             ${config.systemd.package}/bin/systemctl stop --no-block torq-agent-network.service
             exit 1
           fi
-        '';
+        '' + lib.optionalString (ownPorts != { }) ''
+          # The table loaded anew has its sets empty: each running agent service named in its own again
+          # (opencode's own port, ownInput).
+          ${ownPort}/bin/torq-agent-own-port restore
+        '');
         # Not there already is as good as deleted.
         ExecStop = "-${nft} delete table inet torq_agents";
       };
@@ -354,6 +461,7 @@ in
       agents ask their model through TorqOS's model proxy, which keeps a record of each request.
     '';
     # What the launcher of `torq agent run` sets for every program it runs as an agent, one NAME=value a line.
-    environment.etc."torq/agent-environment".text = lib.concatStrings (lib.mapAttrsToList (k: v: "${k}=${v}\n") cfg.agentEnvironment);
+    # And, where opencode is one of the agents' tools, what it is told (modules/agent.nix): its settings, one line of JSON.
+    environment.etc."torq/agent-environment".text = lib.concatStrings (lib.mapAttrsToList (k: v: "${k}=${v}\n") (cfg.agentEnvironment // config.torq.agent.opencodeEnvironment));
   };
 }

@@ -116,7 +116,10 @@ let
     # Where the engine's model is and how a site is reached: TorqOS's model proxy (ADR-057). Said here for
     # every program the engine starts; for Claude Code itself the settings below say the same, and it cannot
     # override those.
-    environment = proxy.agentEnvironment;
+    environment = proxy.agentEnvironment
+      # opencode (ADR-058): its settings and switches, and the port its own server listens on, this agent's
+      # alone (modules/model-proxy.nix): the bridge puts it on opencode's command line.
+      // lib.optionalAttrs opencodeEngine (opencodeEnvironment // { TORQ_OPENCODE_PORT = toString proxy.opencodePorts.${agent}; });
     # No limit on how often it may be started. systemd's own (5 starts in 10 s) would otherwise be reached by a
     # person asking a few times while its start fails, and a socket whose service has reached it is stopped
     # for good ("service-start-limit-hit"): what was wrong put right, the agent would still not answer until an
@@ -137,7 +140,11 @@ let
       # The fence by the kernel's word, not by its unit's (which stays active through a `nft flush ruleset`): its
       # table loaded and naming this account, or nothing starts. As root (`+`: reading the packet filter needs it),
       # before anything runs as the agent.
-      ExecStartPre = "+${proxy.fenceCheck}/bin/torq-agent-fence-check ${agent}";
+      ExecStartPre = [ "+${proxy.fenceCheck}/bin/torq-agent-fence-check ${agent}" ]
+        # opencode's own server: this unit's control group named as the one place its port may lead (the fence,
+        # modules/model-proxy.nix), as root, and taken away when the unit stops.
+        ++ lib.optional opencodeEngine "+${proxy.ownPort}/bin/torq-agent-own-port add ${agent}";
+      ExecStopPost = lib.optional opencodeEngine "-+${proxy.ownPort}/bin/torq-agent-own-port remove ${agent}";
       # The listening socket as standard input (Accept=no): the program takes it from there.
       StandardInput = "socket";
       StandardOutput = "journal";
@@ -222,6 +229,55 @@ let
   claudeChosen = builtins.elem "claude-code" cfg.tools;
   claudeAllowed = config.torq.unfree.all || builtins.elem "claude-code" config.torq.unfree.packages;
   claudeCode = pkgs.claude-code.override { manifest = lib.importJSON ./claude-code-manifest.json; };
+  # opencode for the agents (ADR-058, `torq agent tools opencode`): upstream's release, pinned (opencode/package.nix
+  # says why not nixpkgs'). Open-source (MIT): nothing to allow first. x86_64 only, as that build is.
+  opencodeChosen = builtins.elem "opencode" cfg.tools;
+  opencodeEngine = cfg.engine == "opencode";
+  # TorqOS's settings for opencode, given to it in its environment (OPENCODE_CONFIG_CONTENT), never in
+  # /etc/opencode, which every account's opencode reads (a person's own too). They come after the agent's own
+  # files, so they hold whatever its home's settings say; they are advice for the tool all the same: the fence and
+  # the broker are the limits, not these.
+  # - Its one provider, Anthropic, asked through TorqOS's model proxy (its address and `/v1`), so every request is
+  #   recorded. The key is a placeholder, plainly not one: the proxy is to add the real one (a later step); until
+  #   then Anthropic refuses what opencode asks, and the bridge says so (agent/src/service/engine.rs).
+  # - Nothing shared to opencode's site, no updates of itself.
+  # - TorqOS's tools (torq-mcp), named `torqos` as in Claude Code's settings: its tools read `torqos_…`.
+  # - It asks no one's permission for what it does: as Claude Code with bypassPermissions (ADR-051 5), no one
+  #   sits at it to be asked. opencode's own defaults ask before it reads `.env` files, works outside its folder,
+  #   or repeats a tool call: allowed here. (Its tools that reach other sites, repo_clone and repo_overview, stay
+  #   as opencode has them: refused.)
+  opencodeSettings = builtins.toJSON {
+    autoupdate = false;
+    share = "disabled";
+    enabled_providers = [ "anthropic" ];
+    provider.anthropic.options = {
+      baseURL = "${proxy.agentEnvironment.ANTHROPIC_BASE_URL}/v1";
+      apiKey = "not-a-key:the-torqos-model-proxy-adds-it";
+    };
+    mcp.torqos = { type = "local"; command = [ "/run/current-system/sw/bin/torq-mcp" ]; enabled = true; };
+    permission = { read = "allow"; external_directory = "allow"; doom_loop = "allow"; };
+  };
+  # What every program run as an agent is told for opencode, where it is installed for the agents (the agent's
+  # service, and the launcher of `torq agent run`): its settings, and its switches for reaching the network by
+  # itself, each judged (opencode 1.15.10's source, ADR-058):
+  opencodeEnvironment = {
+    OPENCODE_CONFIG_CONTENT = opencodeSettings;
+    # The list of models from models.dev, at its start and every hour: it carries a list of its own.
+    OPENCODE_DISABLE_MODELS_FETCH = "1";
+    # Its own updates (from its terminal interface only; "autoupdate": false says it too).
+    OPENCODE_DISABLE_AUTOUPDATE = "1";
+    # Sharing a conversation to opncd.ai ("share": "disabled" says it too).
+    OPENCODE_DISABLE_SHARE = "1";
+    # Language servers it would download.
+    OPENCODE_DISABLE_LSP_DOWNLOAD = "1";
+    # Claude Code's files in the agent's home (~/.claude/CLAUDE.md, its skills): the two engines' settings kept apart.
+    OPENCODE_DISABLE_CLAUDE_CODE = "1";
+    # Plugins from outside (npm packages a configuration names, installed at its start).
+    OPENCODE_PURE = "1";
+    # Not OPENCODE_DISABLE_EMBEDDED_WEB_UI: without the web interface it carries, its server fetches that interface
+    # from opencode's site instead (server/shared/ui.ts). Not settable here: the npm install of its own plugin
+    # library at every start (it fails behind the fence, and opencode goes on).
+  };
   # `claude`, typed plainly (torq.agent.plainCommand): `torq agent claude` (cli/src/agent.rs), a command a person
   # could type themselves. Claude Code as the person's agent, the folder they are in
   # shared with it, every word after it passed on as it is. On every person's PATH, after their own profile
@@ -353,35 +409,47 @@ in
   };
 
   options.torq.agent.tools = lib.mkOption {
-    type = lib.types.listOf (lib.types.enum [ "claude-code" ]);
+    type = lib.types.listOf (lib.types.enum [ "claude-code" "opencode" ]);
     default = [ ];
     example = [ "claude-code" ];
     description = ''
-      The coding tools installed for each person's agent account (ADR-051 5): `claude-code`, Claude Code. The
-      program itself is in the agent accounts' own profiles, and it runs as the person's agent, never as the
-      person. What people get on their PATH is a command `claude` (`torq agent plainCommand`, on by default):
-      typed in a terminal, it runs Claude Code as their agent with the folder they are in shared with it;
-      `torq agent run --share <folder> -- claude` is the same, spelled out. Its sign-in (a subscription's too)
-      is kept in the agent's home. At each start TorqOS's tools (torq-mcp) and skill are linked into its
-      settings there; what it proposes always waits for the person (ADR-051 7). Claude Code is unfree
-      (its licence is not an open-source one, and nothing of that kind is installed unasked): allow it first
-      (`set torq unfree packages claude-code`).
+      The coding tools installed for each person's agent account (ADR-051 5, ADR-058): `claude-code`, Claude
+      Code; `opencode`, opencode. Each program is in the agent accounts' own profiles, and it runs as the
+      person's agent, never as the person.
+
+      Claude Code: what people get on their PATH is a command `claude` (`torq agent plainCommand`, on by
+      default): typed in a terminal, it runs Claude Code as their agent with the folder they are in shared with
+      it; `torq agent run --share <folder> -- claude` is the same, spelled out. Its sign-in (a subscription's
+      too) is kept in the agent's home. At each start TorqOS's tools (torq-mcp) and skill are linked into its
+      settings there. Claude Code is unfree (its licence is not an open-source one, and nothing of that kind is
+      installed unasked): allow it first (`set torq unfree packages claude-code`).
+
+      opencode: open-source, so nothing to allow first; x86_64 machines only. Start it as your agent with
+      `torq agent run --share <folder> -- opencode` (there is no plain `opencode` command). TorqOS gives it its
+      settings itself, in the agent's environment, never in /etc/opencode (which would change every person's
+      own opencode): it asks Anthropic's models through TorqOS's model proxy, which records each request, and it
+      has TorqOS's tools. It needs an API key, which TorqOS does not give it yet: until a later version adds
+      yours (kept as a TorqOS secret), Anthropic refuses what it asks, and your agent says so.
+
+      Whichever it is, what it proposes always waits for the person (ADR-051 7).
     '';
   };
 
   options.torq.agent.engine = lib.mkOption {
-    type = lib.types.nullOr (lib.types.enum [ "claude-code" ]);
+    type = lib.types.nullOr (lib.types.enum [ "claude-code" "opencode" ]);
     default = null;
     example = "claude-code";
     description = ''
-      The engine: the program that answers when you ask your agent. `claude-code` is Claude Code. Every place
-      in TorqOS that offers AI (the agent's window and panel applet, `torq ask` at a terminal) then reaches
-      it. It runs as each person's own agent account, in the same sandbox as `torq agent run`: it sees its
-      own home, not yours, and can only propose a change to the system, which you approve. Install it for the
-      agents first (`set torq agent tools claude-code`), and sign in once, in a terminal: `claude`, then type
-      /login (`torq agent run -- claude` where `torq agent plainCommand` is off). Starting a program as the
-      agent is an administrator's command today: someone who is not one asks an administrator. Not set, the
-      default: the machine has no agent to ask.
+      The engine: the program that answers when you ask your agent. `claude-code` is Claude Code; `opencode`
+      is opencode. Every place in TorqOS that offers AI (the agent's window and panel applet, `torq ask` at a
+      terminal) then reaches it. It runs as each person's own agent account, in the same sandbox as `torq agent
+      run`: it sees its own home, not yours, and can only propose a change to the system, which you approve.
+      Install it for the agents first (`set torq agent tools claude-code`, or `opencode`). Claude Code is signed
+      in once, in a terminal: `claude`, then type /login (`torq agent run -- claude` where `torq agent
+      plainCommand` is off); starting a program as the agent is an administrator's command today: someone who
+      is not one asks an administrator. opencode needs an API key, which TorqOS does not give it yet (see `torq
+      agent tools`): until then it answers nothing, and says why. Not set, the default: the machine has no
+      agent to ask.
     '';
   };
 
@@ -396,8 +464,25 @@ in
       is shared: it says so in one line and works in the agent's own folder. Your instructions for your agent
       (`torq agent instructions`) are given to it. Off: `claude` is not a command; use `torq agent run`. Only
       where Claude Code is one of `torq agent tools`. A Claude Code you installed in your own account is
-      found first, and runs as you, outside the agent's sandbox.
+      found first, and runs as you, outside the agent's sandbox. (opencode has no such command: `torq agent
+      run --share <folder> -- opencode`.)
     '';
+  };
+
+  options.torq.agent.opencode = lib.mkOption {
+    type = lib.types.package;
+    internal = true;
+    default = pkgs.callPackage ../opencode/package.nix { };
+    defaultText = lib.literalExpression "pkgs.callPackage ../opencode/package.nix { }, upstream's release that file pins";
+    description = "opencode, as `torq agent tools` installs it for the agents.";
+  };
+
+  options.torq.agent.opencodeEnvironment = lib.mkOption {
+    type = lib.types.attrsOf lib.types.str;
+    internal = true;
+    readOnly = true;
+    default = lib.optionalAttrs opencodeChosen opencodeEnvironment;
+    description = "What every program run as an agent is told for opencode, where it is one of `torq agent tools`: its settings and switches (the launcher of `torq agent run` sets them, modules/model-proxy.nix; the agent's service too, where it is the engine).";
   };
 
   options.torq.agent.claudeCode = lib.mkOption {
@@ -488,6 +573,11 @@ in
       # The engine is one of the coding tools installed for the agents: without its program there is nothing to run.
       assertion = cfg.engine == null || builtins.elem cfg.engine cfg.tools;
       message = "torq.agent.engine: ${toString cfg.engine} is not installed for the agents. Install it first: `set torq agent tools ${toString cfg.engine}`, then `set torq agent engine ${toString cfg.engine}`.";
+    }
+    {
+      # The build TorqOS pins is upstream's for x86_64 (opencode/package.nix).
+      assertion = !opencodeChosen || pkgs.stdenv.hostPlatform.system == "x86_64-linux";
+      message = "torq.agent.tools: opencode is installed only on x86_64 machines (the build TorqOS takes is upstream's for those); this one is ${pkgs.stdenv.hostPlatform.system}.";
     }];
 
     # Static system users: the broker names its caller from /etc/passwd, where a DynamicUser is not.
@@ -505,7 +595,7 @@ in
       hashedPassword = "!";
       # The coding tools chosen (ADR-051 5, `torq agent tools`), in the agent's own profile
       # (/etc/profiles/per-user/torq-agent-<person>, on the launcher's PATH): on no person's PATH.
-      packages = lib.optional (claudeChosen && claudeAllowed) cfg.claudeCode;
+      packages = lib.optional (claudeChosen && claudeAllowed) cfg.claudeCode ++ lib.optional opencodeChosen cfg.opencode;
       # The system journal, where `torq agent journal` gives it: read access, for everything run as the agent.
       extraGroups = lib.optional cfg.journal "systemd-journal";
       # Never a user manager of its own (below).

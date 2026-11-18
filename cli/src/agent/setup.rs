@@ -66,9 +66,9 @@ pub struct CodingTool {
 /// What the system's configuration wrote of the coding tools (modules/agent.nix).
 const TOOLS_JSON: &str = "/etc/torq/agent-tools.json";
 
-/// The coding tools TorqOS knows (only Claude Code in this step), each with what it is called, its program's name,
-/// and whose service it asks (where what it reads goes).
-const KNOWN_TOOLS: &[(&str, &str, &str, &str)] = &[("claude-code", "Claude Code", "claude", "Anthropic")];
+/// The coding tools TorqOS knows (Claude Code, opencode), each with what it is called, its program's name,
+/// and whose service it asks (where what it reads goes: opencode's one provider here is Anthropic, modules/agent.nix).
+const KNOWN_TOOLS: &[(&str, &str, &str, &str)] = &[("claude-code", "Claude Code", "claude", "Anthropic"), ("opencode", "opencode", "opencode", "Anthropic")];
 
 /// Whether `claude`, typed plainly, is a command on this machine (`torq agent plainCommand`, where Claude Code
 /// is installed for the agents), as `json` (agent-tools.json) says. Not said: it is not.
@@ -78,7 +78,7 @@ pub fn plain_command_of(json: &str) -> bool {
 
 /// The coding tools `json` (agent-tools.json) names that TorqOS knows, for `agent`'s account: installed if its
 /// program is in that account's own profile (`profile`, its `bin`), as `has` says. How to start each: its own
-/// name where that is a command here (`plain_command_of`), else through `torq agent run`.
+/// name where that is a command here (`plain_command_of`: Claude Code's alone), else through `torq agent run`.
 pub fn tools_of(json: &str, agent: Option<&str>, has: impl Fn(&std::path::Path) -> bool) -> Vec<CodingTool> {
     let named: Vec<String> = serde_json::from_str::<serde_json::Value>(json).ok().and_then(|v| v["tools"].as_array().map(|a| a.iter().filter_map(|t| t.as_str().map(String::from)).collect())).unwrap_or_default();
     let plain = plain_command_of(json);
@@ -88,7 +88,7 @@ pub fn tools_of(json: &str, agent: Option<&str>, has: impl Fn(&std::path::Path) 
             id: id.to_string(),
             name,
             installed: named.iter().any(|n| n == id) && agent.is_some_and(|a| has(&std::path::Path::new("/etc/profiles/per-user").join(a).join("bin").join(program))),
-            start: if plain { program.to_string() } else { format!("torq agent run --share <a folder of yours> -- {program}") },
+            start: if plain && *id == "claude-code" { program.to_string() } else { format!("torq agent run --share <a folder of yours> -- {program}") },
         })
         .collect()
 }
@@ -181,11 +181,17 @@ mod tests {
     fn the_coding_tools_as_the_agent_page_says_them() {
         let has = |p: &std::path::Path| p == std::path::Path::new("/etc/profiles/per-user/torq-agent-alice/bin/claude");
         let t = tools_of(r#"{"tools":["claude-code"]}"#, Some("torq-agent-alice"), has);
-        assert_eq!(t.len(), 1);
+        assert_eq!(t.len(), 2, "every tool TorqOS knows, each said installed or not");
         assert!(t[0].installed && t[0].id == "claude-code" && t[0].name == "Claude Code", "{t:?}");
         assert_eq!(t[0].start, "torq agent run --share <a folder of yours> -- claude", "where `claude` is not a command here");
         let plain = tools_of(r#"{"tools":["claude-code"],"plainCommand":true}"#, Some("torq-agent-alice"), has);
         assert_eq!(plain[0].start, "claude", "where it is: its own name");
+        // opencode: no command of its own name here, whatever `plainCommand` says (that is Claude Code's).
+        let oc = |p: &std::path::Path| p == std::path::Path::new("/etc/profiles/per-user/torq-agent-alice/bin/opencode");
+        let both = tools_of(r#"{"tools":["claude-code","opencode"],"plainCommand":true}"#, Some("torq-agent-alice"), oc);
+        assert!(!both[0].installed && both[1].installed && both[1].id == "opencode" && both[1].name == "opencode", "{both:?}");
+        assert_eq!(both[1].start, "torq agent run --share <a folder of yours> -- opencode");
+        assert_eq!(engine_of(r#"{"engine":"opencode"}"#).unwrap().line(), "opencode · what it reads goes to Anthropic");
         assert!(plain_command_of(r#"{"plainCommand":true}"#) && !plain_command_of(r#"{"plainCommand":false}"#) && !plain_command_of("{}") && !plain_command_of(""));
         // Not chosen, no agent, another person's agent, nothing written: not installed for this person.
         for (json, agent) in [(r#"{"tools":[]}"#, Some("torq-agent-alice")), (r#"{"tools":["claude-code"]}"#, None), (r#"{"tools":["claude-code"]}"#, Some("torq-agent-bob")), ("", Some("torq-agent-alice")), ("not json", Some("torq-agent-alice"))] {

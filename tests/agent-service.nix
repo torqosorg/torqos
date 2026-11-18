@@ -131,7 +131,7 @@ pkgs.testers.runNixOSTest {
     with subtest("the engine is a setting of the tree, and nothing of TorqOS's own old loop is here"):
         schema = json.loads(machine.succeed("cat /etc/torq/nixos-schema.json"))
         found = [e for e in schema["settings"] if e.get("loc") == ["torq", "agent", "engine"]]
-        assert len(found) == 1 and found[0]["type"]["name"] == "nullOr" and found[0]["type"]["elem"]["values"] == ["claude-code"], found
+        assert len(found) == 1 and found[0]["type"]["name"] == "nullOr" and found[0]["type"]["elem"]["values"] == ["claude-code", "opencode"], found
         assert not [e for e in schema["settings"] if e.get("loc") == ["torq", "agent", "service", "enable"]], "the old switch is gone"
         assert json.loads(machine.succeed("cat /etc/torq/agent-tools.json")) == {"tools": ["claude-code"], "engine": "claude-code", "plainCommand": True}
         # Removed with the old loop (ADR-055, phase 2): its settings, its program, its second account.

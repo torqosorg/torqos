@@ -1990,8 +1990,8 @@ pub fn decline_line(seq: u64) -> String {
     format!("request system decline {seq}")
 }
 
-/// The Agent page's buttons (ADR-051 2 and 5, ADR-055), in the order the steps are done: allow Claude Code,
-/// install it, make it the agent; then how to have none; `claude` typed in a terminal; who has an agent.
+/// The Agent page's buttons (ADR-051 2 and 5, ADR-055, ADR-058), in the order the steps are done: allow Claude Code,
+/// install it, make it the agent; opencode instead; then how to have none; `claude` typed in a terminal; who has an agent.
 /// Each is a line of the tree, into the draft and committed as every other change is.
 pub const AGENT_SETTINGS: &[Action] = &[
     // Claude Code is unfree in nixpkgs, and nothing unfree is installed unasked (ADR-039): what that means, said.
@@ -1999,8 +1999,12 @@ pub const AGENT_SETTINGS: &[Action] = &[
     draft("2. Install Claude Code for the agents", "set torq agent tools claude-code"),
     // The engine (ADR-055): the program that answers, everywhere the desktop offers the agent.
     draft("3. Make Claude Code the agent: the program that answers when you ask", "set torq agent engine claude-code"),
+    // opencode (ADR-058): open-source, so nothing to allow first. It asks Anthropic's service with an API key,
+    // which TorqOS does not give it yet: the label says so.
+    draft("Install opencode for the agents (open-source; it has no API key yet, so its model answers nothing until a later TorqOS adds one)", "set torq agent tools opencode"),
+    draft("Make opencode the agent instead", "set torq agent engine opencode"),
     draft("No agent: nothing answers when you ask", "delete torq agent engine"),
-    draft("Uninstall Claude Code for the agents", "delete torq agent tools"),
+    draft("Uninstall the coding tools for the agents (all of them)", "delete torq agent tools"),
     // Typing `claude` in a terminal (on by default where Claude Code is installed).
     draft("Typing `claude` in a terminal starts Claude Code as your agent, in the folder you are in (this is how it is unless changed)", "delete torq agent plainCommand"),
     draft("Typing `claude` in a terminal does nothing (start it with `torq agent run -- claude` instead)", "set torq agent plainCommand false"),

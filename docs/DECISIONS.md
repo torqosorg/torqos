@@ -4008,3 +4008,72 @@ content at the next), and a proposal must be judged on what it does, not on what
   9. **NAT64 under an operator's own prefix** is not known to the proxy (KNOWN-GAPS 6zzx); no code.
   10. **`torq agent run` says when the fence ended it**: the launcher no longer `exec`s systemd-run; it waits
       outside the program's scope, and where the program ended while the fence is down, it says that this is why.
+
+## ADR-058 — opencode as the second engine: a pinned baseline build, settings in its environment, its own server fenced, ACP
+- **Status:** built on `work/harness-p4`, 2026-11-17 (the first part of phase 4 of `docs/HARNESS-AS-A-SYSTEM.md`,
+  which says what was run). Not merged, no full check. Not built here: the API key as a TorqOS secret added by
+  the proxy, a local model, a plain `opencode` command.
+- **Context:** ADR-055 makes the person's coding tool the machine's agent, Claude Code first, then opencode. opencode
+  1.15.10 (MIT) speaks the Agent Client Protocol (`opencode acp`: JSON-RPC 2.0 on its standard streams), takes its
+  settings from several places (its source, config/config.ts: the account's files, the project's, then
+  `OPENCODE_CONFIG_CONTENT`, then `/etc/opencode` for every account), and with Anthropic needs an API key. Found
+  on the way: nixpkgs' build does not start on the check host (SIGILL: bun built for AVX2); `opencode acp` opens an
+  HTTP server of its own on 127.0.0.1 with no password unless `OPENCODE_SERVER_PASSWORD` is set, and drives itself
+  through it over TCP — which the agents' fence (ADR-057) refuses, so behind the fence it could not even begin a
+  conversation ("No models available", seen in a network namespace with the fence's rules); and when the model
+  refuses it (a 401) it ends the question as answered, with nothing said and no word used.
+- **Decision:**
+  1. **A pinned build of upstream's "baseline" release** (`opencode/package.nix`): `opencode-linux-x64-baseline.tar.gz`
+     of v1.15.10 by its hash, its interpreter set to the system's glibc, never stripped (the program is bun with
+     opencode's code at its end), ripgrep on its PATH (else it downloads one). It runs on any x86_64 processor;
+     its build checks `--version`. x86_64 only (asserted). MIT, brought into the free check by name.
+  2. **`torq agent tools opencode`, `torq agent engine opencode`.** Installed in the agent accounts' profiles. The
+     bridge runs it as it runs Claude Code: one long-lived process for the conversation, as the agent, in the same
+     unit and fence. No plain `opencode` command (`torq agent run --share <folder> -- opencode`): the plain
+     `claude` command's rules (instructions by a file, sharing the folder) would need a second launcher path, and
+     nothing yet asks for it.
+  3. **Its settings are TorqOS's and in its environment** (`OPENCODE_CONFIG_CONTENT`), in the agent's service
+     and the launcher of `torq agent run`, never `/etc/opencode`, which would change every person's own opencode:
+     Anthropic as its one provider, at the model proxy's address (`/v1`), with a placeholder key that is plainly not
+     one; nothing shared, no self-update; torq-mcp as a local MCP server named `torqos`; permissions allowed where
+     opencode's defaults would ask (it runs unattended, as Claude Code with bypassPermissions: the fence is the
+     sandbox and the broker); in the service, the person's standing instructions by their file (`instructions`).
+     The network switches, each judged: models.dev, self-update, sharing, LSP downloads, Claude Code's files and
+     outside plugins are off; `OPENCODE_DISABLE_EMBEDDED_WEB_UI` is *not* set (without its own web interface its
+     server fetches one from opencode's site). The npm install of its own plugin library at every start has no
+     switch: behind the fence the proxy refuses it and records the refusal.
+  4. **Its own server: a port of the agent's own, fenced by the receiving socket, and a password.** Where opencode
+     is the engine each person's agent gets a port (7810 and up, by the agents' names), given to opencode as
+     `--port <it> --hostname 127.0.0.1`. The fence (table `inet torq_agents`) lets that agent's account send to
+     that port, and answer from it only within a connection the other side opened (`ct direction reply`), and on
+     the way in takes a new connection to the port, or anything from it, only to a socket in that agent's set
+     (`socket cgroupv2 level 3 @own_<n>`): the set holds the agent's service's control group, put there by its
+     `ExecStartPre` as root (`torq-agent-own-port`) and taken out after it stops, put back after a reload of the
+     fence (which empties the sets). So no other account reaches the server (its connection is let in, and the
+     server's answer dropped before it reaches anyone but the service), no program of the agent's reaches
+     anything else by that port (a listener of another account's there, or one of the agent's own outside its
+     service, is not in the set), and a client socket of the agent's bound to that port as its source reaches
+     nothing (only replies may leave from it). The fence check (`torq-agent-fence-check`) also holds the two
+     drops for the port. Besides, the bridge gives opencode a new 64-hex-digit password at every start, in its
+     environment only (no command line, no file). A private network namespace for opencode was the other way;
+     it would cut it off from the proxy, which names its caller by the kernel's table of this namespace's
+     connections, and from the secrets daemon, and need a forwarder: more parts than one rule set.
+  5. **The bridge drives it through ACP** (`agent/src/service/engine.rs`, another arm of `Engine`): `initialize`,
+     `session/load` with the kept conversation (else `session/new`), `session/prompt` for each question; what it
+     replays while it opens a conversation is not passed on; `agent_message_chunk` is gathered into one message at a
+     time (`Say`), `tool_call` is said by its tool's name, else its kind (`Called`), `torqos_propose_change`'s
+     completed result is the proposal (`Proposed`), the prompt's result ends the question. Its own requests are
+     always answered: a permission it asks for anyway is refused (`cancelled`), anything else a client might offer
+     is answered that there is none. A question beginning with `/` goes to it as typed, as it goes to Claude Code,
+     which runs its own commands so too (seen with 2.1.316, offline: `/cost` was answered by Claude Code itself).
+     Its conversations are `ses_` and letters and digits, checked as such; Claude Code's check is unchanged, and
+     neither engine is given the other's shape of name. Forget runs `opencode session delete <session>` as the
+     agent. The service's own part changed only in plumbing: the engine's hearing is shared by the asking thread
+     and the hearing thread, and what it gives to write back is written to the engine.
+  6. **No API key yet, said plainly.** A question opencode ends with nothing said and no word used (its model
+     refused it) is told as "opencode got no answer from its model. It has no API key yet …", and the record of the
+     proxy shows the 401.
+- **Consequences:** a second engine with the same fence, audit and proposals as the first; opencode is unusable
+  for answers until the key step (the proxy adding a key from a TorqOS secret). The no-key message is inferred,
+  not read (opencode 1.15.10 does not say why over ACP): any refusal by the model reads the same. The own-port
+  rules exist only where opencode is the engine; with Claude Code the fence is as it was.

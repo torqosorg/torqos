@@ -65,6 +65,7 @@ cli/                   Rust crate: torqcli — the grammar, the candidate, the t
 agent/                 Rust crate: torq-agent-service — each person's agent on its socket: the bridge to their engine, Claude Code (ADR-055);
                        torq-mcp — TorqOS's tools for a coding tool, an MCP server (ADR-051 7)
 proxy/                 Rust crate: torq-model-proxy — the relay to the model, its record, the sites an agent may reach (ADR-057; modules/model-proxy.nix)
+opencode/              opencode for the agents: upstream's baseline release, pinned (`torq agent tools opencode`, ADR-058)
 wire/                  Rust crate: torq-wire — the socket's types and the ledger's words, shared by the three (ADR-044); the record's words (`activity`, ADR-057)
 tests/                 NixOS VM tests
 release/               allowed_signers: the keys a machine trusts a release from
@@ -216,8 +217,9 @@ removed since phase 2; the agent as it is now (ADR-055) is unreleased.
   Each use of a secret by an agent asks its
   person, unless the secret's rule says `without-asking` or a grant of that one secret covers it (ADR-052,
   amended 2026-11-16: two words, one kind of grant; a person reads no word about taint or sessions for it).
-- **Tests.** Unit tests are `#[test]` functions: torqcli 518, broker 338 (across its test binaries), wire 33,
-  secrets 15, agent 60 (+2 ignored), torq-model-proxy 53 (+1 ignored, by hand) (each run 2026-11-17 on
+- **Tests.** Unit tests are `#[test]` functions: torqcli 519, broker 338 (across its test binaries), wire 33,
+  secrets 15, agent 67 (+2 ignored), torq-model-proxy 53 (+1 ignored, by hand) (torqcli and agent run 2026-11-17 on
+  `work/harness-p4`, opencode as the second engine, ADR-058; the others 2026-11-17 on
   `work/harness-p3`, after the security reader's second round of ADR-057, now on `main`). The
   `settings/` crate has no tests of its own; it is type-checked with `nix develop .#torq-settings`.
   VM tests are `checks` in `flake.nix`, one file each in `tests/`. CI's `test` workflow runs on pull

@@ -2184,3 +2184,24 @@ Its §5 lists claims without a test.
      was driven by the real Claude Code on the check host, in a network of its own with nothing but the
      proxy, as the machine's user); opencode; an IPv6-only network; many agents at once; a full disk for
      real.
+
+6zzy. **opencode as the engine: what is open (ADR-058, 2026-11-17).**
+   - **It answers nothing yet.** opencode with Anthropic needs an API key, and TorqOS gives it a placeholder: the
+     model refuses every request (401) until the proxy adds a key from a TorqOS secret (phase 4's next step). The
+     bridge says so, but only by inference: opencode 1.15.10 ends a refused question over ACP as answered, with
+     nothing said and no word used, so any refusal by the model (a limit, an outage) reads as "no API key yet".
+   - **No plain `opencode` command.** `torq agent run --share <folder> -- opencode` is the way at a terminal; the
+     person's standing instructions are given to it in the agent's service only, not at a terminal.
+   - **Its own server's port is fenced by the service's control group, held in a set the fence's reload empties.**
+     The reload puts back each running agent service's group (`torq-agent-own-port restore`); if that fails, that
+     agent's opencode cannot reach its own server until its service starts again (it fails closed: nothing else
+     gets through). `opencode acp` run at a terminal (`torq agent run -- opencode acp`) cannot reach its own server
+     at all (its scope is not in the set), and is not supported. The port is opencode's on the machine: no other
+     account's program can be reached on it, by anyone.
+   - **Its plugin library is asked of npm at every start**, which the proxy refuses and records (opencode has no
+     switch for it, and goes on without).
+   - **Its permissions are allowed by settings, not forced.** If opencode asks anyway, the bridge says no, and a
+     tool does not run; which of its tools then fail has not been seen with a real model (none answers it yet).
+   - **Not seen with a real model**: tool use, a proposal through torq-mcp, a long answer, the title request it makes
+     with its small model (the stand-in answers both). Each of those is unit-tested with lines in opencode's shape.
+   - **Not seen on the laptop or a desktop**; not with more than one person's opencode running at once.

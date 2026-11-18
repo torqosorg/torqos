@@ -110,6 +110,26 @@ let
         && (builtins.fromJSON plain.environment.etc."torq/agent-tools.json".text) == { tools = [ ]; engine = null; plainCommand = false; }
       then "the service is where an engine is"
       else throw "agent-assertions: the agent's service is not exactly where an engine is chosen")
+    # opencode as the engine (ADR-058): nothing to allow; its unit names its control group in the fence before it
+    # starts and takes it out after, is told its own port and TorqOS's settings for it, and nothing is put in
+    # /etc/opencode, which every account's opencode reads.
+    (let
+      c = configOf { torq.agent.tools = [ "opencode" ]; torq.agent.engine = "opencode"; };
+      sc = c.systemd.services."torq-agent@dev".serviceConfig;
+      env = c.systemd.services."torq-agent@dev".environment;
+    in
+      if ours (map (a: a.message) (lib.filter (a: !a.assertion) c.assertions)) == [ ]
+        && lib.hasSuffix "/bin/torq-agent-service dev opencode" sc.ExecStart
+        && lib.length sc.ExecStartPre == 2 && lib.hasSuffix "/bin/torq-agent-own-port add torq-agent-dev" (lib.elemAt sc.ExecStartPre 1)
+        && lib.hasPrefix "+/nix/store/" (lib.elemAt sc.ExecStartPre 1)
+        && lib.length sc.ExecStopPost == 1 && lib.hasPrefix "-+/nix/store/" (lib.head sc.ExecStopPost) && lib.hasSuffix "/bin/torq-agent-own-port remove torq-agent-dev" (lib.head sc.ExecStopPost)
+        && env.TORQ_OPENCODE_PORT == "7810" && c.torq.modelProxy.opencodePorts == { torq-agent-dev = 7810; }
+        && (builtins.fromJSON env.OPENCODE_CONFIG_CONTENT).provider.anthropic.options.baseURL == "http://127.0.0.1:7801/v1"
+        && env.OPENCODE_PURE == "1" && !(env ? OPENCODE_DISABLE_EMBEDDED_WEB_UI)
+        && !(lib.any (n: lib.hasPrefix "opencode" n) (lib.attrNames c.environment.etc))
+        && (configOf (withEngine { })).torq.modelProxy.opencodePorts == { }
+      then "opencode as the engine"
+      else throw "agent-assertions: opencode as the engine: its unit, its port or its settings are not as ADR-058 says")
     # The old switch for the service is gone, and says what took its place.
     (refuses "the old service switch" { torq.agent.service.enable = false; } "torq.agent.engine")
     # The unit is the bridge, as the person's one agent account, in the launcher's sandbox and more: who it
@@ -129,7 +149,7 @@ let
         && unit.environment.ANTHROPIC_BASE_URL == "http://127.0.0.1:7801" && unit.environment.HTTPS_PROXY == "http://127.0.0.1:7801"
         && sc.BindReadOnlyPaths == [ "/etc/torq/claude-code:/etc/claude-code" ]
         && sc.StateDirectory == "torq-agent-memory/dev" && sc.RestrictNamespaces && sc.ProtectControlGroups
-        && !(sc ? LoadCredential) && lib.hasPrefix "+/nix/store/" sc.ExecStartPre && lib.hasSuffix "/bin/torq-agent-fence-check torq-agent-dev" sc.ExecStartPre && !(sc ? Delegate) && !(sc ? RemoveIPC)
+        && !(sc ? LoadCredential) && lib.length sc.ExecStartPre == 1 && lib.hasPrefix "+/nix/store/" (lib.head sc.ExecStartPre) && lib.hasSuffix "/bin/torq-agent-fence-check torq-agent-dev" (lib.head sc.ExecStartPre) && sc.ExecStopPost == [ ] && !(sc ? Delegate) && !(sc ? RemoveIPC)
         # Decided, not forgotten (2026-11-15): no MemoryDenyWriteExecute. Claude Code 2.1.316 itself runs with it,
         # Node 24 crashes with it; the engine runs a developer's programs (node and the like), as `torq agent run`
         # does, so it stays off. And a /dev/shm of the unit's own.
